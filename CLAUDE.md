@@ -93,7 +93,7 @@ DEVOPSPROJECT/
 
 | Phase | Goal | Status | Key Command |
 |-------|------|--------|-------------|
-| **0** | Toolchain bootstrap, repo init, SSH keys | 🟡 In Progress | `make check`, `make install` |
+| **0** | Toolchain bootstrap, repo init, SSH keys | ✅ Complete | `make check` → all green |
 | **1** | Ansible + Docker nodes, idempotency proof | ⏳ Queued | `make infra-up && make provision` |
 | **2** | FastAPI app + pytest (test-driven) | ⏳ Queued | `make test` |
 | **3** | Containerize, image scan, security | ⏳ Queued | `make build` |
@@ -205,6 +205,33 @@ make clean               # Remove build artifacts
 - **GitHub repo:** (to be created in Phase 0)
 - **Bootstrap script:** `scripts/bootstrap.sh --check` to verify tools, `--install` to add missing ones
 - **Makefile:** `make help` for all available commands
+
+## Phase 0 — Completion Summary (2026-08-28)
+
+**What was built:**
+- Folder structure (`ansible/`, `app/`, `k8s/`, `infra/`, `monitoring/`, `backup/`, `ci/`, `docs/`)
+- `Makefile` — single entry point for all operations
+- `bootstrap.sh` — toolchain verification script
+- `CLAUDE.md` v1 (this file)
+- `README.md` v1 — portfolio documentation
+- `.gitignore` — standard Python/Docker/K8s exclusions
+- Git repo initialized, 2 commits, pushed to GitHub
+
+**Core tools installed & verified (all ✓):**
+- git, ssh, curl, docker, kubectl, k3d, helm, make, jq, ansible, gh CLI
+- SSH key pair (ed25519) generated for Ansible + GitHub
+
+**GitHub repository:**
+- Public repo at https://github.com/toolikheng/devops-platform
+- Ready for CI/CD pipeline (Phase 5)
+
+**Optional tools (for later phases, currently missing):**
+- ansible-lint, kubeconform, hadolint, trivy, restic
+- Will install in Phase 3 (scanning) and Phase 7 (backup)
+
+**Phase 0 verification:** `make check` → all core tools green ✓
+
+**Next phase entry point:** `make infra-up` (Phase 1 — Ansible infrastructure)
 
 ## Updating This File
 
