@@ -39,19 +39,40 @@ jobs:
 
     - name: Configure kubectl context
       run: |
-        # Note: This assumes you have a kubeconfig in a secret or are using k3d locally
-        # For pull-based CD, this would connect to your cluster
-        echo "Deployment would target: ${{ github.event.inputs.environment }} environment"
-        echo "Image tag: ${{ github.event.inputs.image_tag }}"
+        # Decode kubeconfig from GitHub Secret
+        echo "${{ secrets.KUBECONFIG_B64 }}" | base64 -d > ~/.kube/config
+        chmod 600 ~/.kube/config
 
-    - name: Update deployment image
+        # Verify connection
+        kubectl cluster-info
+        kubectl get nodes
+
+    - name: Deploy with kustomize
       run: |
-        # This would update the k8s manifests with the new image tag
-        # Example: kustomize edit set image devops-app=ghcr.io/${{ github.repository }}:${{ github.event.inputs.image_tag }}
-        echo "✓ Deployment would apply k8s/overlays/${{ github.event.inputs.environment }}"
+        ENV=${{ github.event.inputs.environment }}
+        IMAGE_TAG=${{ github.event.inputs.image_tag }}
+
+        echo "Deploying to $ENV environment with image tag: $IMAGE_TAG"
+
+        # Apply base manifests + overlay
+        kubectl apply -k k8s/overlays/$ENV
+
+        # Update image tag
+        kubectl set image deployment/devops-app \
+          -n devops \
+          devops-app=ghcr.io/${{ github.repository }}:$IMAGE_TAG \
+          --record
 
     - name: Verify rollout
       run: |
-        # This would wait for the rollout to complete
-        # Example: kubectl rollout status deploy/devops-app -n devops --timeout=5m
-        echo "✓ Rollout verification complete"
+        ENV=${{ github.event.inputs.environment }}
+
+        echo "Waiting for rollout to complete..."
+        kubectl rollout status deployment/devops-app \
+          -n devops \
+          --timeout=5m
+
+        echo "✓ Deployment successful"
+
+        # Show deployment info
+        kubectl get deployment,pods,svc -n devops
