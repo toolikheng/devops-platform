@@ -58,6 +58,14 @@ jobs:
         echo "✓ Runner authenticated via ServiceAccount: github-runner"
         echo "✓ RBAC: Can patch deployments, read pods/events"
 
+        # Install kubectl if not present
+        if ! command -v kubectl &> /dev/null; then
+          echo "Installing kubectl..."
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/
+        fi
+
         # Configure in-cluster kubeconfig
         if [ -f /var/run/secrets/kubernetes.io/serviceaccount/token ]; then
           export KUBECONFIG=/tmp/kubeconfig
@@ -67,8 +75,6 @@ jobs:
           kubectl config use-context default
         fi
 
-        # kubectl and kustomize should already be in PATH
-        which kubectl
         kubectl version --client
         kubectl cluster-info
         kubectl get nodes -o wide
