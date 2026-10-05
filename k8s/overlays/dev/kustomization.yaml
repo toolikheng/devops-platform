@@ -3,7 +3,7 @@ kind: Kustomization
 
 namespace: devops
 
-bases:
+resources:
 - ../../base
 
 replicas:
@@ -15,5 +15,10 @@ images:
   newName: devops-app
   newTag: latest
 
-patchesStrategicMerge:
-- deployment-patch.yaml
+patches:
+- target:
+    group: apps
+    version: v1
+    kind: Deployment
+    name: devops-app
+  path: deployment-patch.yaml

@@ -154,7 +154,7 @@ cluster-down:
 
 deploy:
 	@$(ECHO) "$(BLUE)Deploying app to Kubernetes...$(NC)"
-	@kubectl apply -k $(K8S_DIR)/overlays/dev
+	@kubectl apply -k "$(K8S_DIR)/overlays/dev"
 	@kubectl rollout status deploy/devops-app -n devops || echo "Rollout in progress..."
 
 # Phase 6 - Monitoring

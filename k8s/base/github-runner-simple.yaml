@@ -1,0 +1,88 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: github-runner-config
+  namespace: devops
+data:
+  entrypoint.sh: |
+    #!/bin/bash
+    set -x
+
+    apt-get update -qq && apt-get install -y -qq curl wget sudo jq > /dev/null 2>&1
+    useradd -m -s /bin/bash runner 2>/dev/null || true
+
+    mkdir -p /tmp/runner-workspace/runner
+    chown -R runner:runner /tmp/runner-workspace
+    cd /tmp/runner-workspace/runner
+
+    echo "Downloading runner..."
+    curl -s https://api.github.com/repos/actions/runner/releases/latest | grep browser_download_url | grep linux-x64 | cut -d'"' -f4 | xargs wget -q -O runner.tar.gz
+    tar xzf runner.tar.gz && rm runner.tar.gz
+
+    echo "Installing .NET..."
+    ./bin/installdependencies.sh > /dev/null 2>&1
+    chown -R runner:runner /tmp/runner-workspace/runner
+
+    echo "Getting registration token..."
+    REG_TOKEN=$(curl -s -X POST -H "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com/repos/$GITHUB_OWNER/$GITHUB_REPOSITORY/actions/runners/registration-token | jq -r '.token')
+    echo "Token: $REG_TOKEN"
+
+    echo "Registering..."
+    sudo -u runner ./config.sh --unattended --url "https://github.com/$GITHUB_OWNER/$GITHUB_REPOSITORY" --token "$REG_TOKEN" --name "k3d-$(hostname)" --labels "k3d,kubernetes,self-hosted" --work "/tmp/runner-work"
+
+    echo "Starting runner..."
+    sudo -u runner ./run.sh
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: github-runner
+  namespace: devops
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: github-runner
+  template:
+    metadata:
+      labels:
+        app: github-runner
+    spec:
+      serviceAccountName: github-runner
+      containers:
+      - name: runner
+        image: ubuntu:22.04
+        env:
+        - name: GITHUB_OWNER
+          value: "toolikheng"
+        - name: GITHUB_REPOSITORY
+          value: "devops-platform"
+        - name: GITHUB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: github-runner-secret
+              key: GITHUB_TOKEN
+        command: ["/bin/bash", "/config/entrypoint.sh"]
+        resources:
+          requests:
+            cpu: 500m
+            memory: 512Mi
+          limits:
+            cpu: 1000m
+            memory: 1Gi
+        volumeMounts:
+        - name: runner-config
+          mountPath: /config
+        - name: runner-workspace
+          mountPath: /tmp/runner-workspace
+      volumes:
+      - name: runner-config
+        configMap:
+          name: github-runner-config
+          defaultMode: 0755
+      - name: runner-workspace
+        emptyDir:
+          sizeLimit: 5Gi
+      restartPolicy: Always

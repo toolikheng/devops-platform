@@ -61,7 +61,9 @@ jobs:
     - name: Install kustomize
       run: |
         curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
-        sudo mv kustomize /usr/local/bin/
+        mkdir -p $HOME/.local/bin
+        mv kustomize $HOME/.local/bin/
+        echo "$HOME/.local/bin" >> $GITHUB_PATH
 
     - name: Configure kubectl context
       run: |
