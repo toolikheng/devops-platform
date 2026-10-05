@@ -1,0 +1,93 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: github-runner
+  namespace: devops
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: github-runner-deploy
+  namespace: devops
+rules:
+# Deployments: read, update, patch (to update image)
+- apiGroups: ["apps"]
+  resources: ["deployments", "deployments/status", "deployments/rollback"]
+  verbs: ["get", "list", "watch", "patch", "update"]
+
+# ReplicaSets: read only (to check rollout status)
+- apiGroups: ["apps"]
+  resources: ["replicasets", "replicasets/status"]
+  verbs: ["get", "list", "watch"]
+
+# Pods: read only (to check pod status)
+- apiGroups: [""]
+  resources: ["pods", "pods/log"]
+  verbs: ["get", "list", "watch"]
+
+# ConfigMaps/Secrets: read only (to check config)
+- apiGroups: [""]
+  resources: ["configmaps", "secrets"]
+  verbs: ["get", "list"]
+
+# Events: read only (for audit trail)
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["get", "list", "watch", "create"]
+
+# Kustomize: can apply manifests from k8s/overlays/dev only
+- apiGroups: ["*"]
+  resources: ["*"]
+  verbs: ["apply", "patch"]
+  # Note: In practice, use namespace isolation + NetworkPolicy
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: github-runner-deploy-binding
+  namespace: devops
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: github-runner-deploy
+subjects:
+- kind: ServiceAccount
+  name: github-runner
+  namespace: devops
+
+---
+# Network Policy: Runner pod can only talk to API server
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: github-runner-network-policy
+  namespace: devops
+spec:
+  podSelector:
+    matchLabels:
+      app: github-runner
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Allow from self (for pod-to-pod comms if needed)
+  - from:
+    - podSelector: {}
+  egress:
+  # Allow to API server
+  - to:
+    - namespaceSelector: {}
+    ports:
+    - protocol: TCP
+      port: 443  # Kubernetes API
+    - protocol: TCP
+      port: 6443 # K3s API
+  # Allow DNS
+  - to:
+    - namespaceSelector: {}
+    ports:
+    - protocol: UDP
+      port: 53

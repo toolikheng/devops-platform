@@ -1,0 +1,115 @@
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: github-runner-secret
+  namespace: devops
+type: Opaque
+stringData:
+  # GitHub Personal Access Token (PAT) with repo scope
+  # Create at: https://github.com/settings/tokens
+  # Required scopes: repo, workflow
+  GITHUB_TOKEN: "${GITHUB_TOKEN}"  # ← Replace with your PAT
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: github-runner
+  namespace: devops
+  labels:
+    app: github-runner
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: github-runner
+  template:
+    metadata:
+      labels:
+        app: github-runner
+    spec:
+      serviceAccountName: github-runner
+      securityContext:
+        runAsNonRoot: false  # Runner needs sudo for docker
+        fsGroup: 1000
+
+      containers:
+      - name: runner
+        image: ghcr.io/actions/actions-runner:latest
+        imagePullPolicy: IfNotPresent
+
+        env:
+        # GitHub repo and runner name
+        - name: GITHUB_OWNER
+          value: "toolikheng"
+        - name: GITHUB_REPOSITORY
+          value: "kubernetes-devops"
+        - name: RUNNER_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: RUNNER_WORKDIR
+          value: "/tmp/runner-workspace"
+
+        # GitHub token
+        - name: GITHUB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: github-runner-secret
+              key: GITHUB_TOKEN
+
+        # Runner config
+        - name: RUNNER_LABELS
+          value: "k3d,self-hosted,kubernetes"
+        - name: RUNNER_ALLOW_RUNASROOT
+          value: "false"
+
+        resources:
+          requests:
+            cpu: 500m
+            memory: 512Mi
+          limits:
+            cpu: 1000m
+            memory: 1Gi
+
+        # Wait for runner to exit gracefully
+        lifecycle:
+          preStop:
+            exec:
+              command: ["/bin/bash", "-c", "sleep 5"]
+
+        volumeMounts:
+        - name: runner-workspace
+          mountPath: /tmp/runner-workspace
+        - name: docker-socket
+          mountPath: /var/run/docker.sock
+
+      # For docker-in-docker (runner can build images)
+      volumes:
+      - name: runner-workspace
+        emptyDir:
+          sizeLimit: 5Gi
+      - name: docker-socket
+        hostPath:
+          path: /var/run/docker.sock
+          type: Socket
+
+      # Restart on failure
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 30
+
+---
+# ServiceMonitor for Prometheus (optional monitoring)
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: github-runner
+  namespace: devops
+spec:
+  selector:
+    matchLabels:
+      app: github-runner
+  endpoints:
+  - port: http
+    interval: 30s
