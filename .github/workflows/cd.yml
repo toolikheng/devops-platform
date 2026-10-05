@@ -61,9 +61,12 @@ jobs:
         # Install kubectl if not present
         if ! command -v kubectl &> /dev/null; then
           echo "Installing kubectl..."
+          mkdir -p $HOME/.local/bin
           curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
           chmod +x kubectl
-          sudo mv kubectl /usr/local/bin/
+          mv kubectl $HOME/.local/bin/
+          export PATH=$HOME/.local/bin:$PATH
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
         fi
 
         # Configure in-cluster kubeconfig
