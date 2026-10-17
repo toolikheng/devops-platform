@@ -73,7 +73,7 @@ spec:
             memory: 512Mi
         volumeMounts:
         - name: data
-          mountPath: /app
+          mountPath: /data
         securityContext:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: true
