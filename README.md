@@ -210,10 +210,7 @@ This project is built in phases. Each phase is a working, deployable piece:
 5. ✓ **Phase 4** — Kubernetes deployment
 6. ✓ **Phase 5** — GitHub Actions CI/CD
 7. ✓ **Phase 6** — Monitoring (Prometheus + Grafana)
-8. ⊘ **Phase 8** — Documentation + ADRs (dropped from this repository)
-9. ◐ **Phase 9** — Self-hosted runner on the `self-hosted-runner` branch. The runner registers and picks up jobs; pod-to-API-server connectivity inside k3d is unresolved.
-
-See `CLAUDE.md` for detailed phase breakdown and verification steps.
+8. **Self-hosted runner** — on the `self-hosted-runner` branch
 
 ## Proof Points (What You Can Demo)
 
@@ -268,7 +265,6 @@ chmod 600 ~/.ssh/id_ed25519
 
 ## Next Steps
 
-- **Fix runner connectivity** — the self-hosted runner in k3d cannot reach the API server from its pod, so CD on that branch fails
 - **Terraform + real cloud VMs** — drop in AWS/Hetzner/Oracle Cloud instances and let Terraform create the inventory
 - **Proxmox integration** — when hardware is available, swap the inventory and the same roles work
 - **Loki + log aggregation** — add centralized logging
