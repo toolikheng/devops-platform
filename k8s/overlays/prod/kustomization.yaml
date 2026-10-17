@@ -3,7 +3,7 @@ kind: Kustomization
 
 namespace: devops
 
-bases:
+resources:
 - ../../base
 
 replicas:
@@ -15,6 +15,16 @@ images:
   newName: ghcr.io/toolikheng/devops-app
   newTag: latest
 
-patchesStrategicMerge:
-- deployment-patch.yaml
-- ingress-patch.yaml
+patches:
+- target:
+    group: apps
+    version: v1
+    kind: Deployment
+    name: devops-app
+  path: deployment-patch.yaml
+- target:
+    group: networking.k8s.io
+    version: v1
+    kind: Ingress
+    name: devops-app
+  path: ingress-patch.yaml
