@@ -94,3 +94,6 @@ CLAUDE.md
 *.tar.gz
 *.zip
 dist/
+
+# Local SQLite databases
+*.db
