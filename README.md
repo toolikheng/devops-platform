@@ -1,7 +1,7 @@
 # Self-Hosted Homelab DevOps Platform
 
-[![CI](https://img.shields.io/badge/CI-GitHub%20Actions-blue)](https://github.com/YOUR_GITHUB_USERNAME/devops-platform/actions)
-![Status](https://img.shields.io/badge/Status-Building-yellow)
+[![CI](https://img.shields.io/badge/CI-GitHub%20Actions-blue)](https://github.com/toolikheng/devops-platform/actions)
+![Status](https://img.shields.io/badge/Status-Phases%200--7%20%2B%209%20complete-green)
 
 A hands-on portfolio project demonstrating end-to-end DevOps skills: infrastructure provisioning, application deployment, Kubernetes orchestration, monitoring, and automated backups — all running in a self-hosted homelab on WSL2.
 
@@ -70,7 +70,8 @@ All commands are in the `Makefile` — run `make help` for the complete list.
 - Lint, test, build, scan pipeline on every push
 - Multi-stage build stages (lint → test → hadolint → build → trivy → push)
 - Images tagged by commit SHA and pushed to GitHub Container Registry (GHCR)
-- Manual deploy job (cluster not reachable from GitHub runners)
+- Manual deploy (`cd.yml`, `workflow_dispatch`): creates an ephemeral k3d cluster on a GitHub-hosted runner, deploys the dev overlay, and smoke-tests `/healthz` and `/readyz`
+- Self-hosted runner variant (for deploying to the local cluster) lives on the `self-hosted-runner` branch
 
 ## Architecture
 
@@ -114,8 +115,6 @@ All commands are in the `Makefile` — run `make help` for the complete list.
    • App metrics       • cluster health
    • node_exporter     • app golden signals
 ```
-
-**Full architecture diagram:** see `docs/diagrams/`.
 
 ## Important: Local vs Production
 
@@ -198,22 +197,21 @@ See `CLAUDE.md` for detailed environment info and architectural decisions.
 - **`monitoring/`** — Prometheus and Grafana configuration (Helm values, dashboards, alert rules)
 - **`backup/`** — restic backup scripts and restore test
 - **`ci/`** — Shared CI logic (called by both Makefile and GitHub Actions)
-- **`.github/workflows/`** — GitHub Actions pipeline
-- **`docs/`** — Architecture, decisions (ADRs), diagrams, runbooks
+- **`.github/workflows/`** — GitHub Actions pipeline (CI on every push, manual CD)
 
 ## Phases
 
 This project is built in phases. Each phase is a working, deployable piece:
 
 1. ✓ **Phase 0** — Bootstrap (toolchain, repo init, SSH keys)
-2. ⏳ **Phase 1** — Ansible + Docker nodes
-3. ⏳ **Phase 2** — FastAPI app + tests
-4. ⏳ **Phase 3** — Containerization + scanning
-5. ⏳ **Phase 4** — Kubernetes deployment
-6. ⏳ **Phase 5** — GitHub Actions CI/CD
-7. ⏳ **Phase 6** — Monitoring (Prometheus + Grafana)
-8. ⏳ **Phase 7** — Backup + restore testing
-9. ⏳ **Phase 8** — Documentation + polish
+2. ✓ **Phase 1** — Ansible + Docker nodes
+3. ✓ **Phase 2** — FastAPI app + tests
+4. ✓ **Phase 3** — Containerization + scanning
+5. ✓ **Phase 4** — Kubernetes deployment
+6. ✓ **Phase 5** — GitHub Actions CI/CD
+7. ✓ **Phase 6** — Monitoring (Prometheus + Grafana)
+8. ⊘ **Phase 8** — Documentation + ADRs (dropped from this repository)
+9. ◐ **Phase 9** — Self-hosted runner on the `self-hosted-runner` branch. The runner registers and picks up jobs; pod-to-API-server connectivity inside k3d is unresolved.
 
 See `CLAUDE.md` for detailed phase breakdown and verification steps.
 
@@ -260,8 +258,6 @@ chmod 600 ~/.ssh/id_ed25519
 # Check Prometheus targets at http://localhost:9090/targets
 ```
 
-See `docs/runbook.md` for more troubleshooting.
-
 ## What I Learned Building This
 
 - Ansible is powerful for declarative infrastructure; roles + handlers enforce idempotency
@@ -270,11 +266,11 @@ See `docs/runbook.md` for more troubleshooting.
 - A restore test you've actually run beats any backup policy document
 - Separating CI logic (`ci/` scripts) from pipeline config (`.github/workflows/`) makes local and cloud testing identical
 
-## Next Steps (Phase 9+)
+## Next Steps
 
+- **Fix runner connectivity** — the self-hosted runner in k3d cannot reach the API server from its pod, so CD on that branch fails
 - **Terraform + real cloud VMs** — drop in AWS/Hetzner/Oracle Cloud instances and let Terraform create the inventory
 - **Proxmox integration** — when hardware is available, swap the inventory and the same roles work
-- **Self-hosted runner** — close the deploy loop so GitHub Actions can push to the local cluster
 - **Loki + log aggregation** — add centralized logging
 - **cert-manager + TLS** — real certificates instead of self-signed
 
@@ -288,4 +284,4 @@ Built as a portfolio project to demonstrate DevOps skills.
 
 ---
 
-**Have questions?** See the `docs/` folder for architecture diagrams, decision records, and detailed runbooks.
+**Have questions?** Open an issue on this repository.
