@@ -1,0 +1,50 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  generateName: devops-restore-
+  namespace: devops
+  labels:
+    app: devops-app
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: devops-restore
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: restore
+        image: restic/restic:latest
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          set -eu
+          rm -rf /tmp/restore
+          restic restore latest --target /tmp/restore --include /app/app.db
+          test -s /tmp/restore/app/app.db
+          rm -f /data/app.db
+          cp /tmp/restore/app/app.db /data/app.db
+          echo "Restored /data/app.db from latest snapshot"
+        env:
+        - name: RESTIC_REPOSITORY
+          value: "/mnt/backups/restic-repo"
+        - name: RESTIC_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: backup-credentials
+              key: password
+        volumeMounts:
+        - name: app-data
+          mountPath: /data
+        - name: backup-repo
+          mountPath: /mnt/backups
+      volumes:
+      - name: app-data
+        persistentVolumeClaim:
+          claimName: devops-app-data
+      - name: backup-repo
+        persistentVolumeClaim:
+          claimName: devops-backup-repo

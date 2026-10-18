@@ -76,8 +76,9 @@ config/secrets
 *-secret.yaml
 *-secrets.yaml
 
-# Backups
-backup/
+# Local restic repositories (never commit backup data)
+backup/local/
+*.restic/
 restic-cache/
 *.bak
 

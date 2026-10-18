@@ -152,21 +152,31 @@ cluster-down:
 	@k3d cluster delete devops || true
 	@$(ECHO) "$(GREEN)✓ Cluster removed$(NC)"
 
-deploy:
+secrets-init:
+	@kubectl create namespace devops --dry-run=client -o yaml | kubectl apply -f -
+	@kubectl -n devops get secret backup-credentials >/dev/null 2>&1 || \
+		kubectl -n devops create secret generic backup-credentials --from-literal=password="$$(openssl rand -base64 24)"
+
+deploy: secrets-init
 	@$(ECHO) "$(BLUE)Deploying app to Kubernetes...$(NC)"
 	@kubectl apply -k "$(K8S_DIR)/overlays/dev"
+	@kubectl apply -f "$(BACKUP_DIR)/cronjob.yaml"
 	@kubectl rollout status deploy/devops-app -n devops || echo "Rollout in progress..."
 
 # Phase 6 - Monitoring
 monitoring-up:
 	@$(ECHO) "$(BLUE)Deploying monitoring stack...$(NC)"
 	@kubectl create namespace monitoring 2>/dev/null || true
+	@kubectl -n monitoring get secret grafana-admin >/dev/null 2>&1 || \
+		kubectl -n monitoring create secret generic grafana-admin \
+		--from-literal=admin-user=admin --from-literal=admin-password="$$(openssl rand -base64 18)"
 	@helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
 	@helm repo update
 	@helm upgrade --install kube-prometheus-stack \
 		prometheus-community/kube-prometheus-stack \
 		-n monitoring \
-		-f $(MONITORING_DIR)/helm-values.yaml
+		-f "$(MONITORING_DIR)/helm-values.yaml"
+	@kubectl apply -f "$(MONITORING_DIR)/servicemonitor.yaml" -f "$(MONITORING_DIR)/rules/alert-rules.yaml"
 	@$(ECHO) "$(GREEN)✓ Monitoring stack deployed$(NC)"
 
 monitoring-down:
@@ -176,12 +186,15 @@ monitoring-down:
 
 # Phase 7 - Backup
 backup:
-	@$(ECHO) "$(BLUE)Running backup...$(NC)"
-	@bash $(BACKUP_DIR)/scripts/backup.sh
+	@$(ECHO) "$(BLUE)Running backup job...$(NC)"
+	@name=manual-backup-$$(date +%s); \
+		kubectl -n devops create job $$name --from=cronjob/devops-app-backup && \
+		kubectl -n devops wait --for=condition=complete job/$$name --timeout=300s && \
+		kubectl -n devops logs job/$$name
 
 restore-test:
 	@$(ECHO) "$(BLUE)Testing restore procedure...$(NC)"
-	@bash $(BACKUP_DIR)/scripts/restore-test.sh
+	@bash "$(BACKUP_DIR)/scripts/restore-test.sh"
 
 # Utilities
 all: check infra-up provision test build cluster-up deploy monitoring-up

@@ -9,7 +9,7 @@ spec:
     interval: 30s
     rules:
     - alert: AppDown
-      expr: up{job="kubernetes-pods", namespace="devops"} == 0
+      expr: up{job="devops-app", namespace="devops"} == 0
       for: 1m
       annotations:
         summary: "DevOps app is down"
