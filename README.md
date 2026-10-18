@@ -1,7 +1,7 @@
 # Self-Hosted Homelab DevOps Platform
 
 [![CI](https://img.shields.io/badge/CI-GitHub%20Actions-blue)](https://github.com/toolikheng/devops-platform/actions)
-![Status](https://img.shields.io/badge/Status-Phases%200--7%20%2B%209%20complete-green)
+![Status](https://img.shields.io/badge/Status-Phases%200--7%20complete-green)
 
 A hands-on portfolio project demonstrating end-to-end DevOps skills: infrastructure provisioning, application deployment, Kubernetes orchestration, monitoring, and automated backups — all running in a self-hosted homelab on WSL2.
 
@@ -49,22 +49,21 @@ All commands are in the `Makefile` — run `make help` for the complete list.
 - Multi-stage Docker image with non-root user and security scanning
 
 ### ☸️ Kubernetes (k3d)
-- Single-node k3s cluster inside Docker
+- k3s cluster (1 server, 2 agents) running in Docker
 - Deployment manifests with resource limits, probes, security context
 - kustomize overlays for dev/prod configuration
 - Self-healing pods and zero-downtime rolling updates
 
 ### 📊 Monitoring (Prometheus + Grafana)
 - `kube-prometheus-stack` Helm chart (Prometheus, Grafana, Alertmanager)
-- Custom dashboards for cluster health and application metrics
-- Alert rules for downtime, high error rates, node failures
-- Scrapes both the Kubernetes cluster and Ansible-provisioned nodes
+- ServiceMonitor for the app and alert rules for downtime, high error rates, and latency
+- App dashboard JSON in `monitoring/dashboards/` (import it into Grafana; not loaded automatically yet)
+- Docker-node scraping requires `make provision` first
 
 ### 💾 Backup & Recovery (restic)
-- Automated daily backups via Kubernetes CronJob
-- Retention policy and pruning
-- **Restore test included** — proves backups are recoverable (not theoretical)
-- Backs up app data, Kubernetes manifests, Grafana dashboards
+- Daily backup of the app's SQLite database via Kubernetes CronJob
+- Restic repository on a persistent volume, with retention policy and pruning
+- **Restore test included** (`make restore-test`) — writes data, backs up, wipes it, restores, and verifies the result
 
 ### 🔄 CI/CD (GitHub Actions)
 - Lint, test, build, scan pipeline on every push
@@ -125,7 +124,7 @@ This project uses substitutes for local development that would change in a produ
 | VMs / Compute | Docker systemd containers | Proxmox VE, cloud VMs, or bare metal |
 | Kubernetes | k3d (k3s in Docker) | k3s/k8s cluster on real nodes |
 | Registry | GitHub Container Registry (GHCR) | GHCR or private registry (same interface) |
-| Backup target | Local restic repo on disk | S3, B2, or other object storage |
+| Backup target | Restic repo on a local PVC | S3, B2, or other object storage |
 | Ingress / TLS | Traefik + self-signed via localhost | cert-manager + real domain |
 
 **The payoff:** Ansible playbooks, Kubernetes manifests, and monitoring configs are **identical** between local and production. Only the inventory and Helm values change — no rewriting roles or manifests.
@@ -153,7 +152,7 @@ make build     # Builds, scans for CVEs, shows report
 ### Deploying to k3d
 ```bash
 make cluster-up   # Create cluster
-make deploy       # Deploy app
+make deploy       # Deploy app, backup CronJob, and backup credentials
 ```
 
 ### Monitoring
@@ -165,8 +164,8 @@ make monitoring-up
 
 ### Backup & Recovery
 ```bash
-make backup         # Run one backup job
-make restore-test   # Test the restore procedure (destroys & recovers real data)
+make backup         # Run one backup job now and print its log
+make restore-test   # Write test data, back up, wipe the dev DB, restore, verify (dev cluster only)
 ```
 
 ### Full teardown
@@ -195,7 +194,7 @@ See `CLAUDE.md` for detailed environment info and architectural decisions.
 - **`k8s/`** — Kubernetes manifests (kustomize-based)
 - **`infra/nodes/`** — Docker Compose for the "VMs"
 - **`monitoring/`** — Prometheus and Grafana configuration (Helm values, dashboards, alert rules)
-- **`backup/`** — restic backup scripts and restore test
+- **`backup/`** — Backup CronJob, restore Job, and restore test script
 - **`ci/`** — Shared CI logic (called by both Makefile and GitHub Actions)
 - **`.github/workflows/`** — GitHub Actions pipeline (CI on every push, manual CD)
 
@@ -217,10 +216,9 @@ This project is built in phases. Each phase is a working, deployable piece:
 - **Idempotency:** Run Ansible twice, second run shows `changed=0` ✓
 - **Self-healing:** Kill a pod, watch it restart within seconds ✓
 - **Rolling updates:** Deploy a new app version with zero downtime ✓
-- **Monitoring:** Grafana dashboard shows live metrics from both cluster and nodes ✓
-- **Alerts:** Watch an alert fire, resolve, and clear ✓
-- **Backup:** Full restore from backup with data integrity check ✓
-- **CI/CD:** Commit to main, watch the pipeline run end-to-end ✓
+- **Monitoring:** Prometheus scrapes the app's `up` series for the `devops` namespace ✓
+- **Backup:** `make restore-test` restores the app's data from a restic snapshot and verifies it ✓
+- **CI/CD:** Push to master, watch the pipeline run end-to-end ✓
 
 ## Common Issues & Troubleshooting
 
@@ -251,8 +249,8 @@ chmod 600 ~/.ssh/id_ed25519
 
 **Grafana dashboards empty:**
 ```bash
-# Wait 30 seconds for Prometheus to scrape targets
-# Check Prometheus targets at http://localhost:9090/targets
+# The app dashboard is not loaded automatically: import monitoring/dashboards/app-metrics.json in Grafana
+# Wait 30 seconds for Prometheus to scrape targets, then check http://localhost:9090/targets
 ```
 
 ## What I Learned Building This
@@ -265,6 +263,9 @@ chmod 600 ~/.ssh/id_ed25519
 
 ## Next Steps
 
+- **Off-site backups** — copy the restic repository to object storage; right now it lives on one node's disk
+- **Grafana dashboard provisioning** — load the app dashboard automatically instead of importing it by hand
+- **Self-hosted runner** — fix pod-to-API-server connectivity so the in-cluster deploy job can run
 - **Terraform + real cloud VMs** — drop in AWS/Hetzner/Oracle Cloud instances and let Terraform create the inventory
 - **Proxmox integration** — when hardware is available, swap the inventory and the same roles work
 - **Loki + log aggregation** — add centralized logging
