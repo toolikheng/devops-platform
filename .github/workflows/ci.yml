@@ -60,8 +60,16 @@ jobs:
         dockerfile: app/Dockerfile
         ignore: DL3008
 
+  rules:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: Test Prometheus alert rules
+      run: bash ci/rules-test.sh
+
   build:
-    needs: [lint, test, hadolint]
+    needs: [lint, test, hadolint, rules]
     runs-on: ubuntu-latest
     permissions:
       contents: read

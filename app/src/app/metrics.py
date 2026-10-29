@@ -11,14 +11,14 @@ registry = CollectorRegistry()
 http_requests_total = Counter(
     "http_requests_total",
     "Total HTTP requests",
-    ["method", "endpoint", "status"],
+    ["method", "route", "status"],
     registry=registry,
 )
 
 http_request_duration_seconds = Histogram(
     "http_request_duration_seconds",
     "HTTP request latency",
-    ["method", "endpoint"],
+    ["method", "route"],
     registry=registry,
 )
 

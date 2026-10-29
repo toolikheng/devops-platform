@@ -18,12 +18,12 @@ def sample(name: str, **labels: str) -> float:
     return registry.get_sample_value(name, labels) or 0.0
 
 
-def endpoint_labels() -> set[str]:
+def route_labels() -> set[str]:
     return {
-        s.labels["endpoint"]
+        s.labels["route"]
         for metric in registry.collect()
         for s in metric.samples
-        if "endpoint" in s.labels
+        if "route" in s.labels
     }
 
 
@@ -144,7 +144,7 @@ def test_server_errors_are_counted_as_500(client: TestClient) -> None:
         if statement.lstrip().upper().startswith("INSERT"):
             raise RuntimeError("simulated database failure")
 
-    labels = {"method": "POST", "endpoint": "/items"}
+    labels = {"method": "POST", "route": "/items"}
     before_500 = sample("http_requests_total", **labels, status="500")
     before_201 = sample("http_requests_total", **labels, status="201")
 
@@ -170,7 +170,7 @@ def test_metric_labels_use_route_patterns(client: TestClient) -> None:
         client.get(f"/items/{item_id}")
     client.get("/no-such-page-12345")
 
-    labels = endpoint_labels()
+    labels = route_labels()
     assert "/items/{item_id}" in labels
     assert "unmatched" in labels
     assert not {f"/items/{item_id}" for item_id in ids} & labels

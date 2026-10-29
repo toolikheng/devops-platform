@@ -30,7 +30,7 @@ spec:
         severity: warning
 
     - alert: HighLatency
-      # p95 over the last 5 minutes, across all pods and endpoints.
+      # p95 over the last 5 minutes, across all pods and routes.
       expr: |
         histogram_quantile(0.95,
           sum by (le) (rate(http_request_duration_seconds_bucket{job="devops-app"}[5m]))) > 0.5

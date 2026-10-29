@@ -1,0 +1,74 @@
+# promtool unit tests for alert-rules.yaml. Run with: bash ci/rules-test.sh
+# (the script extracts the rule groups from the PrometheusRule into a plain alert-rules.yaml next to this file).
+rule_files: [alert-rules.yaml]
+evaluation_interval: 1m
+
+tests:
+  # AppDown: target down for 3 minutes -> fires; while up -> silent.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="devops-app",namespace="devops",pod="p"}'
+        values: '1 1 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: AppDown
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: AppDown
+        exp_alerts:
+          - exp_labels: {severity: critical, job: devops-app, namespace: devops, pod: p}
+            exp_annotations:
+              summary: "DevOps app is down"
+              description: "The devops-app pod has been down for 1 minute"
+
+  # HighErrorRate is a ratio: low traffic (5 req/min) with 20% errors -> fires.
+  - interval: 1m
+    input_series:
+      - series: 'http_requests_total{job="devops-app",method="GET",route="/items",status="200"}'
+        values: '0+4x15'
+      - series: 'http_requests_total{job="devops-app",method="GET",route="/items",status="500"}'
+        values: '0+1x15'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: HighErrorRate
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations:
+              summary: "High error rate detected"
+              description: "20% of requests returned 5xx over the last 5 minutes"
+
+  # HighErrorRate is a ratio: high traffic (600 req/min) with 1% errors -> silent.
+  - interval: 1m
+    input_series:
+      - series: 'http_requests_total{job="devops-app",method="GET",route="/items",status="200"}'
+        values: '0+594x15'
+      - series: 'http_requests_total{job="devops-app",method="GET",route="/items",status="500"}'
+        values: '0+6x15'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: HighErrorRate
+        exp_alerts: []
+
+  # HighLatency: p95 ~975ms across two pods -> one alert (not one per pod).
+  - interval: 1m
+    input_series:
+      - series: 'http_request_duration_seconds_bucket{job="devops-app",pod="a",method="GET",route="/items",le="0.5"}'
+        values: '0x15'
+      - series: 'http_request_duration_seconds_bucket{job="devops-app",pod="a",method="GET",route="/items",le="1"}'
+        values: '0+10x15'
+      - series: 'http_request_duration_seconds_bucket{job="devops-app",pod="a",method="GET",route="/items",le="+Inf"}'
+        values: '0+10x15'
+      - series: 'http_request_duration_seconds_bucket{job="devops-app",pod="b",method="GET",route="/items",le="0.5"}'
+        values: '0x15'
+      - series: 'http_request_duration_seconds_bucket{job="devops-app",pod="b",method="GET",route="/items",le="1"}'
+        values: '0+10x15'
+      - series: 'http_request_duration_seconds_bucket{job="devops-app",pod="b",method="GET",route="/items",le="+Inf"}'
+        values: '0+10x15'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: HighLatency
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations:
+              summary: "High request latency"
+              description: "p95 latency is 975ms"

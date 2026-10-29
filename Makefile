@@ -19,6 +19,8 @@ APP_DIR := $(REPO_ROOT)/app
 K8S_DIR := $(REPO_ROOT)/k8s
 INFRA_DIR := $(REPO_ROOT)/infra
 MONITORING_DIR := $(REPO_ROOT)/monitoring
+# kube-prometheus-stack chart. Helm doesn't upgrade CRDs, so bump this deliberately.
+KPS_CHART_VERSION := 92.16.0
 BACKUP_DIR := $(REPO_ROOT)/backup
 CI_DIR := $(REPO_ROOT)/ci
 
@@ -174,6 +176,7 @@ monitoring-up:
 	@helm repo update
 	@helm upgrade --install kube-prometheus-stack \
 		prometheus-community/kube-prometheus-stack \
+		--version $(KPS_CHART_VERSION) \
 		-n monitoring \
 		-f "$(MONITORING_DIR)/helm-values.yaml"
 	@kubectl apply -f "$(MONITORING_DIR)/servicemonitor.yaml" -f "$(MONITORING_DIR)/rules/alert-rules.yaml"

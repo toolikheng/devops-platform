@@ -80,9 +80,9 @@ async def record_metrics(
         status = response.status_code
         return response
     finally:
-        endpoint = route_label(request)
-        http_requests_total.labels(method=request.method, endpoint=endpoint, status=status).inc()
-        http_request_duration_seconds.labels(method=request.method, endpoint=endpoint).observe(
+        route = route_label(request)
+        http_requests_total.labels(method=request.method, route=route, status=status).inc()
+        http_request_duration_seconds.labels(method=request.method, route=route).observe(
             perf_counter() - start
         )
 
