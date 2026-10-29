@@ -61,7 +61,8 @@ help:
 	@$(ECHO) "  $(GREEN)make run-app$(NC)       Run the app locally on :8000"
 	@$(ECHO) ""
 	@$(ECHO) "$(BLUE)Phase 3 - Containerize:$(NC)"
-	@$(ECHO) "  $(GREEN)make build$(NC)         Build Docker image"
+	@$(ECHO) "  $(GREEN)make image$(NC)         Build the Docker image only"
+	@$(ECHO) "  $(GREEN)make build$(NC)         Build + hadolint + Trivy gate"
 	@$(ECHO) ""
 	@$(ECHO) "$(BLUE)Phase 4 - Kubernetes:$(NC)"
 	@$(ECHO) "  $(GREEN)make cluster-up$(NC)    Create k3d cluster"
@@ -142,11 +143,15 @@ run-app: venv
 	@cd "$(APP_DIR)" && "$(VENV)/bin/python" -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir src
 
 # Phase 3 - Containerize
-build:
-	@$(ECHO) "$(BLUE)Building Docker image...$(NC)"
-	@docker build -t devops-app:latest -f $(APP_DIR)/Dockerfile $(APP_DIR)
-	@hadolint $(APP_DIR)/Dockerfile
-	@$(ECHO) "$(BLUE)Scanning image...$(NC)"
+# hadolint and trivy run as pinned Docker images (same versions and thresholds as CI); nothing to install.
+HADOLINT_IMAGE := hadolint/hadolint:v2.12.0-debian
+
+image:
+	@bash "$(CI_DIR)/build.sh" devops-app:latest
+
+build: image
+	@$(ECHO) "$(BLUE)Linting Dockerfile (hadolint)...$(NC)"
+	@docker run --rm -i $(HADOLINT_IMAGE) hadolint --ignore DL3008 - < "$(APP_DIR)/Dockerfile"
 	@bash "$(CI_DIR)/scan.sh" devops-app:latest
 
 # Phase 4 - Kubernetes
