@@ -210,6 +210,7 @@ monitoring-up:
 		-n monitoring \
 		-f "$(MONITORING_DIR)/helm-values.yaml"
 	@kubectl apply -f "$(MONITORING_DIR)/servicemonitor.yaml" -f "$(MONITORING_DIR)/rules/alert-rules.yaml"
+	@kubectl apply -k "$(MONITORING_DIR)/dashboards"   # Grafana sidecar picks it up (label grafana_dashboard=1)
 	@$(ECHO) "$(GREEN)✓ Monitoring stack deployed$(NC)"
 
 monitoring-down:

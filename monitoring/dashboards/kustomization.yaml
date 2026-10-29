@@ -1,0 +1,13 @@
+# Wraps the dashboard JSON in a ConfigMap that kube-prometheus-stack's Grafana sidecar loads automatically
+# (it watches all namespaces for grafana_dashboard: "1"). Applied by `make monitoring-up`.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: monitoring
+configMapGenerator:
+- name: devops-app-dashboard
+  files:
+  - app-metrics.json
+  options:
+    disableNameSuffixHash: true
+    labels:
+      grafana_dashboard: "1"

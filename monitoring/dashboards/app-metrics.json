@@ -5,11 +5,14 @@
   "editable": true,
   "gnetId": null,
   "graphTooltip": 0,
-  "id": 1,
+  "id": null,
   "links": [],
   "panels": [
     {
-      "datasource": "Prometheus",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -77,15 +80,23 @@
       "pluginVersion": "8.0.0",
       "targets": [
         {
-          "expr": "rate(http_requests_total[5m])",
-          "refId": "A"
+          "expr": "sum by (route, status) (rate(http_requests_total{job=\"devops-app\"}[5m]))",
+          "legendFormat": "{{route}} {{status}}",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
         }
       ],
       "title": "Request Rate (5m)",
       "type": "timeseries"
     },
     {
-      "datasource": "Prometheus",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -153,21 +164,32 @@
       "pluginVersion": "8.0.0",
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{job=\"devops-app\"}[5m])))",
           "legendFormat": "p95",
-          "refId": "A"
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
         },
         {
-          "expr": "histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m]))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{job=\"devops-app\"}[5m])))",
           "legendFormat": "p99",
-          "refId": "B"
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
         }
       ],
       "title": "Request Latency Percentiles",
       "type": "timeseries"
     },
     {
-      "datasource": "Prometheus",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -235,14 +257,22 @@
       "pluginVersion": "8.0.0",
       "targets": [
         {
-          "expr": "rate(http_requests_total{status=~\"2..\"}[5m]) / rate(http_requests_total[5m])",
+          "expr": "sum(rate(http_requests_total{job=\"devops-app\", status=~\"2..\"}[5m])) / sum(rate(http_requests_total{job=\"devops-app\"}[5m]))",
           "legendFormat": "success",
-          "refId": "A"
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
         },
         {
-          "expr": "rate(http_requests_total{status=~\"5..\"}[5m]) / rate(http_requests_total[5m])",
-          "legendFormat": "errors",
-          "refId": "B"
+          "expr": "(sum(rate(http_requests_total{job=\"devops-app\", status=~\"5..\"}[5m])) or vector(0)) / sum(rate(http_requests_total{job=\"devops-app\"}[5m]))",
+          "legendFormat": "errors (5xx)",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
         }
       ],
       "title": "Success vs Error Rate",
@@ -252,7 +282,10 @@
   "refresh": "30s",
   "schemaVersion": 35,
   "style": "dark",
-  "tags": ["devops", "app"],
+  "tags": [
+    "devops",
+    "app"
+  ],
   "templating": {
     "list": []
   },
