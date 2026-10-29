@@ -155,14 +155,28 @@ build: image
 	@bash "$(CI_DIR)/scan.sh" devops-app:latest
 
 # Phase 4 - Kubernetes
+CLUSTER := devops
+
+# Create the cluster, or start it if it already exists (a no-op when it's running). Errors are not hidden.
 cluster-up:
-	@$(ECHO) "$(BLUE)Creating k3d cluster...$(NC)"
-	@k3d cluster create devops -p "8080:80@loadbalancer" --agents 2 || true
+	@if k3d cluster get $(CLUSTER) >/dev/null 2>&1; then \
+		$(ECHO) "$(BLUE)Starting existing k3d cluster '$(CLUSTER)'...$(NC)"; \
+		k3d cluster start $(CLUSTER) --wait; \
+	else \
+		$(ECHO) "$(BLUE)Creating k3d cluster '$(CLUSTER)'...$(NC)"; \
+		k3d cluster create $(CLUSTER) -p "8080:80@loadbalancer" --agents 2 --wait; \
+	fi
+	@kubectl config use-context k3d-$(CLUSTER) >/dev/null
+	@kubectl wait --for=condition=Ready nodes --all --timeout=120s >/dev/null
 	@$(ECHO) "$(GREEN)✓ Cluster ready$(NC)"
 
 cluster-down:
-	@$(ECHO) "$(BLUE)Destroying k3d cluster...$(NC)"
-	@k3d cluster delete devops || true
+	@if k3d cluster get $(CLUSTER) >/dev/null 2>&1; then \
+		$(ECHO) "$(BLUE)Destroying k3d cluster '$(CLUSTER)'...$(NC)"; \
+		k3d cluster delete $(CLUSTER); \
+	else \
+		echo "No k3d cluster '$(CLUSTER)'"; \
+	fi
 	@$(ECHO) "$(GREEN)✓ Cluster removed$(NC)"
 
 secrets-init:
@@ -170,11 +184,16 @@ secrets-init:
 	@kubectl -n devops get secret backup-credentials >/dev/null 2>&1 || \
 		kubectl -n devops create secret generic backup-credentials --from-literal=password="$$(openssl rand -base64 24)"
 
-deploy: secrets-init
+# Build the image, load it into k3d, apply the dev overlay, and roll out the new image.
+deploy: image secrets-init
+	@$(ECHO) "$(BLUE)Importing devops-app:latest into k3d...$(NC)"
+	@k3d image import devops-app:latest -c $(CLUSTER)
 	@$(ECHO) "$(BLUE)Deploying app to Kubernetes...$(NC)"
 	@kubectl apply -k "$(K8S_DIR)/overlays/dev"
 	@kubectl apply -f "$(BACKUP_DIR)/cronjob.yaml"
-	@kubectl rollout status deploy/devops-app -n devops || echo "Rollout in progress..."
+	@# The dev tag is always :latest, so the spec doesn't change; restart to pick up the imported image.
+	@kubectl -n devops rollout restart deploy/devops-app
+	@kubectl -n devops rollout status deploy/devops-app --timeout=180s
 
 # Phase 6 - Monitoring
 monitoring-up:
