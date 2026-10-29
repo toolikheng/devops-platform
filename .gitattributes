@@ -1,0 +1,12 @@
+# Force LF line endings. This repo is only worked on from WSL2 Ubuntu;
+# CRLF breaks shell shebangs, Makefile recipes, and YAML parsing.
+* text=auto eol=lf
+
+*.sh       text eol=lf
+Makefile   text eol=lf
+*.yml      text eol=lf
+*.yaml     text eol=lf
+*.py       text eol=lf
+*.md       text eol=lf
+*.json     text eol=lf
+*.toml     text eol=lf

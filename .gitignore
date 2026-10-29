@@ -87,9 +87,10 @@ tmp/
 temp/
 .tmp
 
-# Session memory (Claude Code only)
+# Local agent tooling and private Claude Code notes (not part of the project)
 CLAUDE.md
 .agents
+skills-lock.json
 
 # Build artifacts
 *.tar.gz

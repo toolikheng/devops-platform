@@ -185,7 +185,7 @@ make destroy        # Removes cluster, stops nodes
 make install   # Installs: ansible, kubectl, k3d, helm, kubeconform, hadolint, trivy, restic, gh CLI
 ```
 
-See `CLAUDE.md` for detailed environment info and architectural decisions.
+See [`docs/architecture.md`](docs/architecture.md) and [`docs/decisions/`](docs/decisions/) for the architecture and design decisions.
 
 ## Project Structure
 
