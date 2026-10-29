@@ -10,10 +10,12 @@ replicas:
 - name: devops-app
   count: 3
 
+# Pin an immutable tag that CI pushed (ghcr.io/toolikheng/devops-platform:sha-<7-char commit>).
+# To deploy a newer build, change newTag to that commit's sha tag. Avoid master/latest: they move.
 images:
 - name: devops-app
-  newName: ghcr.io/toolikheng/devops-app
-  newTag: latest
+  newName: ghcr.io/toolikheng/devops-platform
+  newTag: sha-cef238f
 
 patches:
 - target:
