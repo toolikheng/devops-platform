@@ -9,7 +9,10 @@ prometheus:
             requests:
               storage: 2Gi
 
+    # Load every ServiceMonitor and PrometheusRule in the cluster, not only ones labelled
+    # release=kube-prometheus-stack (our devops-app ServiceMonitor and alert rules have no such label).
     serviceMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
     additionalScrapeConfigs:
       - job_name: 'docker-nodes'
         static_configs:
@@ -34,15 +37,8 @@ grafana:
   persistence:
     enabled: true
     size: 1Gi
-
-  datasources:
-    datasources.yaml:
-      apiVersion: 1
-      datasources:
-        - name: Prometheus
-          type: prometheus
-          url: http://kube-prometheus-stack-prometheus:9090
-          isDefault: true
+  # No `datasources:` block here: the chart already provisions a default Prometheus datasource.
+  # Defining a second default makes Grafana fail provisioning and crash-loop.
 
 alertmanager:
   alertmanagerSpec:
