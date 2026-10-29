@@ -9,11 +9,14 @@ spec:
     interval: 30s
     rules:
     - alert: AppDown
-      expr: up{job="devops-app", namespace="devops"} == 0
+      # A failing scrape gives up == 0. With 0 pods there is no target and no up series at all, so absent() covers that.
+      expr: |
+        up{job="devops-app", namespace="devops"} == 0
+          or absent(up{job="devops-app", namespace="devops"})
       for: 1m
       annotations:
         summary: "DevOps app is down"
-        description: "The devops-app pod has been down for 1 minute"
+        description: "devops-app has had no healthy scrape target for 1 minute (scrape failing or no pods)"
       labels:
         severity: critical
 

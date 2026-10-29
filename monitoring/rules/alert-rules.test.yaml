@@ -4,7 +4,7 @@ rule_files: [alert-rules.yaml]
 evaluation_interval: 1m
 
 tests:
-  # AppDown: target down for 3 minutes -> fires; while up -> silent.
+  # AppDown: scrape failing (up == 0) for 3 minutes -> fires; while up -> silent.
   - interval: 1m
     input_series:
       - series: 'up{job="devops-app",namespace="devops",pod="p"}'
@@ -19,7 +19,24 @@ tests:
           - exp_labels: {severity: critical, job: devops-app, namespace: devops, pod: p}
             exp_annotations:
               summary: "DevOps app is down"
-              description: "The devops-app pod has been down for 1 minute"
+              description: "devops-app has had no healthy scrape target for 1 minute (scrape failing or no pods)"
+
+  # AppDown: scaled to 0 pods. The target disappears, Prometheus marks the series stale, nothing matches up{...}.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="devops-app",namespace="devops",pod="p"}'
+        values: '1 1 stale'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: AppDown
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: AppDown
+        exp_alerts:
+          - exp_labels: {severity: critical, job: devops-app, namespace: devops}
+            exp_annotations:
+              summary: "DevOps app is down"
+              description: "devops-app has had no healthy scrape target for 1 minute (scrape failing or no pods)"
 
   # HighErrorRate is a ratio: low traffic (5 req/min) with 20% errors -> fires.
   - interval: 1m
