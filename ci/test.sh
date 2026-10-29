@@ -5,10 +5,7 @@ echo "=== Running tests ==="
 
 cd "$(dirname "$0")/../app"
 
-# Install test dependencies if needed
-python -m pip install -q -e . 2>/dev/null || true
-python -m pip install -q pytest httpx 2>/dev/null || true
-
+# Dependencies come from the caller: the CI job's install step, or `make venv`.
 echo "Running pytest..."
 python -m pytest tests/ -v --tb=short
 

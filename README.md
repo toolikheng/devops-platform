@@ -7,7 +7,7 @@ A hands-on portfolio project demonstrating end-to-end DevOps skills: infrastruct
 ## Quick Start
 
 ```bash
-# 1. Check toolchain is installed
+# 1. Check the toolchain (make install fixes what it can)
 make check
 
 # 2. Start Docker infrastructure (3 nodes)
@@ -139,7 +139,7 @@ make run-app
 
 ### Testing
 ```bash
-make test      # pytest suite
+make test      # pytest suite (creates app/.venv with dev dependencies on first run)
 make lint      # ruff + mypy
 ```
 
@@ -181,7 +181,8 @@ make destroy        # Removes cluster, stops nodes
 
 **First time?** Run:
 ```bash
-make install   # Installs: ansible, kubectl, k3d, helm, kubeconform, hadolint, trivy, restic, gh CLI
+make install   # apt-installs missing packages (incl. python3-venv) with sudo, creates ~/.ssh/id_ed25519,
+               # and links to installers for Docker Desktop, kubectl, k3d and helm
 ```
 
 See [`docs/architecture.md`](docs/architecture.md) and [`docs/decisions/`](docs/decisions/) for the architecture and design decisions.

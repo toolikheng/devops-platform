@@ -1,6 +1,6 @@
 .PHONY: help check install \
         infra-up infra-down provision \
-        test lint build \
+        venv test lint run-app image build \
         cluster-up cluster-down deploy \
         monitoring-up monitoring-down \
         backup restore-test \
@@ -23,6 +23,9 @@ MONITORING_DIR := $(REPO_ROOT)/monitoring
 KPS_CHART_VERSION := 92.16.0
 BACKUP_DIR := $(REPO_ROOT)/backup
 CI_DIR := $(REPO_ROOT)/ci
+# App virtualenv with the dev dependencies (created by `make venv`; gitignored).
+VENV := $(APP_DIR)/.venv
+VENV_STAMP := $(VENV)/.installed
 
 # Color output (if tty)
 ifeq ($(shell [ -t 1 ] && echo 1),1)
@@ -44,7 +47,7 @@ help:
 	@$(ECHO) ""
 	@$(ECHO) "$(BLUE)Phase 0 - Bootstrap:$(NC)"
 	@$(ECHO) "  $(GREEN)make check$(NC)          Check if all tools are installed"
-	@$(ECHO) "  $(GREEN)make install$(NC)        Install missing tools (requires sudo)"
+	@$(ECHO) "  $(GREEN)make install$(NC)        Install missing apt packages (sudo) and SSH key"
 	@$(ECHO) ""
 	@$(ECHO) "$(BLUE)Phase 1 - Infrastructure (Ansible):$(NC)"
 	@$(ECHO) "  $(GREEN)make infra-up$(NC)       Start Docker nodes"
@@ -52,8 +55,10 @@ help:
 	@$(ECHO) "  $(GREEN)make provision$(NC)     Run Ansible playbook on nodes"
 	@$(ECHO) ""
 	@$(ECHO) "$(BLUE)Phase 2 - Application:$(NC)"
+	@$(ECHO) "  $(GREEN)make venv$(NC)          Create app/.venv with dev dependencies (automatic)"
 	@$(ECHO) "  $(GREEN)make test$(NC)          Run pytest suite"
 	@$(ECHO) "  $(GREEN)make lint$(NC)          Run linters (ruff, mypy)"
+	@$(ECHO) "  $(GREEN)make run-app$(NC)       Run the app locally on :8000"
 	@$(ECHO) ""
 	@$(ECHO) "$(BLUE)Phase 3 - Containerize:$(NC)"
 	@$(ECHO) "  $(GREEN)make build$(NC)         Build Docker image"
@@ -82,10 +87,10 @@ help:
 
 # Phase 0 - Bootstrap
 check:
-	@$(REPO_ROOT)/scripts/bootstrap.sh --check
+	@bash "$(REPO_ROOT)/scripts/bootstrap.sh" --check
 
 install:
-	@$(REPO_ROOT)/scripts/bootstrap.sh --install
+	@bash "$(REPO_ROOT)/scripts/bootstrap.sh" --install
 
 # Phase 1 - Infrastructure
 infra-up:
@@ -115,18 +120,26 @@ provision:
 	@cd "$(ANSIBLE_DIR)" && ansible-playbook playbooks/site.yml
 
 # Phase 2 - Application
-test:
-	@$(ECHO) "$(BLUE)Running tests...$(NC)"
-	@cd "$(APP_DIR)" && python -m pytest tests/ -v --tb=short
+venv: $(VENV_STAMP)
 
-lint:
-	@$(ECHO) "$(BLUE)Running linters...$(NC)"
-	@cd "$(APP_DIR)" && python -m ruff check . && echo "✓ ruff"
-	@cd "$(APP_DIR)" && python -m mypy src/app/ --ignore-missing-imports && echo "✓ mypy"
+# Rebuilt only when pyproject.toml changes.
+$(VENV_STAMP): $(APP_DIR)/pyproject.toml
+	@$(ECHO) "$(BLUE)Creating $(VENV) with the app's dev dependencies...$(NC)"
+	@python3 -m venv "$(VENV)"
+	@"$(VENV)/bin/python" -m pip install -q --upgrade pip
+	@"$(VENV)/bin/python" -m pip install -q -e "$(APP_DIR)[dev]"
+	@touch "$@"
 
-run-app:
-	@$(ECHO) "$(BLUE)Running FastAPI app...$(NC)"
-	@cd "$(APP_DIR)" && python -m uvicorn src.app.main:app --host 0.0.0.0 --port 8000 --reload
+# Same scripts as CI, with the venv first on PATH.
+test: venv
+	@PATH="$(VENV)/bin:$$PATH" bash "$(CI_DIR)/test.sh"
+
+lint: venv
+	@PATH="$(VENV)/bin:$$PATH" bash "$(CI_DIR)/lint.sh"
+
+run-app: venv
+	@$(ECHO) "$(BLUE)Running FastAPI app on http://localhost:8000 ...$(NC)"
+	@cd "$(APP_DIR)" && "$(VENV)/bin/python" -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir src
 
 # Phase 3 - Containerize
 build:
