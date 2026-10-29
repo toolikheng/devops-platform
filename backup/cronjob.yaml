@@ -33,7 +33,7 @@ spec:
           restartPolicy: OnFailure
           containers:
           - name: backup
-            image: restic/restic:latest
+            image: restic/restic:0.19.1
             imagePullPolicy: IfNotPresent
             command:
             - /bin/sh
