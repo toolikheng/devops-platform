@@ -25,6 +25,8 @@ spec:
         prometheus.io/path: "/metrics"
     spec:
       serviceAccountName: devops-app
+      # preStop sleep (10s) + time for uvicorn to finish in-flight requests; must exceed the preStop sleep.
+      terminationGracePeriodSeconds: 30
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -48,6 +50,12 @@ spec:
             configMapKeyRef:
               name: devops-app-config
               key: app_name
+        lifecycle:
+          # Endpoint removal and SIGTERM start at the same time; Traefik needs a moment to stop routing here.
+          # Keep serving for 10s before the process is told to exit, so rolling restarts drop no requests.
+          preStop:
+            sleep:
+              seconds: 10
         livenessProbe:
           httpGet:
             path: /healthz

@@ -33,7 +33,7 @@ curl -H "Host: devops-app.localhost" http://localhost:8080/healthz   # {"status"
 curl -H "Host: devops-app.localhost" http://localhost:8080/readyz    # {"status":"ready","dependencies":{"database":"connected"}}
 ```
 
-`make deploy` always restarts the deployment, because the dev image tag is always `latest`. With one replica, a restart drops a small share of requests for a few seconds.
+`make deploy` always restarts the deployment, because the dev image tag is always `latest`. A restart takes about 25 seconds and drops no requests: the new pod must be Ready first, and the old pod keeps serving for 10 seconds (`preStop` sleep) while Traefik stops routing to it.
 
 Run the app outside Kubernetes with `make run-app` (http://localhost:8000, API docs at `/docs`).
 

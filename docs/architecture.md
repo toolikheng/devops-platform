@@ -72,6 +72,8 @@ The local cluster runs an image built on the machine and imported with `k3d imag
 
 **Request path.** Client → Traefik (`Host: devops-app.localhost`, host port 8080) → Service `devops-app:80` → pod `:8000` → SQLite at `/data/app.db` on the PVC.
 
+**Rolling restart.** With `maxSurge: 1` and `maxUnavailable: 0`, the new pod must pass its readiness probe before the old pod is stopped. The old pod then runs a 10-second `preStop` sleep, so it keeps serving while it is removed from the Service and Traefik stops routing to it, and only then receives SIGTERM (`terminationGracePeriodSeconds: 30`). Measured: 0 failed requests out of about 1,500 in each of several restarts, against 24 failures before the `preStop` sleep was added.
+
 **Image path.** Push → CI gates → on master, the image is pushed to GHCR as `master` and `sha-<commit>`. Locally, `make deploy` builds `devops-app:latest`, imports it into k3d, and restarts the deployment. CD builds and imports its own copy into a throwaway cluster.
 
 **Metrics path.** Prometheus scrapes the app's `/metrics` every 30 seconds through the ServiceMonitor, and the nodes' node_exporter through `host.k3d.internal:9100-9102`. Four alert rules are evaluated: AppDown (`up == 0`, or no `up` series at all when there are no pods), HighErrorRate (5xx share of requests above 5% for 2 minutes), HighLatency (p95 above 0.5 s for 3 minutes), NodeExporterDown. Grafana's sidecar loads the app dashboard from a labelled ConfigMap.
@@ -81,8 +83,7 @@ The local cluster runs an image built on the machine and imported with `k3d imag
 ## Known limitations
 
 - **The systemd branch of the node_exporter role is untested.** The Docker nodes have no systemd, so only the SysV init path has run.
-- **`make deploy` always restarts the app**, because the dev image tag is always `latest`.
-- **Rolling restarts drop some requests.** With one replica and no `preStop` delay, about 1.6% of requests failed (502 or timeout) for a few seconds during a measured restart.
+- **`make deploy` always restarts the app**, because the dev image tag is always `latest`. The restart drops no requests.
 - **Backups live on one node's disk.** The restic repository is a 5Gi `local-path` PVC with no off-site copy.
 - **One snapshot per day.** Retention keeps the newest snapshot of each day, so a manual backup replaces that day's scheduled one.
 - **SQLite on one replica.** The app is single-writer; scaling out needs a different database.

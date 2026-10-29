@@ -39,6 +39,7 @@ make destroy        # delete the cluster and the nodes
 | Backups are consistent | `make backup` was run while 656 writes hit the app; the SQLite copy passed `PRAGMA integrity_check` and was saved as a restic snapshot. |
 | Restore test catches a broken restore | `make restore-test` passes only if the app serves exactly the backed-up items afterwards and an item written after the backup is gone. A deliberately broken restore (data never copied back) makes it fail. |
 | Self-healing | Deleting the app pod: a replacement was Ready 14 seconds later. |
+| Rolling restarts drop no requests | Continuous requests through the ingress during a rolling restart: 1,549 and 1,520 requests in two runs, 0 failures. Before the `preStop` delay was added, the same test failed 24 of 1,533 requests (502s and a timeout). |
 
 ## What's included
 
@@ -57,6 +58,7 @@ make destroy        # delete the cluster and the nodes
 ### Kubernetes (k3d)
 - k3s in Docker: 1 server, 2 agents, Traefik ingress, local-path storage.
 - Deployment with liveness/readiness probes, resource limits, read-only root filesystem, dropped capabilities.
+- Rolling restarts with no dropped requests: a new pod must be Ready before the old one stops, and the old pod keeps serving for 10 seconds (`preStop` sleep) while Traefik stops routing to it.
 - kustomize overlays: `dev` (deployed locally) and `prod` (3 replicas, pinned GHCR image tag; a template, not deployed anywhere).
 
 ### Monitoring (kube-prometheus-stack)
@@ -146,8 +148,7 @@ kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:909
 ## Limitations
 
 - **The systemd branch of the node_exporter role is untested.** The Docker nodes have no systemd, so only the SysV path has run. The systemd unit renders correctly but has never been started on a real VM.
-- **`make deploy` always restarts the app.** The dev image tag is always `latest`, so the deployment is restarted on every deploy to pick up the new image, even when nothing changed.
-- **Rolling restarts drop some requests.** With one replica, about 1.6% of requests failed (502 or timeout) for a few seconds during a restart, because the old pod stops before Traefik stops routing to it.
+- **`make deploy` always restarts the app.** The dev image tag is always `latest`, so the deployment is restarted on every deploy to pick up the new image, even when nothing changed. The restart drops no requests, but it does take about 25 seconds.
 - **Backups live on one node's disk.** The restic repository is a local PVC with no off-site copy, so losing that disk loses the backups.
 - **One snapshot per day.** Retention keeps the newest snapshot of each day, so a manual backup (or `make restore-test`) replaces that day's scheduled one.
 - **SQLite means one replica.** The dev overlay runs a single pod; scaling out needs a different database.
@@ -171,11 +172,11 @@ More in [docs/runbook.md](docs/runbook.md).
 - Idempotency has to be designed in: downloading to `/tmp` and deleting the file afterwards meant every run reported changes until the role kept a versioned copy.
 - In Prometheus, the shape of a query matters as much as the metric. A ratio without `sum()` divides each series by itself, and an alert on `up == 0` stays silent when the target disappears entirely.
 - A backup only counts once a restore has been shown to bring the data back, and shown to fail when it doesn't.
+- "Zero-downtime rolling updates" needs measuring, not assuming. Kubernetes sends SIGTERM at the same moment it starts removing the pod from the Service, and the ingress takes a moment to notice; a short `preStop` sleep closes that gap.
 
 ## Next steps
 
 - Off-site backups: copy the restic repository to object storage.
-- A `preStop` delay (or a second replica) so rolling restarts don't drop requests.
 - Terraform plus real cloud VMs or Proxmox, using the same Ansible roles.
 - Loki for logs; cert-manager and TLS.
 - Pull-based CD into a long-lived cluster.
