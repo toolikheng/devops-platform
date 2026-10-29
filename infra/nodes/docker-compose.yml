@@ -1,48 +1,44 @@
+x-node: &node
+  build:
+    context: .
+    dockerfile: Dockerfile.node
+  networks:
+    - homelab
+  labels:
+    devops.role: node
+  restart: unless-stopped
+  volumes:
+    # Your public key, installed as root's authorized_keys at startup (matches ansible.cfg's private_key_file).
+    # Long syntax, so a missing key file is an error instead of silently becoming an empty directory.
+    - type: bind
+      source: ${HOME}/.ssh/id_ed25519.pub
+      target: /etc/ssh/operator_key.pub
+      read_only: true
+
 services:
   node1:
-    build:
-      context: .
-      dockerfile: Dockerfile.node
+    <<: *node
     container_name: devops-node1
     hostname: node1
     ports:
       - "2201:22"
       - "9100:9100"
-    networks:
-      - homelab
-    labels:
-      devops.role: node
-    restart: unless-stopped
 
   node2:
-    build:
-      context: .
-      dockerfile: Dockerfile.node
+    <<: *node
     container_name: devops-node2
     hostname: node2
     ports:
       - "2202:22"
       - "9101:9100"
-    networks:
-      - homelab
-    labels:
-      devops.role: node
-    restart: unless-stopped
 
   node3:
-    build:
-      context: .
-      dockerfile: Dockerfile.node
+    <<: *node
     container_name: devops-node3
     hostname: node3
     ports:
       - "2203:22"
       - "9102:9100"
-    networks:
-      - homelab
-    labels:
-      devops.role: node
-    restart: unless-stopped
 
 networks:
   homelab:

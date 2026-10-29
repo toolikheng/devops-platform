@@ -1,5 +1,6 @@
 ---
-- name: restart sshd
+# Reload (SIGHUP), not restart: on the Docker nodes sshd is PID 1, and stopping it would stop the container.
+- name: reload sshd
   service:
     name: ssh
-    state: restarted
+    state: reloaded

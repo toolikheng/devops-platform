@@ -1,28 +1,24 @@
 FROM ubuntu:24.04
 
-RUN apt-get update && apt-get install -y \
+# A Docker stand-in for a VM: sshd as the entry point, no systemd. Ansible does the rest.
+RUN apt-get update && apt-get install -y --no-install-recommends \
     openssh-server \
     openssh-client \
     curl \
-    wget \
-    git \
     sudo \
     python3 \
-    python3-pip \
-    systemd \
     && rm -rf /var/lib/apt/lists/*
 
-RUN mkdir -p /run/sshd && \
-    mkdir -p /root/.ssh && \
+RUN mkdir -p /run/sshd /root/.ssh && \
     chmod 700 /root/.ssh
-
-COPY authorized_keys /root/.ssh/authorized_keys
-RUN chmod 600 /root/.ssh/authorized_keys
 
 RUN sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin without-password/' /etc/ssh/sshd_config && \
     sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config && \
     sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
 
+# No key is baked in: docker-compose mounts the operator's public key and node-init installs it.
+COPY --chmod=755 node-init.sh /usr/local/sbin/node-init
+
 EXPOSE 22
 
-CMD ["/usr/sbin/sshd", "-D"]
+CMD ["/usr/local/sbin/node-init"]

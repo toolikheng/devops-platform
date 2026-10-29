@@ -14,11 +14,14 @@
       - net-tools
       - jq
       - tmux
+      # Needed by the timezone task on minimal images (zone files, and hwclock when there's no systemd).
+      - tzdata
+      - util-linux-extra
     state: present
 
 - name: Set timezone to UTC
   timezone:
-    name: UTC
+    name: Etc/UTC  # canonical name; Debian's tzdata rewrites plain "UTC" to this, which the module sees as drift
 
 - name: Configure SSH hardening
   lineinfile:
@@ -33,7 +36,7 @@
       line: "PubkeyAuthentication yes"
     - regexp: "^PasswordAuthentication"
       line: "PasswordAuthentication no"
-  notify: restart sshd
+  notify: reload sshd
 
 - name: Create motd
   copy:

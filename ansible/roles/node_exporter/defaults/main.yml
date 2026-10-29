@@ -1,0 +1,13 @@
+---
+node_exporter_version: "1.7.0"
+node_exporter_user: node_exporter
+node_exporter_arch: "{{ {'x86_64': 'amd64', 'aarch64': 'arm64'}[ansible_architecture] }}"
+
+node_exporter_release: "node_exporter-{{ node_exporter_version }}.linux-{{ node_exporter_arch }}"
+node_exporter_base_url: "https://github.com/prometheus/node_exporter/releases/download/v{{ node_exporter_version }}"
+node_exporter_install_dir: /opt/node_exporter
+
+# Raw regexes; each service template escapes them for its own syntax.
+node_exporter_args:
+  - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($|/)"
+  - "--collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|iso9660|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tracefs)$"

@@ -14,3 +14,5 @@ all:
       vars:
         ansible_connection: ssh
         ansible_user: root
+        # Throwaway containers get new host keys on every rebuild: don't record them in ~/.ssh/known_hosts.
+        ansible_ssh_common_args: "-o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no"

@@ -1,79 +1,42 @@
 ---
-- name: Set node_exporter version
-  set_fact:
-    node_exporter_version: "1.7.0"
-    node_exporter_user: "node_exporter"
-
 - name: Create node_exporter user
   user:
     name: "{{ node_exporter_user }}"
     shell: /usr/sbin/nologin
     system: yes
-    state: present
+    create_home: no
 
-- name: Create node_exporter directories
+- name: Create install directory
   file:
-    path: "{{ item }}"
+    path: "{{ node_exporter_install_dir }}"
     state: directory
-    owner: "{{ node_exporter_user }}"
-    group: "{{ node_exporter_user }}"
-    mode: '0755'
-  with_items:
-    - /opt/node_exporter
-    - /var/lib/node_exporter
+    mode: "0755"
 
+# Kept on disk (not in /tmp) so re-runs don't re-download; the checksum is verified against the release's sha256sums.
 - name: Download node_exporter
   get_url:
-    url: "https://github.com/prometheus/node_exporter/releases/download/v{{ node_exporter_version }}/node_exporter-{{ node_exporter_version }}.linux-amd64.tar.gz"
-    dest: /tmp/node_exporter.tar.gz
-    checksum: "sha256:https://github.com/prometheus/node_exporter/releases/download/v{{ node_exporter_version }}/sha256sums.txt"
+    url: "{{ node_exporter_base_url }}/{{ node_exporter_release }}.tar.gz"
+    dest: "{{ node_exporter_install_dir }}/{{ node_exporter_release }}.tar.gz"
+    checksum: "sha256:{{ node_exporter_base_url }}/sha256sums.txt"
+    mode: "0644"
     timeout: 30
 
-- name: Extract node_exporter
+- name: Unpack node_exporter
   unarchive:
-    src: /tmp/node_exporter.tar.gz
-    dest: /tmp
+    src: "{{ node_exporter_install_dir }}/{{ node_exporter_release }}.tar.gz"
+    dest: "{{ node_exporter_install_dir }}"
     remote_src: yes
+    creates: "{{ node_exporter_install_dir }}/{{ node_exporter_release }}/node_exporter"
 
-- name: Install node_exporter binary
-  copy:
-    src: "/tmp/node_exporter-{{ node_exporter_version }}.linux-amd64/node_exporter"
-    dest: /opt/node_exporter/node_exporter
-    owner: "{{ node_exporter_user }}"
-    group: "{{ node_exporter_user }}"
-    mode: '0755'
-    remote_src: yes
-
-- name: Create systemd service file
-  copy:
-    dest: /etc/systemd/system/node_exporter.service
-    content: |
-      [Unit]
-      Description=Prometheus Node Exporter
-      Documentation=https://github.com/prometheus/node_exporter
-      After=network-online.target
-      Wants=network-online.target
-
-      [Service]
-      Type=simple
-      User={{ node_exporter_user }}
-      Group={{ node_exporter_user }}
-      ExecStart=/opt/node_exporter/node_exporter \
-        --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/) \
-        --collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|iso9660|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tracefs)$$
-      Restart=always
-      RestartSec=5
-      StandardOutput=journal
-      StandardError=journal
-
-      [Install]
-      WantedBy=multi-user.target
-  notify: reload systemd and start node_exporter
-
-- name: Clean up downloaded files
+# Versioned directory + symlink: bumping node_exporter_version swaps the link and restarts the service.
+- name: Link node_exporter binary
   file:
-    path: "{{ item }}"
-    state: absent
-  with_items:
-    - /tmp/node_exporter.tar.gz
-    - "/tmp/node_exporter-{{ node_exporter_version }}.linux-amd64"
+    src: "{{ node_exporter_install_dir }}/{{ node_exporter_release }}/node_exporter"
+    dest: /usr/local/bin/node_exporter
+    state: link
+  notify: restart node_exporter
+
+# Real VMs use systemd; the Docker nodes have no systemd (sshd is PID 1), so they get a SysV init script.
+- name: Run node_exporter under the host's service manager
+  include_tasks:
+    file: "service-{{ 'systemd' if ansible_service_mgr == 'systemd' else 'sysvinit' }}.yml"

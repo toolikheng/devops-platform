@@ -90,7 +90,7 @@ install:
 # Phase 1 - Infrastructure
 infra-up:
 	@$(ECHO) "$(BLUE)Starting Docker nodes...$(NC)"
-	@docker-compose -f "$(INFRA_DIR)/nodes/docker-compose.yml" up -d
+	@docker-compose -f "$(INFRA_DIR)/nodes/docker-compose.yml" up -d --build
 	@$(ECHO) "$(BLUE)Waiting for nodes to be SSH-ready...$(NC)"
 	@for node in devops-node1 devops-node2 devops-node3; do \
 		echo "Checking $$node..."; \
@@ -112,14 +112,7 @@ infra-down:
 
 provision:
 	@$(ECHO) "$(BLUE)Running Ansible playbook...$(NC)"
-	@docker run --rm \
-		-v "$(REPO_ROOT):/playbook" \
-		-v "$(HOME)/.ssh:/root/.ssh:ro" \
-		--network nodes_homelab \
-		--entrypoint ansible-playbook \
-		ansible:latest \
-		-i /playbook/ansible/inventory/docker-nodes.yml \
-		/playbook/ansible/playbooks/site.yml -v
+	@cd "$(ANSIBLE_DIR)" && ansible-playbook playbooks/site.yml
 
 # Phase 2 - Application
 test:

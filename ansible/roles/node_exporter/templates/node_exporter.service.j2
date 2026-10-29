@@ -1,0 +1,19 @@
+# Managed by Ansible (role node_exporter)
+[Unit]
+Description=Prometheus Node Exporter
+Documentation=https://github.com/prometheus/node_exporter
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ node_exporter_user }}
+Group={{ node_exporter_user }}
+ExecStart=/usr/local/bin/node_exporter{% for arg in node_exporter_args %} \
+  {{ arg | replace('$', '$$') }}{% endfor %}
+
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

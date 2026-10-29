@@ -1,7 +1,6 @@
 ---
-- name: reload systemd and start node_exporter
-  systemd:
-    daemon_reload: yes
+- name: restart node_exporter
+  service:
     name: node_exporter
     state: restarted
-    enabled: yes
+    use: "{{ 'systemd' if ansible_service_mgr == 'systemd' else 'sysvinit' }}"
