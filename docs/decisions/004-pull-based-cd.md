@@ -1,25 +1,25 @@
-# ADR 004: Manual CD, with a pull-based runner as the target
+# ADR 004: Manual CD to a throwaway cluster
 
 ## Status
 
-Partially implemented. The manual GitHub-hosted workflow is on master. The pull-based self-hosted runner is on the `self-hosted-runner` branch and is not working yet.
+Accepted. Continuous deployment into a long-lived cluster is deferred.
 
 ## Context
 
 Deploying from GitHub Actions to a cluster on a laptop needs a path into that cluster. A GitHub-hosted runner cannot reach `localhost` on the laptop, and opening the cluster to the internet would be unsafe.
 
-Two options:
+The options considered:
 
 1. **Push-based.** A GitHub-hosted job holds a kubeconfig and calls the cluster API. This requires exposing the API or a tunnel.
-2. **Pull-based.** A runner inside the cluster polls GitHub for jobs and applies manifests from inside the network. Nothing is exposed.
+2. **Pull-based.** A runner or GitOps agent inside the cluster pulls changes and applies them from inside the network. Nothing is exposed, but it adds a component to build and secure.
+3. **Throwaway cluster.** The workflow creates its own k3d cluster on the GitHub-hosted runner, deploys there, tests, and discards it.
 
 ## Decision
 
-- **On master:** CD is a manual `workflow_dispatch`. It runs on a GitHub-hosted runner, creates an ephemeral k3d cluster, deploys `k8s/overlays/dev`, and runs a smoke test. It proves the manifests and image work end to end, but it does not deploy to a long-lived cluster.
-- **On `self-hosted-runner`:** a runner Deployment in the `devops` namespace registers with GitHub and picks up jobs. It is the pull-based option, but its pod cannot reach the Kubernetes API server, so the deploy job fails.
+CD is a manual `workflow_dispatch` that uses option 3. It builds the image, creates a k3d cluster on the runner, applies `k8s/overlays/dev`, waits for the rollout, and smoke-tests `/healthz` and `/readyz`. The local cluster is deployed with `make deploy`.
 
 ## Consequences
 
-- Master stays runnable on GitHub-hosted runners, so CI and CD are not blocked by the laptop cluster.
-- The pull-based path is still open. Finishing it means fixing the pod-to-API-server connection (the NetworkPolicy was removed while debugging) and re-running the CD job.
-- Any production approval gate needs GitHub Environments with required reviewers. The earlier echo-only approval job was removed because it did not gate anything.
+- Every CD run proves that the current image and manifests deploy and serve traffic on a clean k3s cluster, without exposing anything.
+- It does not deploy to a long-lived environment. A pull-based agent (option 2) remains the path for that.
+- A production approval gate would need GitHub Environments with required reviewers.

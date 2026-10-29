@@ -2,7 +2,6 @@ name: CD
 
 # Manual deploy. Builds the image, creates an ephemeral k3d cluster on a
 # GitHub-hosted runner, deploys the dev overlay, and smoke-tests /healthz and /readyz.
-# The self-hosted runner variant lives on the `self-hosted-runner` branch.
 on:
   workflow_dispatch:
 
