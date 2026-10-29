@@ -91,14 +91,21 @@ Ansible on Windows Python fails with `os.get_blocking()`. Run `make provision` f
 
 ## Backup and restore
 
-The CronJob `devops-app-backup` runs daily at 02:00 in namespace `devops`.
+The CronJob `devops-app-backup` runs daily at 02:00 in namespace `devops`. Each run has two steps:
+
+1. The `snapshot-db` init container copies the live `/data/app.db` with SQLite's online backup API and checks the copy with `PRAGMA integrity_check`. This is safe while the app is serving writes.
+2. The `backup` container (restic 0.19.1) backs up that copy as `/app/app.db`, runs `restic check`, and applies retention.
 
 ```bash
-make backup         # create a Job from the CronJob, wait for it, print its log
-make restore-test   # write items, back up, wipe /data/app.db, restore, verify the count
+make backup         # create a Job from the CronJob, wait for it, print both containers' logs
+make restore-test   # write items, back up, write a sentinel, wipe /data/app.db, restore, verify exact data
 ```
 
+`make restore-test` passes only if the app serves exactly the items that were in the backup, the sentinel item written after the backup is gone, and the restore used the snapshot the test just created.
+
 The restic repository lives on the `devops-backup-repo` PVC (5Gi). Snapshots survive pod restarts, but they are on one node's disk with no off-site copy.
+
+**Known limitation: one snapshot per day.** Retention is `--keep-daily 7 --keep-weekly 4 --keep-monthly 12`, applied after every backup. It keeps only the newest snapshot of each day, so running `make backup` (or `make restore-test`) during the day replaces that day's earlier snapshot, including the scheduled 02:00 one. You can restore to the last backup of each of the past 7 days, not to an earlier point within a day.
 
 `make restore-test` deletes `/data/app.db` in the `devops` namespace after a successful backup. Run it only against a dev cluster.
 

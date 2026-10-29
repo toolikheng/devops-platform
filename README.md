@@ -60,7 +60,7 @@ All commands are in the `Makefile` — run `make help` for the complete list.
 - Docker-node scraping requires `make provision` first
 
 ### 💾 Backup & Recovery (restic)
-- Daily backup of the app's SQLite database via Kubernetes CronJob
+- Daily backup of the app's SQLite database via Kubernetes CronJob, using SQLite's online backup API (consistent while the app is writing)
 - Restic repository on a persistent volume, with retention policy and pruning
 - **Restore test included** (`make restore-test`) — writes data, backs up, wipes it, restores, and verifies the result
 
