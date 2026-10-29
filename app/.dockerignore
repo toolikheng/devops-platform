@@ -1,0 +1,26 @@
+# Build context is app/. The image only needs pyproject.toml and src/.
+# Patterns match from the context root, so use **/ for anything that can appear in subfolders.
+
+# Python caches and build output
+**/__pycache__
+**/*.py[cod]
+**/*.egg-info
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
+build
+dist
+
+# Local environments, secrets and data
+.venv
+venv
+.env
+.env.*
+*.db
+
+# Not needed inside the image
+tests
+Dockerfile
+.dockerignore

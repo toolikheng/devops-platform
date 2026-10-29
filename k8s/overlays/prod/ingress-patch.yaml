@@ -4,7 +4,7 @@ metadata:
   name: devops-app
 spec:
   rules:
-  - host: api.devops-platform.com
+  - host: app.example.com
     http:
       paths:
       - path: /

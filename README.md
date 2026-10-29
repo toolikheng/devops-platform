@@ -1,7 +1,6 @@
 # Self-Hosted Homelab DevOps Platform
 
-[![CI](https://img.shields.io/badge/CI-GitHub%20Actions-blue)](https://github.com/toolikheng/devops-platform/actions)
-![Status](https://img.shields.io/badge/Status-Phases%200--7%20complete-green)
+[![CI](https://github.com/toolikheng/devops-platform/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/toolikheng/devops-platform/actions/workflows/ci.yml)
 
 A hands-on portfolio project demonstrating end-to-end DevOps skills: infrastructure provisioning, application deployment, Kubernetes orchestration, monitoring, and automated backups — all running in a self-hosted homelab on WSL2.
 
@@ -273,7 +272,7 @@ chmod 600 ~/.ssh/id_ed25519
 
 ## License
 
-MIT (update this if you publish)
+MIT. See [LICENSE](LICENSE).
 
 ## Author
 

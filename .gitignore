@@ -56,9 +56,6 @@ kubeconfig
 *.retry
 .ansible-vault
 
-# Docker
-.dockerignore
-
 # SSH
 .ssh/
 *.pem
@@ -87,7 +84,7 @@ tmp/
 temp/
 .tmp
 
-# Local agent tooling and private Claude Code notes (not part of the project)
+# Local notes
 CLAUDE.md
 .agents
 skills-lock.json
