@@ -1,12 +1,14 @@
 from collections.abc import AsyncGenerator, Awaitable, Callable, Generator
 from contextlib import asynccontextmanager
-from time import time
+from time import perf_counter
+from typing import Annotated
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse, Response
 from pydantic import BaseModel
-from sqlalchemy import Column, Integer, String, create_engine, text
-from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy import create_engine, select, text
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
+from starlette.routing import Route
 
 from app.config import settings
 from app.metrics import get_metrics_content, http_request_duration_seconds, http_requests_total
@@ -22,12 +24,10 @@ class Base(DeclarativeBase):
 
 class ItemDB(Base):
     __tablename__ = "items"
-    id = Column(Integer, primary_key=True, index=True)
-    title = Column(String, index=True)
-    description = Column(String)
-
-
-Base.metadata.create_all(bind=engine)
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    # Nullable to match the schema of databases created by earlier versions.
+    title: Mapped[str | None] = mapped_column(index=True)
+    description: Mapped[str | None]
 
 
 def get_db() -> Generator[Session, None, None]:
@@ -38,15 +38,7 @@ def get_db() -> Generator[Session, None, None]:
         db.close()
 
 
-def check_database_connection() -> bool:
-    db = SessionLocal()
-    try:
-        db.execute(text("SELECT 1"))
-        return True
-    except Exception:
-        return False
-    finally:
-        db.close()
+DB = Annotated[Session, Depends(get_db)]
 
 
 # Pydantic models
@@ -64,125 +56,102 @@ class Item(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    Base.metadata.create_all(bind=engine)
     yield
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
 
 
+def route_label(request: Request) -> str:
+    """The matched route pattern (e.g. /items/{item_id}), so metric labels stay bounded."""
+    route = request.scope.get("route")
+    return route.path if isinstance(route, Route) else "unmatched"
+
+
 @app.middleware("http")
-async def measure_request_duration(request: Request, call_next: Callable[..., Awaitable[Response]]) -> Response:
-    start_time = time()
-    response: Response = await call_next(request)
-    duration = time() - start_time
-
-    method = request.method
-    endpoint = request.url.path
-
-    http_request_duration_seconds.labels(method=method, endpoint=endpoint).observe(duration)
-
-    return response
+async def record_metrics(
+    request: Request, call_next: Callable[[Request], Awaitable[Response]]
+) -> Response:
+    start = perf_counter()
+    status = 500  # if the handler raises, the client gets a 500
+    try:
+        response = await call_next(request)
+        status = response.status_code
+        return response
+    finally:
+        endpoint = route_label(request)
+        http_requests_total.labels(method=request.method, endpoint=endpoint, status=status).inc()
+        http_request_duration_seconds.labels(method=request.method, endpoint=endpoint).observe(
+            perf_counter() - start
+        )
 
 
 @app.get("/")
 async def root() -> dict[str, str]:
-    http_requests_total.labels(method="GET", endpoint="/", status=200).inc()
     return {"message": "DevOps Platform API"}
 
 
 @app.get("/healthz")
 async def healthz() -> dict[str, str]:
-    http_requests_total.labels(method="GET", endpoint="/healthz", status=200).inc()
     return {"status": "ok"}
 
 
+# Endpoints that touch the database are plain `def`: FastAPI runs them in a threadpool,
+# so a slow query doesn't block the event loop.
 @app.get("/readyz")
-async def readyz() -> dict[str, object]:
-    db_connected = check_database_connection()
-    status_code = 200 if db_connected else 503
-    http_requests_total.labels(method="GET", endpoint="/readyz", status=status_code).inc()
-
-    if not db_connected:
-        raise HTTPException(status_code=503, detail="Database not available")
-
+def readyz(db: DB) -> dict[str, object]:
+    try:
+        db.execute(text("SELECT 1"))
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Database not available") from exc
     return {"status": "ready", "dependencies": {"database": "connected"}}
 
 
 @app.get("/metrics", response_class=PlainTextResponse)
 async def metrics() -> str:
-    http_requests_total.labels(method="GET", endpoint="/metrics", status=200).inc()
     content, _ = get_metrics_content()
     return content.decode("utf-8")
 
 
+def get_item_or_404(db: Session, item_id: int) -> ItemDB:
+    db_item = db.get(ItemDB, item_id)
+    if db_item is None:
+        raise HTTPException(status_code=404, detail="Item not found")
+    return db_item
+
+
 @app.post("/items", status_code=201)
-async def create_item(item: ItemCreate) -> Item:
-    http_requests_total.labels(method="POST", endpoint="/items", status=201).inc()
-    db = SessionLocal()
-    try:
-        db_item = ItemDB(title=item.title, description=item.description)
-        db.add(db_item)
-        db.commit()
-        db.refresh(db_item)
-        return Item.model_validate(db_item)
-    finally:
-        db.close()
+def create_item(item: ItemCreate, db: DB) -> Item:
+    db_item = ItemDB(title=item.title, description=item.description)
+    db.add(db_item)
+    db.commit()
+    db.refresh(db_item)
+    return Item.model_validate(db_item)
 
 
 @app.get("/items")
-async def list_items() -> list[Item]:
-    http_requests_total.labels(method="GET", endpoint="/items", status=200).inc()
-    db = SessionLocal()
-    try:
-        items = db.query(ItemDB).all()
-        return [Item.model_validate(item) for item in items]
-    finally:
-        db.close()
+def list_items(db: DB) -> list[Item]:
+    return [Item.model_validate(item) for item in db.scalars(select(ItemDB))]
 
 
 @app.get("/items/{item_id}")
-async def get_item(item_id: int) -> Item:
-    db = SessionLocal()
-    try:
-        db_item = db.query(ItemDB).filter(ItemDB.id == item_id).first()
-        if not db_item:
-            http_requests_total.labels(method="GET", endpoint="/items/{item_id}", status=404).inc()
-            raise HTTPException(status_code=404, detail="Item not found")
-        http_requests_total.labels(method="GET", endpoint="/items/{item_id}", status=200).inc()
-        return Item.model_validate(db_item)
-    finally:
-        db.close()
+def get_item(item_id: int, db: DB) -> Item:
+    return Item.model_validate(get_item_or_404(db, item_id))
 
 
 @app.put("/items/{item_id}")
-async def update_item(item_id: int, item: ItemCreate) -> Item:
-    db = SessionLocal()
-    try:
-        db_item = db.query(ItemDB).filter(ItemDB.id == item_id).first()
-        if not db_item:
-            http_requests_total.labels(method="PUT", endpoint="/items/{item_id}", status=404).inc()
-            raise HTTPException(status_code=404, detail="Item not found")
-        db_item.title = item.title  # type: ignore
-        db_item.description = item.description  # type: ignore
-        db.commit()
-        db.refresh(db_item)
-        http_requests_total.labels(method="PUT", endpoint="/items/{item_id}", status=200).inc()
-        return Item.model_validate(db_item)
-    finally:
-        db.close()
+def update_item(item_id: int, item: ItemCreate, db: DB) -> Item:
+    db_item = get_item_or_404(db, item_id)
+    db_item.title = item.title
+    db_item.description = item.description
+    db.commit()
+    db.refresh(db_item)
+    return Item.model_validate(db_item)
 
 
 @app.delete("/items/{item_id}", status_code=204)
-async def delete_item(item_id: int) -> Response:
-    db = SessionLocal()
-    try:
-        db_item = db.query(ItemDB).filter(ItemDB.id == item_id).first()
-        if not db_item:
-            http_requests_total.labels(method="DELETE", endpoint="/items/{item_id}", status=404).inc()
-            raise HTTPException(status_code=404, detail="Item not found")
-        db.delete(db_item)
-        db.commit()
-        http_requests_total.labels(method="DELETE", endpoint="/items/{item_id}", status=204).inc()
-        return Response(status_code=204)
-    finally:
-        db.close()
+def delete_item(item_id: int, db: DB) -> Response:
+    db.delete(get_item_or_404(db, item_id))
+    db.commit()
+    return Response(status_code=204)
