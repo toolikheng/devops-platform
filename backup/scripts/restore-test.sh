@@ -37,12 +37,12 @@ for i in 1 2 3 4 5; do post_item "restore-test-$TS-$i" "round-trip item $i"; don
 EXPECTED="$(items)"
 echo "items before backup: $(jq length <<< "$EXPECTED")"
 
-echo "== 3. Stop app (so the SQLite file is quiet) and back up"
+echo "== 3. Stop app (so nothing changes between reading the items and the backup) and back up"
 stop_app
 BACKUP_JOB="restore-test-backup-$TS"
 kubectl -n "$NS" create job "$BACKUP_JOB" --from=cronjob/devops-app-backup > /dev/null
 kubectl -n "$NS" wait --for=condition=complete "job/$BACKUP_JOB" --timeout=300s > /dev/null
-SNAPSHOT="$(kubectl -n "$NS" logs "job/$BACKUP_JOB" | sed -n 's/^snapshot \([0-9a-f]*\) saved$/\1/p')"
+SNAPSHOT="$(kubectl -n "$NS" logs "job/$BACKUP_JOB" -c backup | sed -n 's/^snapshot \([0-9a-f]*\) saved$/\1/p')"
 echo "backup snapshot: $SNAPSHOT"
 
 echo "== 4. Write a sentinel item that is not in the backup"

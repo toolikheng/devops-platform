@@ -223,7 +223,7 @@ backup:
 	@name=manual-backup-$$(date +%s); \
 		kubectl -n devops create job $$name --from=cronjob/devops-app-backup && \
 		kubectl -n devops wait --for=condition=complete job/$$name --timeout=300s && \
-		kubectl -n devops logs job/$$name
+		kubectl -n devops logs job/$$name --all-containers --prefix
 
 restore-test:
 	@$(ECHO) "$(BLUE)Testing restore procedure...$(NC)"
