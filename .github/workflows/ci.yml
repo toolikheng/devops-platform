@@ -100,13 +100,35 @@ jobs:
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
-    - name: Run Trivy vulnerability scan
-      uses: aquasecurity/trivy-action@master
+    # Report: full SARIF for the Security tab. Never fails the job.
+    - name: Run Trivy vulnerability scan (report)
+      uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
       with:
+        version: 'v0.75.0'
         image-ref: devops-app:${{ github.sha }}
         format: 'sarif'
         output: 'trivy-results.sarif'
         severity: 'HIGH,CRITICAL'
+        exit-code: '0'
+
+    - name: Upload Trivy results to GitHub Security tab
+      uses: github/codeql-action/upload-sarif@v4
+      with:
+        sarif_file: 'trivy-results.sarif'
+      if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+      continue-on-error: true
+
+    # Gate: same threshold as ci/scan.sh. Runs before the push, so a vulnerable image is never published.
+    - name: Fail on fixable HIGH/CRITICAL vulnerabilities (gate)
+      uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+      with:
+        version: 'v0.75.0'
+        skip-setup-trivy: true
+        image-ref: devops-app:${{ github.sha }}
+        format: 'table'
+        severity: 'HIGH,CRITICAL'
+        ignore-unfixed: true
+        exit-code: '1'
 
     - name: Build and push image (to GHCR)
       uses: docker/build-push-action@v5
@@ -119,10 +141,3 @@ jobs:
         cache-from: type=gha
         cache-to: type=gha,mode=max
       if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
-
-    - name: Upload Trivy results to GitHub Security tab
-      uses: github/codeql-action/upload-sarif@v4
-      with:
-        sarif_file: 'trivy-results.sarif'
-      if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
-      continue-on-error: true

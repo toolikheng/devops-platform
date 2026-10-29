@@ -139,7 +139,7 @@ build:
 	@docker build -t devops-app:latest -f $(APP_DIR)/Dockerfile $(APP_DIR)
 	@hadolint $(APP_DIR)/Dockerfile
 	@$(ECHO) "$(BLUE)Scanning image...$(NC)"
-	@trivy image --severity HIGH,CRITICAL devops-app:latest
+	@bash "$(CI_DIR)/scan.sh" devops-app:latest
 
 # Phase 4 - Kubernetes
 cluster-up:

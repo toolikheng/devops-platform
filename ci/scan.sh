@@ -1,19 +1,19 @@
 #!/bin/bash
 set -euo pipefail
 
+# Fails (exit 1) if the image has HIGH or CRITICAL vulnerabilities that have a fix available.
+# Unfixed CVEs are reported by the SARIF scan in CI but don't block, since there's nothing to upgrade to.
+
 echo "=== Scanning Docker image ==="
 
 IMAGE_TAG="${1:-devops-app:latest}"
 
-echo "Scanning $IMAGE_TAG for vulnerabilities..."
-
-# Check if trivy is available, install if not
 if ! command -v trivy &> /dev/null; then
-  echo "Installing trivy..."
-  curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin 2>/dev/null || true
+  echo "trivy is not installed. Run 'make install' or see https://trivy.dev/latest/getting-started/installation/" >&2
+  exit 1
 fi
 
-# Run trivy scan
-trivy image --severity HIGH,CRITICAL --exit-code 0 "$IMAGE_TAG" || true
+echo "Scanning $IMAGE_TAG for fixable HIGH/CRITICAL vulnerabilities..."
+trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 "$IMAGE_TAG"
 
-echo "✓ Image scan complete"
+echo "✓ No fixable HIGH/CRITICAL vulnerabilities"
