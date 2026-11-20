@@ -195,7 +195,6 @@ def test_none_output_counts_as_empty(aws: FakeAws) -> None:
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-
 def test_only_open_or_active_spot_requests_count(aws: FakeAws) -> None:
     # A one-time request is closed or cancelled once its instance is gone, and costs nothing. An open or
     # active one (persistent, or still waiting for capacity) can start an instance again on its own.
@@ -204,4 +203,3 @@ def test_only_open_or_active_spot_requests_count(aws: FakeAws) -> None:
     assert len(spot) == 1, "Spot requests are checked once, in the home region"
     assert "Name=state,Values=open,active" in spot[0]
     assert f"--region {HOME_REGION}" in spot[0]
-
