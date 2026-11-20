@@ -25,10 +25,14 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Apply Debian security updates the base image hasn't picked up yet (the Trivy gate fails on them),
-# then install only curl for health checks (no build tools).
+# Install only curl for health checks (no build tools).
 # The app runs from /opt/venv, so remove the base image's own setuptools/wheel:
 # unused at runtime, and they carry fixable CVEs.
+#
+# Why `apt-get upgrade`: Debian fixed zlib1g CVE-2026-85091 (HIGH) in 1:1.3.dfsg+really1.3.1-1+deb13u1,
+# but python:3.11-slim (2026-11-05 build) still ships the vulnerable version, so the Trivy gate fails
+# without it. Remove the upgrade once the base image includes the fix: rebuild without it and check
+# that `bash ci/scan.sh` still passes.
 RUN apt-get update && apt-get upgrade -y && \
     apt-get install -y --no-install-recommends curl && \
     rm -rf /var/lib/apt/lists/* && \
