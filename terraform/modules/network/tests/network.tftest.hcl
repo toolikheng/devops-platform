@@ -17,10 +17,7 @@ variables {
 }
 
 # --- owner_cidr: a single IPv4 address, never the whole internet -----------------------------------
-
-run "owner_cidr_accepts_a_single_ipv4_address" {
-  command = plan
-}
+# The apply runs further down use a valid /32, so they also prove a single address is accepted.
 
 run "owner_cidr_rejects_the_whole_internet" {
   command = plan
