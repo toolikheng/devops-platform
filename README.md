@@ -197,7 +197,7 @@ kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:909
 
 ## Project structure
 
-- `terraform/` — AWS infrastructure: `persistent/` (state bucket, budgets, IAM, the node's role and the owner-IP parameter), `envs/aws/` (the ephemeral stack) and `modules/` (`network`, `compute`), with tests in each directory's `tests/`
+- `terraform/` — AWS infrastructure: `persistent/` (state bucket, budgets, IAM, the node's role and the owner-IP parameter), `envs/aws/` (the ephemeral stack) and `modules/` (`network`, `compute`, and `names`: the names both stacks share), with tests in each directory's `tests/`
 - `ansible/` — inventory, playbook, `common` and `node_exporter` roles
 - `infra/nodes/` — node image, startup script, Docker Compose file
 - `app/` — FastAPI service, tests, Dockerfile
@@ -206,7 +206,7 @@ kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:909
 - `backup/` — backup CronJob, restore Job, restore test
 - `ci/` — scripts shared by the Makefile and GitHub Actions (lint, test, rule tests, build, scan, ShellCheck, gitleaks)
 - `scripts/` — toolchain check (`bootstrap.sh`), the read-only AWS cost check (`cost-check.sh`), `owner-ip.sh`, and `ephemeral-tf.sh` (the Terraform run behind `make cloud-up` / `cloud-down`)
-- `tests/` — repo-level tests: the cost check (against a fake `aws` CLI), the AWS session Make targets (against fake `terraform`, `aws` and `curl`) and the `.gitignore` rules
+- `tests/` — repo-level tests: the cost check (against a fake `aws` CLI), the AWS session Make targets (against fake `terraform`, `aws` and `curl`), the scripts' copies of shared Terraform names, and the `.gitignore` rules
 - `.github/workflows/` — CI on every push, manual CD
 - `docs/` — architecture, decisions, runbook, fresh-clone test log
 

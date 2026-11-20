@@ -16,8 +16,8 @@ run "owner_cidr_parameter" {
   command = apply
 
   assert {
-    condition     = aws_ssm_parameter.owner_cidr.name == "/devops-platform/owner-cidr"
-    error_message = "The ephemeral stack looks the parameter up as /devops-platform/owner-cidr."
+    condition     = aws_ssm_parameter.owner_cidr.name == module.names.owner_cidr_parameter
+    error_message = "The parameter must use the shared name, which the ephemeral stack and owner-ip.sh read."
   }
 
   assert {

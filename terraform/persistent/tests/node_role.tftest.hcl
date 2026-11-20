@@ -18,8 +18,8 @@ run "only_ec2_can_assume_the_node_role" {
   command = apply
 
   assert {
-    condition     = aws_iam_role.node.name == "devops-platform-node"
-    error_message = "The node role must be called devops-platform-node."
+    condition     = aws_iam_role.node.name == module.names.node
+    error_message = "The node role must use the shared node name from modules/names."
   }
 
   assert {
@@ -77,8 +77,8 @@ run "instance_profile_wraps_the_node_role" {
   command = apply
 
   assert {
-    condition     = aws_iam_instance_profile.node.name == "devops-platform-node"
-    error_message = "The ephemeral stack looks the instance profile up as devops-platform-node."
+    condition     = aws_iam_instance_profile.node.name == module.names.node
+    error_message = "The instance profile must use the shared node name, which the ephemeral stack looks up."
   }
 
   assert {

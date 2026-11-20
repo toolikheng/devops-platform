@@ -42,13 +42,13 @@ run "persistent_resources_are_looked_up_by_name" {
   command = plan
 
   assert {
-    condition     = data.aws_iam_instance_profile.node.name == "devops-platform-node"
-    error_message = "The node must use the persistent stack's instance profile."
+    condition     = data.aws_iam_instance_profile.node.name == module.names.node
+    error_message = "The node must use the persistent stack's instance profile (shared node name)."
   }
 
   assert {
-    condition     = data.aws_ssm_parameter.owner_cidr.name == "/devops-platform/owner-cidr"
-    error_message = "owner_cidr must come from the /devops-platform/owner-cidr parameter."
+    condition     = data.aws_ssm_parameter.owner_cidr.name == module.names.owner_cidr_parameter
+    error_message = "owner_cidr must come from the shared owner-cidr parameter."
   }
 }
 

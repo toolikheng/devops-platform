@@ -82,7 +82,7 @@ def fakes(tmp_path: Path) -> Fakes:
 
 # --- make owner-ip --------------------------------------------------------------------------------------
 
-def test_owner_ip_writes_this_machines_ip_as_a_32(fakes: Fakes) -> None:
+def test_owner_ip_writes_this_machines_ip_as_a_32(fakes: Fakes, terraform_names: dict[str, str]) -> None:
     result = fakes.make("owner-ip")
     assert result.returncode == 0, result.stderr
 
@@ -92,7 +92,7 @@ def test_owner_ip_writes_this_machines_ip_as_a_32(fakes: Fakes) -> None:
     puts = [c for c in fakes.calls("aws") if c["args"].startswith("ssm put-parameter")]
     assert len(puts) == 1
     args = puts[0]["args"].split()
-    assert args[args.index("--name") + 1] == "/devops-platform/owner-cidr"
+    assert args[args.index("--name") + 1] == terraform_names["owner_cidr_parameter"]
     assert args[args.index("--type") + 1] == "String"
     assert args[args.index("--value") + 1] == "203.0.113.10/32"
     assert "--overwrite" in args

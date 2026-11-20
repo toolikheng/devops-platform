@@ -2,10 +2,15 @@
 # Both cost nothing at rest. They live here, not in the ephemeral stack, so creating or destroying the
 # node never needs IAM write permission, and the CI apply role (C6) can be denied IAM writes entirely.
 
+# Names the ephemeral stack looks these resources up by.
+module "names" {
+  source = "../modules/names"
+}
+
 # The node's role. Only the EC2 service can assume it; the node then gets short-lived credentials from
 # the instance metadata service (IMDSv2), so no access keys exist anywhere.
 resource "aws_iam_role" "node" {
-  name        = "devops-platform-node"
+  name        = module.names.node
   description = "Role of the ephemeral EC2 node: SSM agent only (C5 adds its parameters, C7 its backups)."
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -58,7 +63,7 @@ resource "aws_iam_role_policy" "node_ssm_agent" {
 
 # The wrapper EC2 needs to attach a role to an instance. The ephemeral stack looks it up by this name.
 resource "aws_iam_instance_profile" "node" {
-  name = "devops-platform-node"
+  name = module.names.node
   role = aws_iam_role.node.name
 }
 
@@ -68,7 +73,7 @@ resource "aws_iam_instance_profile" "node" {
 # String, not SecureString: an IP address is not a secret, and reading it then needs no KMS permission.
 # Its value is redacted in plan output anyway, because Terraform treats SSM parameter values as sensitive.
 resource "aws_ssm_parameter" "owner_cidr" {
-  name        = "/devops-platform/owner-cidr"
+  name        = module.names.owner_cidr_parameter
   description = "Owner's public IPv4 as a /32. Set with `make owner-ip`."
   type        = "String"
   tier        = "Standard"
