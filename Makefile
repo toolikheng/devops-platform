@@ -30,12 +30,9 @@ VENV_STAMP := $(VENV)/.installed
 # Repo-level tests in tests/ (cost check, .gitignore rules) have their own venv (gitignored).
 TESTS_VENV := $(REPO_ROOT)/tests/.venv
 TESTS_VENV_STAMP := $(TESTS_VENV)/.installed
-# AWS profile and region for the cost check (`aws login --profile devops` first).
+# AWS profile and region for the AWS targets (`aws login --profile devops` first).
 AWS_PROFILE ?= devops
 AWS_REGION ?= ap-southeast-1
-# Ephemeral AWS stack (everything billed by the hour) and the SSH key Ansible uses through Session Manager.
-EPHEMERAL_DIR := $(REPO_ROOT)/terraform/envs/aws
-SSH_PUBLIC_KEY_FILE ?= $(HOME)/.ssh/id_ed25519.pub
 # Extra Terraform arguments for cloud-up/cloud-down, e.g. CLOUD_ARGS='-var use_spot=true'.
 CLOUD_ARGS ?=
 
@@ -270,25 +267,17 @@ tf-check:
 cost-check:
 	@AWS_PROFILE="$(AWS_PROFILE)" AWS_REGION="$(AWS_REGION)" bash "$(REPO_ROOT)/scripts/cost-check.sh"
 
-# AWS writes. Terraform shows its plan and waits for "yes"; never add -auto-approve.
+# AWS writes. owner-ip overwrites one free SSM parameter straight away. cloud-up and cloud-down show
+# Terraform's plan and wait for "yes"; never add -auto-approve.
 owner-ip:
 	@AWS_PROFILE="$(AWS_PROFILE)" AWS_REGION="$(AWS_REGION)" bash "$(REPO_ROOT)/scripts/owner-ip.sh"
 
-# Runs one Terraform command in the ephemeral stack, with the SSH public key as TF_VAR_ssh_public_key.
-define ephemeral_tf
-	@test -f "$(SSH_PUBLIC_KEY_FILE)" || { echo "Missing $(SSH_PUBLIC_KEY_FILE): create it with ssh-keygen -t ed25519, or set SSH_PUBLIC_KEY_FILE." >&2; exit 1; }
-	@cd "$(EPHEMERAL_DIR)" && \
-		export AWS_PROFILE="$(AWS_PROFILE)" TF_VAR_ssh_public_key="$$(cat "$(SSH_PUBLIC_KEY_FILE)")" && \
-		terraform init -input=false >/dev/null && \
-		terraform $(1) $(CLOUD_ARGS)
-endef
-
 cloud-up:
-	$(call ephemeral_tf,apply)
+	@AWS_PROFILE="$(AWS_PROFILE)" bash "$(REPO_ROOT)/scripts/ephemeral-tf.sh" apply $(CLOUD_ARGS)
 
 # cost-check runs only after a successful destroy, and fails the target if anything billable is left.
 cloud-down:
-	$(call ephemeral_tf,destroy)
+	@AWS_PROFILE="$(AWS_PROFILE)" bash "$(REPO_ROOT)/scripts/ephemeral-tf.sh" destroy $(CLOUD_ARGS)
 	@$(MAKE) --no-print-directory cost-check
 
 # Utilities

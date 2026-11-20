@@ -61,7 +61,7 @@ class Fakes:
             rows.append({"tool": name, "cwd": cwd, "profile": profile, "key": key, "args": args})
         return [r for r in rows if tool is None or r["tool"] == tool]
 
-    def make(self, target: str) -> subprocess.CompletedProcess[str]:
+    def make(self, target: str, *overrides: str) -> subprocess.CompletedProcess[str]:
         env = {
             "PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}",
             "HOME": str(self.home),
@@ -69,7 +69,7 @@ class Fakes:
             "FAKE_DIR": str(self.dir),
         }
         return subprocess.run(
-            ["make", "--no-print-directory", target],
+            ["make", "--no-print-directory", target, *overrides],
             cwd=REPO_ROOT, env=env, stdin=subprocess.DEVNULL,
             capture_output=True, text=True, timeout=120,
         )
@@ -127,6 +127,21 @@ def test_cloud_up_needs_the_ssh_public_key(fakes: Fakes) -> None:
     assert result.returncode != 0
     assert not fakes.calls("terraform")
     assert "id_ed25519.pub" in result.stdout + result.stderr
+
+
+def test_cloud_up_passes_extra_terraform_arguments(fakes: Fakes) -> None:
+    result = fakes.make("cloud-up", "CLOUD_ARGS=-var use_spot=true")
+    assert result.returncode == 0, result.stderr
+    assert fakes.calls("terraform")[-1]["args"] == "apply -var use_spot=true"
+
+
+def test_cloud_up_can_use_another_public_key(fakes: Fakes) -> None:
+    other = fakes.home / "other.pub"
+    other.write_text(PUBLIC_KEY + "\n")
+    (fakes.home / ".ssh" / "id_ed25519.pub").unlink()
+    result = fakes.make("cloud-up", f"SSH_PUBLIC_KEY_FILE={other}")
+    assert result.returncode == 0, result.stderr
+    assert fakes.calls("terraform")[-1]["key"] == "key"
 
 
 # --- make cloud-down ------------------------------------------------------------------------------------
