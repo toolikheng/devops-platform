@@ -39,6 +39,7 @@ make destroy        # delete the cluster and the nodes
 | Backups are consistent | `make backup` was run while 656 writes hit the app; the SQLite copy passed `PRAGMA integrity_check` and was saved as a restic snapshot. |
 | Restore test catches a broken restore | `make restore-test` passes only if the app serves exactly the backed-up items afterwards and an item written after the backup is gone. A deliberately broken restore (data never copied back) makes it fail. |
 | Self-healing | Deleting the app pod: a replacement was Ready 14 seconds later. |
+| AWS cost check is read-only and fails safe | `make cost-check` lists anything billable left in the account: the full list in ap-southeast-1 (instances, volumes, snapshots, Elastic IPs, public IPv4, NAT gateways, VPC endpoints, load balancers, EKS, RDS, Secrets Manager) plus instances, volumes and Elastic IPs in every other enabled region. 26 tests run it against a fake `aws` CLI: each kind of leftover is reported, only describe/list/get calls are made, the Cost Explorer API is never called, and a check that can't run is an error, never a clean result. Run against the real account: clean. |
 | Rolling restarts drop no requests | Continuous requests through the ingress during a rolling restart: 1,549 and 1,520 requests in two runs, 0 failures. Before the `preStop` delay was added, the same test failed 24 of 1,533 requests (502s and a timeout). |
 
 ## What's included
@@ -71,7 +72,7 @@ make destroy        # delete the cluster and the nodes
 - `make restore-test` proves the round trip end to end (see above).
 
 ### CI/CD (GitHub Actions)
-- On every push and pull request: lint, tests, alert-rule tests, hadolint, then build and Trivy scan.
+- On every push and pull request: lint, tests, alert-rule tests, hadolint, repo-level tests and ShellCheck, then build and Trivy scan.
 - On master: the image is pushed to GHCR as `master` and `sha-<commit>`. Actions are pinned to current major versions; trivy-action is pinned to a commit SHA.
 - Manual CD with an ephemeral k3d cluster and a smoke test.
 
@@ -116,6 +117,10 @@ make build                 # build the image, hadolint, Trivy gate (both run as 
 make deploy                # build, import into k3d, apply the dev overlay, roll out
 make provision             # re-run Ansible against the nodes
 make backup                # run the backup CronJob now and print its logs
+make test-infra            # repo-level tests in tests/ (tests/.venv is created on first use)
+bash ci/shellcheck.sh      # ShellCheck on every shell script (pinned Docker image)
+bash ci/gitleaks.sh        # scan the full git history for secrets, values redacted (pinned Docker image)
+make cost-check            # AWS: read-only scan for billable leftovers (needs `aws login --profile devops`)
 ```
 
 Grafana and Prometheus are reached with a port-forward:
@@ -130,7 +135,8 @@ kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:909
 
 - WSL2 Ubuntu 24.04 with Docker Desktop (WSL integration on). Developed and tested on a machine with 8 CPUs and 11 GB RAM.
 - `git`, `make`, `curl`, `jq`, `openssl`, `ansible`, `python3` with the venv module, `docker`, `kubectl`, `k3d`, `helm`, and an SSH key at `~/.ssh/id_ed25519`. `make check` lists what's missing; `make install` apt-installs the packages it can (with sudo), creates the SSH key, and links to installers for the rest.
-- hadolint, Trivy, promtool and yq don't need installing: they run as pinned Docker images.
+- hadolint, Trivy, promtool, yq, ShellCheck and gitleaks don't need installing: they run as pinned Docker images.
+- For the AWS work (in progress): AWS CLI v2.32 or newer (for `aws login`), the Session Manager plugin, and Terraform 1.11 or newer.
 - Host port 8080 free (the k3d load balancer).
 
 ## Project structure
@@ -141,7 +147,9 @@ kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:909
 - `k8s/` — kustomize base and `dev` / `prod` overlays
 - `monitoring/` — Helm values, ServiceMonitor, alert rules and their tests, dashboard
 - `backup/` — backup CronJob, restore Job, restore test
-- `ci/` — scripts shared by the Makefile and GitHub Actions (lint, test, rule tests, build, scan)
+- `ci/` — scripts shared by the Makefile and GitHub Actions (lint, test, rule tests, build, scan, ShellCheck, gitleaks)
+- `scripts/` — toolchain check (`bootstrap.sh`) and the read-only AWS cost check (`cost-check.sh`)
+- `tests/` — repo-level tests: the cost check (against a fake `aws` CLI) and the `.gitignore` rules
 - `.github/workflows/` — CI on every push, manual CD
 - `docs/` — architecture, decisions, runbook, fresh-clone test log
 

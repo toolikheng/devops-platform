@@ -139,6 +139,42 @@ The restic repository lives on the `devops-backup-repo` PVC (5Gi). Snapshots sur
 
 The restic password is generated into the `backup-credentials` Secret by `make secrets-init` (part of `make deploy`). Read it with `kubectl -n devops get secret backup-credentials -o jsonpath='{.data.password}' | base64 -d`.
 
+## AWS cost check
+
+The AWS environment is billed by the hour, so every working session ends with a check that nothing billable is left:
+
+```bash
+aws login --profile devops   # short-lived credentials for the IAM user, never root
+make cost-check              # AWS_PROFILE=devops and AWS_REGION=ap-southeast-1 by default
+```
+
+It is read-only: only describe, list and get calls, which are free. It never calls the Cost Explorer API, which is billed per request. It checks ap-southeast-1 in full and every other enabled region for instances, volumes and Elastic IPs, which takes about a minute and a half.
+
+| Exit code | Meaning | What to do |
+|-----------|---------|------------|
+| 0 | No billable leftovers | Nothing |
+| 1 | Billable leftovers found (listed with their IDs and region) | Destroy them with Terraform, or in the console if Terraform lost track of them, then run it again |
+| 2 | A check could not run (expired login, access denied) | `aws login --profile devops` and run it again. An incomplete scan is never reported as clean |
+
+Persistent resources that cost nothing at rest (S3 state bucket, budgets, IAM, SSM Standard parameters) are not listed.
+
+## Secret scanning
+
+```bash
+bash ci/gitleaks.sh   # full history of every branch; values are redacted in the output
+```
+
+A clean result means no *known pattern* was found, not that there are no secrets: gitleaks' default rules don't match plain `NAME_PASSWORD=value` lines, for example. If a real credential is ever found:
+
+1. Stop and rotate or revoke it first. Rotation makes the leaked value useless; removing it from history needs a force-push and is a separate decision.
+2. Record it below with the type, where it was, the dates and what was done. Never record the value.
+
+### Leaked credentials log
+
+| Date found | Type | Where | In history | Action |
+|------------|------|-------|------------|--------|
+| 2026-11-20 | restic repository password (two values) | `backup/scripts/backup.sh`, `backup/scripts/restore-test.sh` | Added in `7ca581f` (2026-09-16), removed in `8e7665b` (2026-10-19) | Found by manual review after a clean gitleaks scan. The passwords only encrypted local restic repositories of demo data inside k3d clusters that no longer exist, they were not used anywhere else, and the current code generates a random password (`make secrets-init`). No rotation needed; history not rewritten. |
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |

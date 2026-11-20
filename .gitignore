@@ -41,25 +41,39 @@ venv.bak/
 *~
 .DS_Store
 
-# Kubernetes
-kubeconfig
+# Kubernetes (kubeconfigs hold cluster-admin credentials)
+kubeconfig*
+*.kubeconfig
 .kubeconfig
 
-# Terraform
+# Terraform: state and plans can hold secrets and resource details; variable files hold values.
+# Commit .terraform.lock.hcl and *.tfvars.example.
 .terraform/
 *.tfstate
 *.tfstate.*
+*.tfplan
+tfplan
 *.tfvars
+*.tfvars.json
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
 .terraformrc
+terraform.rc
 
 # Ansible
 *.retry
 .ansible-vault
 
-# SSH
+# SSH and private keys
 .ssh/
 *.pem
 *.pub
+id_rsa*
+id_ed25519*
 
 # Environment
 .env
@@ -83,11 +97,6 @@ restic-cache/
 tmp/
 temp/
 .tmp
-
-# Local notes
-CLAUDE.md
-.agents
-skills-lock.json
 
 # Build artifacts
 *.tar.gz
