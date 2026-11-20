@@ -1,5 +1,6 @@
-# One VPC with one public subnet in one AZ. No NAT gateway, Elastic IP or VPC endpoints: the node uses its
-# own public IPv4 through the internet gateway for outbound traffic (ADR 010).
+# One VPC with one public subnet in one AZ: the plumbing the node sits in. No NAT gateway, Elastic IP or VPC
+# endpoints: the node uses its own public IPv4 through the internet gateway for outbound traffic (ADR 010).
+# The node's security group belongs to the compute module (ADR 011).
 
 # No VPC Flow Logs: they need CloudWatch log ingestion (or an S3 log bucket), which the cost rules exclude.
 # The only inbound path is one port from one address, and the stack lives for a few hours.
@@ -43,44 +44,4 @@ resource "aws_route" "internet" {
 resource "aws_route_table_association" "public" {
   subnet_id      = aws_subnet.public.id
   route_table_id = aws_route_table.public.id
-}
-
-# The node's firewall. Inline rules on purpose: Terraform then owns the group's whole rule set and removes
-# any rule added outside it, and the tests can check every rule at once.
-# No SSH (22) or Kubernetes API (6443) from anywhere: shell, Ansible and kubectl go through Session Manager.
-resource "aws_security_group" "node" {
-  name        = "${var.name}-node"
-  description = "devops-platform node: HTTP from the owner only"
-  vpc_id      = aws_vpc.this.id
-
-  ingress {
-    description = "PolicyPal UI through Traefik, owner only"
-    protocol    = "tcp"
-    from_port   = 80
-    to_port     = 80
-    cidr_blocks = [var.owner_cidr]
-  }
-
-  # Egress has to reach public endpoints (SSM, GHCR, GitHub, S3, apt mirrors) whose addresses change, and
-  # the cost rules exclude the NAT gateway, proxy and VPC endpoints that could narrow it. So it is limited
-  # by port instead: 443 and 80 only. Hence the two accepted trivy findings (AWS-0104) below.
-  egress {
-    description = "HTTPS: SSM, GHCR, GitHub, S3, k3s and Helm downloads"
-    protocol    = "tcp"
-    from_port   = 443
-    to_port     = 443
-    #trivy:ignore:AWS-0104
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  egress {
-    description = "HTTP: Ubuntu apt mirrors"
-    protocol    = "tcp"
-    from_port   = 80
-    to_port     = 80
-    #trivy:ignore:AWS-0104
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = { Name = "${var.name}-node" }
 }

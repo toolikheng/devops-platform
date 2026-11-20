@@ -12,7 +12,8 @@ variables {
   name                  = "test"
   instance_type         = "t3.micro"
   subnet_id             = "subnet-0123456789abcdef0"
-  security_group_ids    = ["sg-0123456789abcdef0"]
+  vpc_id                = "vpc-0123456789abcdef0"
+  owner_cidr            = "203.0.113.10/32"
   instance_profile_name = "devops-platform-node"
   ssh_public_key        = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleExampleExampleExampleExampleExample test@example"
 }
@@ -106,11 +107,11 @@ run "instance_wiring_and_cost_settings" {
     condition = (
       aws_instance.node.ami == "ami-0123456789abcdef0" &&
       aws_instance.node.subnet_id == "subnet-0123456789abcdef0" &&
-      toset(aws_instance.node.vpc_security_group_ids) == toset(["sg-0123456789abcdef0"]) &&
+      toset(aws_instance.node.vpc_security_group_ids) == toset([aws_security_group.node.id]) &&
       aws_instance.node.iam_instance_profile == "devops-platform-node" &&
       aws_instance.node.key_name == aws_key_pair.this.key_name
     )
-    error_message = "The instance must use the looked-up AMI, the given subnet, security groups, profile and key pair."
+    error_message = "The instance must use the looked-up AMI, the given subnet, its own security group, the profile and the key pair."
   }
 
   assert {

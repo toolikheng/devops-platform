@@ -12,7 +12,8 @@ variables {
   name                  = "test"
   instance_type         = "t3.micro"
   subnet_id             = "subnet-0123456789abcdef0"
-  security_group_ids    = ["sg-0123456789abcdef0"]
+  vpc_id                = "vpc-0123456789abcdef0"
+  owner_cidr            = "203.0.113.10/32"
   instance_profile_name = "devops-platform-node"
   ssh_public_key        = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleExampleExampleExampleExampleExample test@example"
 }

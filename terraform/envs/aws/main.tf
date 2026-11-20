@@ -20,9 +20,8 @@ data "aws_ssm_parameter" "owner_cidr" {
 module "network" {
   source = "../../modules/network"
 
-  name       = local.name
-  az         = var.az
-  owner_cidr = data.aws_ssm_parameter.owner_cidr.value
+  name = local.name
+  az   = var.az
 }
 
 module "compute" {
@@ -32,7 +31,8 @@ module "compute" {
   instance_type         = var.instance_type
   use_spot              = var.use_spot
   subnet_id             = module.network.subnet_id
-  security_group_ids    = [module.network.security_group_id]
+  vpc_id                = module.network.vpc_id
+  owner_cidr            = data.aws_ssm_parameter.owner_cidr.value
   instance_profile_name = data.aws_iam_instance_profile.node.name
   ssh_public_key        = var.ssh_public_key
 }

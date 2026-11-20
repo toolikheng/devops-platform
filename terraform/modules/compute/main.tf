@@ -27,11 +27,51 @@ resource "aws_key_pair" "this" {
   public_key = trimspace(var.ssh_public_key)
 }
 
+# How the node is reached. Inline rules on purpose: Terraform then owns the group's whole rule set and
+# removes any rule added outside it, and the tests can check every rule at once.
+# No SSH (22) or Kubernetes API (6443) from anywhere: shell, Ansible and kubectl go through Session Manager.
+resource "aws_security_group" "node" {
+  name        = var.name
+  description = "devops-platform node: HTTP from the owner only"
+  vpc_id      = var.vpc_id
+
+  ingress {
+    description = "PolicyPal UI through Traefik, owner only"
+    protocol    = "tcp"
+    from_port   = 80
+    to_port     = 80
+    cidr_blocks = [var.owner_cidr]
+  }
+
+  # Egress has to reach public endpoints (SSM, GHCR, GitHub, S3, apt mirrors) whose addresses change, and
+  # the cost rules exclude the NAT gateway, proxy and VPC endpoints that could narrow it. So it is limited
+  # by port instead: 443 and 80 only. Hence the two accepted trivy findings (AWS-0104) below.
+  egress {
+    description = "HTTPS: SSM, GHCR, GitHub, S3, k3s and Helm downloads"
+    protocol    = "tcp"
+    from_port   = 443
+    to_port     = 443
+    #trivy:ignore:AWS-0104
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    description = "HTTP: Ubuntu apt mirrors"
+    protocol    = "tcp"
+    from_port   = 80
+    to_port     = 80
+    #trivy:ignore:AWS-0104
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = { Name = var.name }
+}
+
 resource "aws_instance" "node" {
   ami                    = data.aws_ami.ubuntu.id
   instance_type          = var.instance_type
   subnet_id              = var.subnet_id
-  vpc_security_group_ids = var.security_group_ids
+  vpc_security_group_ids = [aws_security_group.node.id]
   iam_instance_profile   = var.instance_profile_name
   key_name               = aws_key_pair.this.key_name
 
