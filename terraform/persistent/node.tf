@@ -31,7 +31,7 @@ resource "aws_iam_role_policy" "node_ssm_agent" {
         Sid      = "RegisterTheInstance"
         Effect   = "Allow"
         Action   = ["ssm:UpdateInstanceInformation"]
-        Resource = "arn:aws:ec2:ap-southeast-1:${data.aws_caller_identity.current.account_id}:instance/*"
+        Resource = "arn:aws:ec2:${local.region}:${data.aws_caller_identity.current.account_id}:instance/*"
       },
       {
         # Session Manager channels, and the Run Command message queue. These actions have no resource

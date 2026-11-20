@@ -61,6 +61,16 @@ run "node_role_has_only_the_ssm_agent_permissions" {
     )
     error_message = "The node role must allow exactly the SSM agent actions: no wildcards, no ssm:GetParameter*, nothing else."
   }
+
+  # The one action that takes a resource is limited to this account's instances in the project's region.
+  assert {
+    condition = anytrue([
+      for s in jsondecode(aws_iam_role_policy.node_ssm_agent.policy).Statement :
+      s.Action == ["ssm:UpdateInstanceInformation"] &&
+      s.Resource == "arn:aws:ec2:ap-southeast-1:111122223333:instance/*"
+    ])
+    error_message = "ssm:UpdateInstanceInformation must be limited to this account's instances in ap-southeast-1."
+  }
 }
 
 run "instance_profile_wraps_the_node_role" {

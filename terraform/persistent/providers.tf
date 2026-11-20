@@ -1,6 +1,5 @@
 provider "aws" {
-  # Fixed, not a variable: backend.tf (which can't use variables) stores state in this region.
-  region = "ap-southeast-1"
+  region = local.region
 
   default_tags {
     tags = local.default_tags
@@ -8,6 +7,9 @@ provider "aws" {
 }
 
 locals {
+  # Fixed, not a variable: backend.tf (which can't use variables) stores state in this region.
+  region = "ap-southeast-1"
+
   default_tags = {
     Project   = "devops-platform"
     Owner     = "toolikheng"
