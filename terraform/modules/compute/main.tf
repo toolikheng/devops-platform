@@ -40,7 +40,9 @@ resource "aws_instance" "node" {
   # Detailed (1-minute) CloudWatch monitoring is a paid feature.
   monitoring = false
   # A shutdown from inside terminates the node, so a stopped instance never sits there paying for its disk.
-  instance_initiated_shutdown_behavior = "terminate"
+  # On-demand only: AWS refuses to change this on a Spot instance (UnsupportedOperation), and a one-time
+  # Spot instance already terminates on shutdown, so for Spot it is left to AWS.
+  instance_initiated_shutdown_behavior = var.use_spot ? null : "terminate"
 
   # IMDSv2 only: credentials need a session token, which blocks the classic SSRF credential theft. Hop
   # limit 1: the token's reply cannot cross the extra network hop into a container, so ordinary pods

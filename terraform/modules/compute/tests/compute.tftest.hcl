@@ -18,6 +18,13 @@ mock_provider "aws" {
       architecture = "x86_64"
     }
   }
+
+  # What the mock fills in when the module leaves an attribute for AWS to decide.
+  mock_resource "aws_instance" {
+    defaults = {
+      instance_initiated_shutdown_behavior = "set-by-aws"
+    }
+  }
 }
 
 variables {
@@ -233,10 +240,29 @@ run "spot_is_one_time_terminate_with_no_max_price" {
     error_message = "Spot must be one-time and terminate on interruption (nothing left stopped and billing for its volume)."
   }
 
-  # No max price means the cap is the on-demand price, so the node is never priced out mid-session.
+  # No max price means the cap is the on-demand price, so the node is never priced out mid-session. This run
+  # updates the instance from the earlier runs, so the mock leaves an unset price null; a set one shows here.
   assert {
     condition     = aws_instance.node.instance_market_options[0].spot_options[0].max_price == null || aws_instance.node.instance_market_options[0].spot_options[0].max_price == ""
     error_message = "Do not set a Spot max price; the default cap is the on-demand price."
+  }
+}
+
+# AWS refuses to change the shutdown behaviour of a Spot instance (UnsupportedOperation, found in the first
+# live Spot apply), and a one-time Spot instance already terminates on shutdown (measured: AWS reported
+# "terminate" without Terraform setting it). So the module must leave it to AWS.
+run "spot_leaves_the_shutdown_behaviour_to_aws" {
+  command = apply
+  # Its own state, so this is a fresh Spot launch as in AWS. In the shared state the mock would update the
+  # on-demand instance from the earlier runs and keep its "terminate".
+  state_key = "spot"
+  variables {
+    use_spot = true
+  }
+
+  assert {
+    condition     = aws_instance.node.instance_initiated_shutdown_behavior == "set-by-aws"
+    error_message = "Do not set instance_initiated_shutdown_behavior on a Spot instance: AWS rejects the change."
   }
 }
 
