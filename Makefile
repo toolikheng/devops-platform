@@ -4,6 +4,7 @@
         cluster-up cluster-down deploy \
         monitoring-up monitoring-down \
         backup restore-test \
+        test-infra cost-check \
         destroy all clean
 
 SHELL := /bin/bash
@@ -26,6 +27,12 @@ CI_DIR := $(REPO_ROOT)/ci
 # App virtualenv with the dev dependencies (created by `make venv`; gitignored).
 VENV := $(APP_DIR)/.venv
 VENV_STAMP := $(VENV)/.installed
+# Repo-level tests in tests/ (cost check, .gitignore rules) have their own venv (gitignored).
+TESTS_VENV := $(REPO_ROOT)/tests/.venv
+TESTS_VENV_STAMP := $(TESTS_VENV)/.installed
+# AWS profile and region for the cost check (`aws login --profile devops` first).
+AWS_PROFILE ?= devops
+AWS_REGION ?= ap-southeast-1
 
 # Color output (if tty)
 ifeq ($(shell [ -t 1 ] && echo 1),1)
@@ -79,6 +86,10 @@ help:
 	@$(ECHO) "$(BLUE)Phase 7 - Backup:$(NC)"
 	@$(ECHO) "  $(GREEN)make backup$(NC)        Run backup job"
 	@$(ECHO) "  $(GREEN)make restore-test$(NC)  Test restore procedure"
+	@$(ECHO) ""
+	@$(ECHO) "$(BLUE)AWS (v2):$(NC)"
+	@$(ECHO) "  $(GREEN)make cost-check$(NC)     Read-only scan for billable AWS leftovers (all regions)"
+	@$(ECHO) "  $(GREEN)make test-infra$(NC)     Run the repo-level tests in tests/"
 	@$(ECHO) ""
 	@$(ECHO) "$(BLUE)Utilities:$(NC)"
 	@$(ECHO) "  $(GREEN)make all$(NC)           Run all phases (check → infra → deploy)"
@@ -229,6 +240,21 @@ backup:
 restore-test:
 	@$(ECHO) "$(BLUE)Testing restore procedure...$(NC)"
 	@bash "$(BACKUP_DIR)/scripts/restore-test.sh"
+
+# AWS (v2)
+$(TESTS_VENV_STAMP): $(REPO_ROOT)/tests/requirements.txt
+	@$(ECHO) "$(BLUE)Creating $(TESTS_VENV)...$(NC)"
+	@python3 -m venv "$(TESTS_VENV)"
+	@"$(TESTS_VENV)/bin/python" -m pip install -q --upgrade pip
+	@"$(TESTS_VENV)/bin/python" -m pip install -q -r "$(REPO_ROOT)/tests/requirements.txt"
+	@touch "$@"
+
+test-infra: $(TESTS_VENV_STAMP)
+	@"$(TESTS_VENV)/bin/python" -m pytest -q "$(REPO_ROOT)/tests"
+
+# Read-only: describe/list/get calls only, never the Cost Explorer API. Exit 1 if anything billable is left.
+cost-check:
+	@AWS_PROFILE="$(AWS_PROFILE)" AWS_REGION="$(AWS_REGION)" bash "$(REPO_ROOT)/scripts/cost-check.sh"
 
 # Utilities
 all: check infra-up provision test build cluster-up deploy monitoring-up

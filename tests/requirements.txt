@@ -1,0 +1,2 @@
+# Test dependencies for the repo-level tests in tests/ (installed into tests/.venv by `make test-infra`).
+pytest==9.2.0
