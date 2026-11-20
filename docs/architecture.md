@@ -66,6 +66,7 @@ The local cluster runs an image built on the machine and imported with `k3d imag
 | Ansible | `ansible/` | `common` role (packages, timezone, SSH hardening, motd) and `node_exporter` role (systemd or SysV init, depending on the host). Run from WSL; idempotent |
 | Monitoring | `monitoring/` | kube-prometheus-stack values (chart pinned to 92.16.0), ServiceMonitor, alert rules with promtool tests, dashboard JSON wrapped in a ConfigMap for Grafana's sidecar |
 | Backup | `backup/` | Daily CronJob (SQLite online backup, then restic), restore Job, restore test |
+| Terraform persistent stack (AWS) | `terraform/persistent` | S3 state bucket (versioned, SSE-S3, TLS-only, native lockfile), `zero-spend` and `monthly-cap` budgets, and the USD 15 budget action that denies new spend. Only $0-at-rest resources; applied from the laptop. See ADRs 005–007 |
 | Shared scripts | `ci/`, `scripts/` | Lint, test, rule-test, build and scan scripts used by the Makefile and CI; toolchain check/install |
 
 ## Data flows

@@ -158,6 +158,44 @@ It is read-only: only describe, list and get calls, which are free. It never cal
 
 Persistent resources that cost nothing at rest (S3 state bucket, budgets, IAM, SSM Standard parameters) are not listed.
 
+## Terraform persistent stack
+
+`terraform/persistent` holds the state bucket, budgets and IAM: resources that cost about $0 at rest and are never destroyed with the hourly stack. It is planned and applied from the laptop only:
+
+```bash
+aws login --profile devops
+cd terraform/persistent
+cp terraform.tfvars.example terraform.tfvars   # first time only: set alert_email (the file is gitignored)
+terraform init
+terraform plan -out=tfplan                     # review it, then:
+terraform apply tfplan                         # applies exactly the reviewed plan
+```
+
+`make tf-check` runs the offline checks (no credentials needed): fmt, validate, `terraform test` with a mock provider, tflint and trivy.
+
+### Bootstrap in a new account
+
+The backend points at a bucket this stack creates, so in an empty account:
+
+1. `mv backend.tf backend.tf.off`, then `terraform init` and `terraform apply`. This creates the bucket, with state in a local file.
+2. `mv backend.tf.off backend.tf`, then `terraform init -migrate-state` to copy the state into the bucket.
+3. Check that `terraform plan` shows no changes, then delete the local `terraform.tfstate*` files.
+
+### "Error acquiring the state lock"
+
+Another run holds the lock, a `.tflock` object next to the state. Wait for it to finish. If a run crashed or its login expired mid-apply, the lock can stay behind:
+
+1. Make sure nothing is running: other terminals, and from Phase C6 on, GitHub Actions.
+2. Run `terraform force-unlock <LOCK_ID>`, with the ID from the error message.
+
+### The budget action fired
+
+At USD 15 actual spend in a month, AWS Budgets attaches `devops-platform-deny-new-spend` to `toolikheng-admin` and emails the alert address. Starting anything billable now fails with an explicit deny. Deleting, IAM and Terraform state reads and writes still work.
+
+1. Destroy the hourly stack and run `make cost-check` until it is clean.
+2. In the Billing console (Bills, by service and region), find what cost money.
+3. Fix the cause, then detach the policy deliberately (Billing → Budgets → `monthly-cap` → Actions, or `aws iam detach-user-policy`). It is not removed automatically next month.
+
 ## Secret scanning
 
 ```bash

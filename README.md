@@ -40,6 +40,8 @@ make destroy        # delete the cluster and the nodes
 | Restore test catches a broken restore | `make restore-test` passes only if the app serves exactly the backed-up items afterwards and an item written after the backup is gone. A deliberately broken restore (data never copied back) makes it fail. |
 | Self-healing | Deleting the app pod: a replacement was Ready 14 seconds later. |
 | AWS cost check is read-only and fails safe | `make cost-check` lists anything billable left in the account: the full list in ap-southeast-1 (instances, volumes, snapshots, Elastic IPs, public IPv4, NAT gateways, VPC endpoints, load balancers, EKS, RDS, Secrets Manager) plus instances, volumes and Elastic IPs in every other enabled region. 26 tests run it against a fake `aws` CLI: each kind of leftover is reported, only describe/list/get calls are made, the Cost Explorer API is never called, and a check that can't run is an error, never a clean result. Run against the real account: clean. |
+| Terraform state is private, TLS-only and locked | 13 `terraform test` runs check the persistent stack offline with a mock provider, and each one was shown to fail on a deliberately broken copy. Live: the apply created the state bucket and budgets; a second plan through the S3 backend shows no changes; a plain-HTTP request to the bucket gets AccessDenied even as the admin user; with two plans started at once, the second fails with "Error acquiring the state lock". |
+| The budget action blocks new spend, never clean-up | IAM policy simulator with the deny policy added to the admin user: starting instances, NAT gateways or RDS is explicitly denied. Terminating, deleting, detaching the policy and reading or writing the state file stay allowed. The action's role can only attach that one policy to that one user. |
 | Rolling restarts drop no requests | Continuous requests through the ingress during a rolling restart: 1,549 and 1,520 requests in two runs, 0 failures. Before the `preStop` delay was added, the same test failed 24 of 1,533 requests (502s and a timeout). |
 
 ## What's included
@@ -71,8 +73,27 @@ make destroy        # delete the cluster and the nodes
 - Daily CronJob. An init container takes a SQLite online backup (safe while the app is writing) and checks it; restic 0.19.1 then backs up that copy, runs `restic check`, and applies 7 daily / 4 weekly / 12 monthly retention.
 - `make restore-test` proves the round trip end to end (see above).
 
+### AWS foundations (Terraform, in progress)
+The homelab is being extended to AWS (ap-southeast-1). The first part is a **persistent** Terraform stack (`terraform/persistent`) with only resources that cost about $0 at rest. Anything billed by the hour will live in a separate stack that is destroyed after every session.
+- **State.** Terraform's record of what it manages lives in an S3 bucket created by this stack:
+  - versioned, so a bad write can be rolled back
+  - encrypted with SSE-S3
+  - all public access blocked, and every request without TLS denied
+  - old versions expire after 90 days
+  - Terraform is not allowed to delete it
+- **Bootstrap.** The bucket was first created with local state, then the state was moved into it with `terraform init -migrate-state`.
+- **Locking.** `use_lockfile = true` makes Terraform create a `.tflock` object next to the state before it writes. A second run can't take the lock and stops instead of overwriting the state. No DynamoDB table is needed.
+- **Budgets.**
+  - `zero-spend` emails on the first cent of the month. It was created in the console and adopted with an `import` block, not recreated.
+  - `monthly-cap` emails at USD 1, 5 and 10.
+  - At USD 15 an automatic budget action attaches a deny policy to the admin user that blocks starting anything billable. It never blocks deleting, IAM or state writes, so a clean-up still works.
+  - Budgets only stop *new* spend, and their data lags by hours, so destroying the hourly stack after every session stays the main guard.
+- **Checks.** `make tf-check` runs `terraform fmt`, `validate`, `terraform test` (mock provider, no AWS calls), tflint and trivy. CI runs it on every push.
+
+See [ADR 005](docs/decisions/005-terraform-state-in-s3.md), [ADR 006](docs/decisions/006-budgets-as-code.md) and [ADR 007](docs/decisions/007-anomaly-detection-in-console.md).
+
 ### CI/CD (GitHub Actions)
-- On every push and pull request: lint, tests, alert-rule tests, hadolint, repo-level tests and ShellCheck, then build and Trivy scan.
+- On every push and pull request: lint, tests, alert-rule tests, hadolint, repo-level tests, ShellCheck and the offline Terraform checks, then build and Trivy scan.
 - On master: the image is pushed to GHCR as `master` and `sha-<commit>`. Actions are pinned to current major versions; trivy-action is pinned to a commit SHA.
 - Manual CD with an ephemeral k3d cluster and a smoke test.
 
@@ -120,6 +141,7 @@ make backup                # run the backup CronJob now and print its logs
 make test-infra            # repo-level tests in tests/ (tests/.venv is created on first use)
 bash ci/shellcheck.sh      # ShellCheck on every shell script (pinned Docker image)
 bash ci/gitleaks.sh        # scan the full git history for secrets, values redacted (pinned Docker image)
+make tf-check              # offline Terraform checks: fmt, validate, terraform test, tflint, trivy
 make cost-check            # AWS: read-only scan for billable leftovers (needs `aws login --profile devops`)
 ```
 
@@ -135,12 +157,13 @@ kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:909
 
 - WSL2 Ubuntu 24.04 with Docker Desktop (WSL integration on). Developed and tested on a machine with 8 CPUs and 11 GB RAM.
 - `git`, `make`, `curl`, `jq`, `openssl`, `ansible`, `python3` with the venv module, `docker`, `kubectl`, `k3d`, `helm`, and an SSH key at `~/.ssh/id_ed25519`. `make check` lists what's missing; `make install` apt-installs the packages it can (with sudo), creates the SSH key, and links to installers for the rest.
-- hadolint, Trivy, promtool, yq, ShellCheck and gitleaks don't need installing: they run as pinned Docker images.
+- hadolint, Trivy, promtool, yq, ShellCheck, gitleaks and tflint don't need installing: they run as pinned Docker images.
 - For the AWS work (in progress): AWS CLI v2.32 or newer (for `aws login`), the Session Manager plugin, and Terraform 1.11 or newer.
 - Host port 8080 free (the k3d load balancer).
 
 ## Project structure
 
+- `terraform/` — AWS infrastructure: `persistent/` (state bucket, budgets, IAM), with tests in each stack's `tests/`
 - `ansible/` — inventory, playbook, `common` and `node_exporter` roles
 - `infra/nodes/` — node image, startup script, Docker Compose file
 - `app/` — FastAPI service, tests, Dockerfile
