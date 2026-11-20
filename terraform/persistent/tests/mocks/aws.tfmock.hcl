@@ -7,12 +7,6 @@ override_data {
   }
 }
 
-# Mock providers can't import. This stands in for the console-made zero-spend budget that imports.tf
-# adopts; remove it together with the import block.
-override_resource {
-  target = aws_budgets_budget.zero_spend
-}
-
 # The budget action validates the ARNs it is given, so mocks need realistic ones.
 mock_resource "aws_iam_policy" {
   defaults = {
