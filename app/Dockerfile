@@ -25,10 +25,12 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install only curl for health checks (no build tools).
+# Apply Debian security updates the base image hasn't picked up yet (the Trivy gate fails on them),
+# then install only curl for health checks (no build tools).
 # The app runs from /opt/venv, so remove the base image's own setuptools/wheel:
 # unused at runtime, and they carry fixable CVEs.
-RUN apt-get update && apt-get install -y --no-install-recommends curl && \
+RUN apt-get update && apt-get upgrade -y && \
+    apt-get install -y --no-install-recommends curl && \
     rm -rf /var/lib/apt/lists/* && \
     pip uninstall -y --no-cache-dir setuptools wheel
 
