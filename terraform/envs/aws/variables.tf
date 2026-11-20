@@ -10,12 +10,6 @@ variable "use_spot" {
   default     = false
 }
 
-variable "root_volume_gb" {
-  description = "Root volume size in GB."
-  type        = number
-  default     = 20
-}
-
 variable "az" {
   description = "Availability Zone for the subnet and the node."
   type        = string

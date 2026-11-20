@@ -31,7 +31,6 @@ module "compute" {
   name                  = "${local.name}-node"
   instance_type         = var.instance_type
   use_spot              = var.use_spot
-  root_volume_gb        = var.root_volume_gb
   subnet_id             = module.network.subnet_id
   security_group_ids    = [module.network.security_group_id]
   instance_profile_name = data.aws_iam_instance_profile.node.name

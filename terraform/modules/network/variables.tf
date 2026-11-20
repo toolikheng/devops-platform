@@ -26,12 +26,10 @@ variable "owner_cidr" {
   sensitive   = true
 
   validation {
-    # Exactly one IPv4 address: four octets 0-255 and /32. This rejects 0.0.0.0/0, ranges, a bare address,
-    # IPv6, and the "unset" placeholder the persistent stack stores until `make owner-ip` runs.
-    condition = (
-      can(regex("^(\\d{1,3}\\.){3}\\d{1,3}/32$", var.owner_cidr)) &&
-      can(cidrhost(var.owner_cidr, 0))
-    )
+    # Exactly one IPv4 address: only an IPv4 /32 has the netmask 255.255.255.255. cidrnetmask fails on IPv6,
+    # a bare address, an invalid one and the "unset" placeholder the persistent stack stores until
+    # `make owner-ip` runs; ranges such as 0.0.0.0/0 have a shorter mask.
+    condition     = try(cidrnetmask(var.owner_cidr), "") == "255.255.255.255"
     error_message = "owner_cidr must be one IPv4 address as a /32 (for example 203.0.113.10/32). Run `make owner-ip`."
   }
 }
