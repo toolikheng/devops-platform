@@ -25,7 +25,7 @@ data "aws_ssm_parameter" "owner_cidr" {
   lifecycle {
     postcondition {
       condition     = try(cidrnetmask(self.value), "") == "255.255.255.255"
-      error_message = "${module.names.owner_cidr_parameter} does not hold one IPv4 address as a /32. Run `make owner-ip`."
+      error_message = "${module.names.owner_cidr_parameter} does not hold one IPv4 address as a /32. Run `make owner-ip` (`make cloud-up` runs it first)."
     }
   }
 }

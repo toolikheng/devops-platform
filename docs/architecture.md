@@ -82,12 +82,12 @@ The local cluster runs an image built on the machine and imported with `k3d imag
 
 **Backup path.** The CronJob runs at 02:00. Its init container opens the live database read-only and copies it with SQLite's online backup API, then runs `PRAGMA integrity_check` on the copy. The restic container backs up that copy, runs `restic check`, and applies `forget --prune` with 7 daily / 4 weekly / 12 monthly retention. The restore Job restores the latest snapshot over `/data/app.db`.
 
-**AWS session path.** `make owner-ip` writes this machine's public IP as a /32 to `/devops-platform/owner-cidr`. `make cloud-up` plans the ephemeral stack, which reads that parameter and the `devops-platform-node` instance profile by name, and applies after confirmation. The node boots with a public IPv4 and reaches AWS, GitHub, GHCR and the apt mirrors through the internet gateway on ports 443 and 80. Its SSM agent registers with AWS using the instance role, whose short-lived credentials it gets from IMDSv2. `aws ssm start-session` then opens a shell through AWS, with no inbound port. The only inbound rule is TCP 80 from the owner's /32. `make cloud-down` destroys the stack and runs `make cost-check`.
+**AWS session path.** `make cloud-up` first writes this machine's public IP as a /32 to `/devops-platform/owner-cidr` (its `owner-ip` step), then plans the ephemeral stack, which reads that parameter and the `devops-platform-node` instance profile by name, and applies after confirmation. The node boots with a public IPv4 and reaches AWS, GitHub, GHCR and the apt mirrors through the internet gateway on ports 443 and 80. Its SSM agent registers with AWS using the instance role, whose short-lived credentials it gets from IMDSv2. `aws ssm start-session` then opens a shell through AWS, with no inbound port. The only inbound rule is TCP 80 from the owner's /32. `make cloud-down` destroys the stack and runs `make cost-check`.
 
 ```mermaid
 flowchart LR
     laptop["Laptop (aws login, MFA)"] -->|terraform plan/apply| state[(S3 state bucket)]
-    laptop -->|make owner-ip| param[(SSM /devops-platform/owner-cidr)]
+    laptop -->|make cloud-up: owner-ip step| param[(SSM /devops-platform/owner-cidr)]
     laptop -->|aws ssm start-session| ssm[AWS Systems Manager]
     subgraph vpc["VPC 10.20.0.0/16, public subnet 10.20.1.0/24"]
         node["EC2 node<br/>Ubuntu 24.04, IMDSv2 hop 1<br/>SSM agent"]

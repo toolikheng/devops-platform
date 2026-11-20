@@ -203,8 +203,7 @@ Everything billed by the hour lives in `terraform/envs/aws` and exists only duri
 ```bash
 aws login --profile devops
 make cost-check                                  # start from a clean account
-make owner-ip                                    # first session, and whenever your public IP changes
-make cloud-up                                    # shows the plan, applies only after you type yes
+make cloud-up                                    # stores your current IP, shows the plan, applies only after you type yes
 #   Spot instead: make cloud-up CLOUD_ARGS='-var use_spot=true'
 aws ssm start-session --target "$(cd terraform/envs/aws && terraform output -raw instance_id)"
 # ... work ...
@@ -215,13 +214,13 @@ make cloud-down                                  # shows the destroy plan, asks,
 
 The session is over only when `make cost-check` exits 0. Measured runs are recorded in [aws-test-log.md](aws-test-log.md).
 
-### `owner_cidr must be one IPv4 address as a /32`
+### `/devops-platform/owner-cidr does not hold one IPv4 address as a /32`
 
-The plan reads `/devops-platform/owner-cidr`, which still holds the placeholder `unset` or something that isn't a single IPv4 address. Run `make owner-ip`, then `make cloud-up` again.
+The plan reads `/devops-platform/owner-cidr`, which still holds the placeholder `unset` or something that isn't a single IPv4 address. This happens when Terraform runs without `make cloud-up`, whose first step stores your current IP. Run `make owner-ip`, or `make cloud-up`.
 
 ### The app is unreachable on port 80, but Session Manager works
 
-Your public IP has probably changed. Run `make owner-ip && make cloud-up`: only the security group rule changes, in place. Session Manager needs no inbound rule, so it keeps working.
+Your public IP has probably changed. Run `make cloud-up` again: it stores the new IP, and only the security group rule changes, in place. Session Manager needs no inbound rule, so it keeps working.
 
 ### The SSM agent doesn't show up, or `start-session` says the target is not connected
 

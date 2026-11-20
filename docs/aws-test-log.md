@@ -12,8 +12,8 @@ Costs are estimates from the published hourly rates, before tax. The Billing con
 aws login --profile devops
 make cost-check                                   # clean before starting
 cd terraform/persistent && terraform plan -out=tfplan && terraform apply tfplan && cd -   # node role, profile, owner-cidr parameter
-make owner-ip                                     # store this machine's IP as a /32
-make cloud-up                                     # on-demand; Spot: make cloud-up CLOUD_ARGS='-var use_spot=true'
+make cloud-up                                     # stores this machine's IP as a /32, then applies (on-demand)
+#   Spot: make cloud-up CLOUD_ARGS='-var use_spot=true'
 aws ssm start-session --target "$(cd terraform/envs/aws && terraform output -raw instance_id)"
 ```
 

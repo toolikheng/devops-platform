@@ -109,7 +109,7 @@ See [ADR 005](docs/decisions/005-terraform-state-in-s3.md), [ADR 006](docs/decis
   - standard CPU credits, so a busy T instance slows down instead of billing extra
   - on-demand or Spot from one variable
 - **Access:** no SSH from the internet. The SSM agent on the node connects out to AWS, so `aws ssm start-session` gives a shell with no inbound port open. Its role allows only the 11 actions the agent needs; the usual managed policy would also let the node read every SSM parameter.
-- **Your IP:** `make owner-ip` stores this machine's public IP as a /32. Until it has run, the plan fails rather than open the port to a made-up address.
+- **Your IP:** `make cloud-up` first stores this machine's public IP as a /32 (`make owner-ip` does only that step), so every session starts with your current IP. If no real IP is stored, the plan fails rather than open the port to a made-up address.
 
 Cost while the stack exists (ap-southeast-1, before tax). Nothing is billed once it is destroyed.
 
@@ -173,7 +173,7 @@ bash ci/gitleaks.sh        # scan the full git history for secrets, values redac
 make tf-check              # offline Terraform checks: fmt, validate, terraform test, tflint, trivy
 make cost-check            # AWS: read-only scan for billable leftovers (needs `aws login --profile devops`)
 make owner-ip              # AWS: store this machine's public IP (/32) for the node's security group
-make cloud-up              # AWS: create the ephemeral stack, after Terraform shows the plan and you type yes (billed hourly)
+make cloud-up              # AWS: store your IP, then create the ephemeral stack after Terraform shows the plan and you type yes (billed hourly)
 make cloud-down            # AWS: destroy it (also asks first), then run cost-check
 ```
 

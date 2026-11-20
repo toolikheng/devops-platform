@@ -144,6 +144,31 @@ def test_cloud_up_can_use_another_public_key(fakes: Fakes) -> None:
     assert fakes.calls("terraform")[-1]["key"] == "key"
 
 
+def test_cloud_up_stores_the_current_ip_before_applying(fakes: Fakes) -> None:
+    result = fakes.make("cloud-up")
+    assert result.returncode == 0, result.stderr
+    calls = fakes.calls()
+    put = next(i for i, c in enumerate(calls) if c["args"].startswith("ssm put-parameter"))
+    apply = next(i for i, c in enumerate(calls) if c["tool"] == "terraform" and c["args"].startswith("apply"))
+    assert put < apply, "the IP must be stored before Terraform reads it"
+
+
+def test_cloud_up_stops_before_terraform_if_the_ip_cannot_be_read(fakes: Fakes) -> None:
+    fakes.checkip("<html>error</html>")
+    result = fakes.make("cloud-up")
+    assert len(fakes.calls("curl")) == 1, "cloud-up must ask checkip"
+    assert result.returncode != 0
+    assert not fakes.calls("terraform")
+
+
+def test_owner_ip_writes_to_the_stacks_region_whatever_aws_region_says(fakes: Fakes) -> None:
+    # The stacks fix their region in code, so a parameter written anywhere else would never be read.
+    result = fakes.make("owner-ip", "AWS_REGION=eu-west-1")
+    assert result.returncode == 0, result.stderr
+    put = next(c["args"].split() for c in fakes.calls("aws") if c["args"].startswith("ssm put-parameter"))
+    assert put[put.index("--region") + 1] == "ap-southeast-1"
+
+
 # --- make cloud-down ------------------------------------------------------------------------------------
 
 def test_cloud_down_destroys_then_runs_the_cost_check(fakes: Fakes) -> None:
@@ -159,6 +184,13 @@ def test_cloud_down_destroys_then_runs_the_cost_check(fakes: Fakes) -> None:
     destroy_at = calls.index(tf[1])
     assert any(c["tool"] == "aws" for c in calls[destroy_at + 1:]), "cost-check must run after destroy"
     assert "No billable leftovers" in result.stdout
+
+
+def test_cloud_down_does_not_touch_the_owner_ip(fakes: Fakes) -> None:
+    result = fakes.make("cloud-down")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not fakes.calls("curl")
+    assert not [c for c in fakes.calls("aws") if "put-parameter" in c["args"]]
 
 
 def test_cloud_down_fails_when_destroy_fails(fakes: Fakes) -> None:

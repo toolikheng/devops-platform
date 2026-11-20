@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 # owner-ip.sh - store this machine's public IPv4 as a /32 in the SSM parameter /devops-platform/owner-cidr.
 #
-# The ephemeral stack reads the parameter and allows only that address in on port 80. Run it before
-# `make cloud-up`, and again whenever your public IP changes (then `make cloud-up` updates the rule in place).
-# This is an AWS write (one free Standard parameter), so it runs only when the owner asks for it.
+# The ephemeral stack reads the parameter and allows only that address in on port 80. `make cloud-up` runs
+# this first, so every session starts with the current IP; after an IP change mid-session, run
+# `make cloud-up` again and only the security group rule changes. This is an AWS write (one free Standard
+# parameter).
 set -euo pipefail
 
+# Must match terraform/modules/names (tests/test_names.py checks it).
 PARAMETER="/devops-platform/owner-cidr"
+# The stacks fix their region in code; a parameter written to any other region would never be read.
+REGION="ap-southeast-1"
 
 ip="$(curl -fsS --max-time 10 https://checkip.amazonaws.com | tr -d '[:space:]')"
 
@@ -17,5 +21,5 @@ if ! [[ "$ip" =~ ^$octet\.$octet\.$octet\.$octet$ ]]; then
   exit 1
 fi
 
-aws ssm put-parameter --name "$PARAMETER" --type String --value "$ip/32" --overwrite >/dev/null
+aws ssm put-parameter --region "$REGION" --name "$PARAMETER" --type String --value "$ip/32" --overwrite >/dev/null
 echo "owner-ip: $PARAMETER = $ip/32"
