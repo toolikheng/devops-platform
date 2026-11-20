@@ -12,9 +12,17 @@ data "aws_iam_instance_profile" "node" {
 }
 
 # The owner's /32, written by `make owner-ip`. Terraform treats the value as sensitive, so it is redacted
-# in plan output (and in public CI logs later).
+# in plan output (and in public CI logs later). It is checked here, where it enters the stack: the
+# persistent stack stores the placeholder "unset" until `make owner-ip` has run.
 data "aws_ssm_parameter" "owner_cidr" {
   name = "/devops-platform/owner-cidr"
+
+  lifecycle {
+    postcondition {
+      condition     = try(cidrnetmask(self.value), "") == "255.255.255.255"
+      error_message = "/devops-platform/owner-cidr does not hold one IPv4 address as a /32. Run `make owner-ip`."
+    }
+  }
 }
 
 module "network" {

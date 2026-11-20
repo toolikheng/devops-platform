@@ -1,9 +1,21 @@
 # The ephemeral root stack: wires the network and compute modules together, tags everything as
-# ephemeral, and finds what the persistent stack made (instance profile, owner IP) by name. The rules for
-# each part are tested in its own module.
+# ephemeral, finds what the persistent stack made (instance profile, owner IP) by name, and checks the
+# owner IP where it reads it. The rules for each part are tested in its own module.
+#
+# Compute is replaced by its outputs here, so these tests cross it only at its interface and survive
+# changes inside it. Network stays real: it has no data sources to mock.
 
 mock_provider "aws" {
   source = "./tests/mocks"
+}
+
+override_module {
+  target = module.compute
+  outputs = {
+    instance_id = "i-0123456789abcdef0"
+    public_ip   = "203.0.113.20"
+    public_dns  = "ec2-203-0-113-20.ap-southeast-1.compute.amazonaws.com"
+  }
 }
 
 variables {
@@ -40,15 +52,38 @@ run "persistent_resources_are_looked_up_by_name" {
   }
 }
 
+# The persistent stack creates the parameter as "unset" until `make owner-ip` stores a real /32.
+run "owner_ip_never_set_fails_the_plan" {
+  command = plan
+  override_data {
+    target = data.aws_ssm_parameter.owner_cidr
+    values = {
+      value = "unset"
+    }
+  }
+  expect_failures = [data.aws_ssm_parameter.owner_cidr]
+}
+
+run "owner_ip_that_is_a_range_fails_the_plan" {
+  command = plan
+  override_data {
+    target = data.aws_ssm_parameter.owner_cidr
+    values = {
+      value = "0.0.0.0/0"
+    }
+  }
+  expect_failures = [data.aws_ssm_parameter.owner_cidr]
+}
+
 run "outputs_for_session_manager_and_ansible" {
   command = apply
 
   assert {
     condition = (
-      output.instance_id == module.compute.instance_id &&
-      output.public_ip == module.compute.public_ip &&
-      output.public_dns == module.compute.public_dns
+      output.instance_id == "i-0123456789abcdef0" &&
+      output.public_ip == "203.0.113.20" &&
+      output.public_dns == "ec2-203-0-113-20.ap-southeast-1.compute.amazonaws.com"
     )
-    error_message = "The stack must expose instance_id, public_ip and public_dns from the compute module."
+    error_message = "The stack must expose the node's instance_id, public_ip and public_dns."
   }
 }
