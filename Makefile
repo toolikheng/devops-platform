@@ -4,7 +4,7 @@
         cluster-up cluster-down deploy \
         monitoring-up monitoring-down \
         backup restore-test \
-        test-infra cost-check tf-check \
+        test-infra cost-check tf-check owner-ip cloud-up cloud-down \
         destroy all clean
 
 SHELL := /bin/bash
@@ -33,6 +33,11 @@ TESTS_VENV_STAMP := $(TESTS_VENV)/.installed
 # AWS profile and region for the cost check (`aws login --profile devops` first).
 AWS_PROFILE ?= devops
 AWS_REGION ?= ap-southeast-1
+# Ephemeral AWS stack (everything billed by the hour) and the SSH key Ansible uses through Session Manager.
+EPHEMERAL_DIR := $(REPO_ROOT)/terraform/envs/aws
+SSH_PUBLIC_KEY_FILE ?= $(HOME)/.ssh/id_ed25519.pub
+# Extra Terraform arguments for cloud-up/cloud-down, e.g. CLOUD_ARGS='-var use_spot=true'.
+CLOUD_ARGS ?=
 
 # Color output (if tty)
 ifeq ($(shell [ -t 1 ] && echo 1),1)
@@ -91,6 +96,9 @@ help:
 	@$(ECHO) "$(BLUE)AWS (v2):$(NC)"
 	@$(ECHO) "  $(GREEN)make cost-check$(NC)    Read-only scan for billable AWS leftovers (all regions)"
 	@$(ECHO) "  $(GREEN)make tf-check$(NC)      Offline Terraform checks: fmt, validate, test, tflint, trivy"
+	@$(ECHO) "  $(GREEN)make owner-ip$(NC)      Store your public IP (/32) for the node's firewall (AWS write)"
+	@$(ECHO) "  $(GREEN)make cloud-up$(NC)      Create the ephemeral stack (asks before applying; billed hourly)"
+	@$(ECHO) "  $(GREEN)make cloud-down$(NC)    Destroy the ephemeral stack (asks first), then run cost-check"
 	@$(ECHO) ""
 	@$(ECHO) "$(BLUE)Utilities:$(NC)"
 	@$(ECHO) "  $(GREEN)make all$(NC)           Run all phases (check → infra → deploy)"
@@ -261,6 +269,27 @@ tf-check:
 # Read-only: describe/list/get calls only, never the Cost Explorer API. Exit 1 if anything billable is left.
 cost-check:
 	@AWS_PROFILE="$(AWS_PROFILE)" AWS_REGION="$(AWS_REGION)" bash "$(REPO_ROOT)/scripts/cost-check.sh"
+
+# AWS writes. Terraform shows its plan and waits for "yes"; never add -auto-approve.
+owner-ip:
+	@AWS_PROFILE="$(AWS_PROFILE)" AWS_REGION="$(AWS_REGION)" bash "$(REPO_ROOT)/scripts/owner-ip.sh"
+
+# Runs one Terraform command in the ephemeral stack, with the SSH public key as TF_VAR_ssh_public_key.
+define ephemeral_tf
+	@test -f "$(SSH_PUBLIC_KEY_FILE)" || { echo "Missing $(SSH_PUBLIC_KEY_FILE): create it with ssh-keygen -t ed25519, or set SSH_PUBLIC_KEY_FILE." >&2; exit 1; }
+	@cd "$(EPHEMERAL_DIR)" && \
+		export AWS_PROFILE="$(AWS_PROFILE)" TF_VAR_ssh_public_key="$$(cat "$(SSH_PUBLIC_KEY_FILE)")" && \
+		terraform init -input=false >/dev/null && \
+		terraform $(1) $(CLOUD_ARGS)
+endef
+
+cloud-up:
+	$(call ephemeral_tf,apply)
+
+# cost-check runs only after a successful destroy, and fails the target if anything billable is left.
+cloud-down:
+	$(call ephemeral_tf,destroy)
+	@$(MAKE) --no-print-directory cost-check
 
 # Utilities
 all: check infra-up provision test build cluster-up deploy monitoring-up
