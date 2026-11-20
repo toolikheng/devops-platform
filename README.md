@@ -39,8 +39,11 @@ make destroy        # delete the cluster and the nodes
 | Backups are consistent | `make backup` was run while 656 writes hit the app; the SQLite copy passed `PRAGMA integrity_check` and was saved as a restic snapshot. |
 | Restore test catches a broken restore | `make restore-test` passes only if the app serves exactly the backed-up items afterwards and an item written after the backup is gone. A deliberately broken restore (data never copied back) makes it fail. |
 | Self-healing | Deleting the app pod: a replacement was Ready 14 seconds later. |
-| AWS cost check is read-only and fails safe | `make cost-check` lists anything billable left in the account: the full list in ap-southeast-1 (instances, volumes, snapshots, Elastic IPs, public IPv4, NAT gateways, VPC endpoints, load balancers, EKS, RDS, Secrets Manager) plus instances, volumes and Elastic IPs in every other enabled region. 26 tests run it against a fake `aws` CLI: each kind of leftover is reported, only describe/list/get calls are made, the Cost Explorer API is never called, and a check that can't run is an error, never a clean result. Run against the real account: clean. |
-| Terraform state is private, TLS-only and locked | 12 `terraform test` runs check the persistent stack offline with a mock provider, and each one was shown to fail on a deliberately broken copy. Live: the apply created the state bucket and budgets; a second plan through the S3 backend shows no changes; a plain-HTTP request to the bucket gets AccessDenied even as the admin user; with two plans started at once, the second fails with "Error acquiring the state lock". |
+| AWS cost check is read-only and fails safe | `make cost-check` lists anything billable left in the account: the full list in ap-southeast-1 (instances, volumes, snapshots, Elastic IPs, public IPv4, NAT gateways, VPC endpoints, load balancers, EKS, RDS, Secrets Manager, open or active Spot requests, Route 53 hosted zones, ECR repositories, Lightsail instances and databases, SageMaker notebooks and endpoints, customer-managed KMS keys) plus instances, volumes and Elastic IPs in every other enabled region. 38 tests run it against a fake `aws` CLI: each kind of leftover is reported, only describe/list/get calls are made, the Cost Explorer API is never called, and a check that can't run is an error, never a clean result. Run against the real account after every session: clean, and it ignored the two cancelled one-time Spot requests and the free AWS-managed `aws/ebs` key. |
+| Terraform state is private, TLS-only and locked | 16 `terraform test` runs check the persistent stack offline with a mock provider, and each one was shown to fail on a deliberately broken copy. Live: the apply created the state bucket and budgets; a second plan through the S3 backend shows no changes; a plain-HTTP request to the bucket gets AccessDenied even as the admin user; with two plans started at once, the second fails with "Error acquiring the state lock". |
+| The AWS node is reachable only the way it should be | Live, on-demand and Spot: a shell through SSM Session Manager worked with a role allowed only the 11 SSM-agent actions. From my IP, port 80 was allowed while 22 and 6443 were dropped even though sshd was listening. IMDSv1 got 401 and IMDSv2 worked. Outbound HTTPS and HTTP worked; other ports were blocked. Details in [docs/aws-test-log.md](docs/aws-test-log.md). |
+| The node's rules hold before anything is created | 32 offline `terraform test` runs on the network and compute modules and the ephemeral stack: allowlisted instance types only, x86 only, encrypted gp3 root volume of at most 30 GB deleted with the instance, IMDSv2 with hop limit 1, standard CPU credits, no inbound 22 or 6443, owner IP must be one /32. A mutation check broke 37 rules one at a time across the Terraform code; every one was caught. |
+| Spot and on-demand both work, and both leave nothing behind | Live: each run was created, checked, destroyed and followed by a clean `make cost-check`; a second plan after each apply showed no changes. The first Spot run failed on a real AWS restriction (see [ADR 009](docs/decisions/009-spot-and-on-demand.md)); it was fixed test-first and the retry passed. The Spot request was one-time with the on-demand price as its cap. |
 | The budget action blocks new spend, never clean-up | IAM policy simulator with the deny policy added to the admin user: starting instances, NAT gateways or RDS is explicitly denied. Terminating, deleting, detaching the policy and reading or writing the state file stay allowed. The action's role can only attach that one policy to that one user. |
 | Rolling restarts drop no requests | Continuous requests through the ingress during a rolling restart: 1,549 and 1,520 requests in two runs, 0 failures. Before the `preStop` delay was added, the same test failed 24 of 1,533 requests (502s and a timeout). |
 
@@ -73,8 +76,8 @@ make destroy        # delete the cluster and the nodes
 - Daily CronJob. An init container takes a SQLite online backup (safe while the app is writing) and checks it; restic 0.19.1 then backs up that copy, runs `restic check`, and applies 7 daily / 4 weekly / 12 monthly retention.
 - `make restore-test` proves the round trip end to end (see above).
 
-### AWS foundations (Terraform, in progress)
-The homelab is being extended to AWS (ap-southeast-1). The first part is a **persistent** Terraform stack (`terraform/persistent`) with only resources that cost about $0 at rest. Anything billed by the hour will live in a separate stack that is destroyed after every session.
+### AWS (Terraform, in progress)
+The homelab is being extended to AWS (ap-southeast-1) with two Terraform stacks. The **persistent** stack (`terraform/persistent`) holds only resources that cost about $0 at rest. The **ephemeral** stack (`terraform/envs/aws`, below) holds everything billed by the hour and is destroyed after every session.
 - **State.** Terraform's record of what it manages lives in an S3 bucket created by this stack:
   - versioned, so a bad write can be rolled back
   - encrypted with SSE-S3
@@ -88,9 +91,35 @@ The homelab is being extended to AWS (ap-southeast-1). The first part is a **per
   - `monthly-cap` emails at USD 1, 5 and 10.
   - At USD 15 an automatic budget action attaches a deny policy to the admin user that blocks starting anything billable. It never blocks deleting, IAM or state writes, so a clean-up still works.
   - Budgets only stop *new* spend, and their data lags by hours, so destroying the hourly stack after every session stays the main guard.
+- **What the node needs.** The persistent stack also holds the node's IAM role and instance profile, and the SSM parameter `/devops-platform/owner-cidr` with my IP. All of it is free, and keeping IAM here means creating or destroying the node never needs IAM permissions.
 - **Checks.** `make tf-check` runs `terraform fmt`, `validate`, `terraform test` (mock provider, no AWS calls), tflint and trivy. CI runs it on every push.
 
 See [ADR 005](docs/decisions/005-terraform-state-in-s3.md), [ADR 006](docs/decisions/006-budgets-as-code.md) and [ADR 007](docs/decisions/007-anomaly-detection-in-console.md).
+
+#### The ephemeral stack: one node, created per session
+`terraform/envs/aws` holds everything billed by the hour. `make cloud-up` creates it at the start of a session and `make cloud-down` destroys it at the end, then runs `make cost-check`.
+- **Network** (`terraform/modules/network`):
+  - one VPC with one public subnet, an internet gateway and a default route
+  - no NAT gateway, Elastic IP or VPC endpoints, because each costs more per hour than the node
+- **Node** (`terraform/modules/compute`), including everything about how it is reached:
+  - security group: TCP 80 from my /32 only, nothing on 22 or 6443, outbound 443 and 80 only ([ADR 011](docs/decisions/011-node-owns-its-security-group.md))
+  - Ubuntu 24.04 amd64 from Canonical; the instance type must be on the allowlist and support x86_64
+  - IMDSv2 only, with hop limit 1
+  - encrypted 20 GB gp3 root volume, deleted with the instance
+  - standard CPU credits, so a busy T instance slows down instead of billing extra
+  - on-demand or Spot from one variable
+- **Access:** no SSH from the internet. The SSM agent on the node connects out to AWS, so `aws ssm start-session` gives a shell with no inbound port open. Its role allows only the 11 actions the agent needs; the usual managed policy would also let the node read every SSM parameter.
+- **Your IP:** `make cloud-up` first stores this machine's public IP as a /32 (`make owner-ip` does only that step), so every session starts with your current IP. If no real IP is stored, the plan fails rather than open the port to a made-up address.
+
+Cost while the stack exists (ap-southeast-1, before tax). Nothing is billed once it is destroyed.
+
+| Node | On-demand | Spot (typical) |
+|---|---|---|
+| t3.micro + public IPv4 + 20 GB gp3 | USD 0.021/h | USD 0.012/h |
+| t3.small + public IPv4 + 20 GB gp3 | USD 0.034/h | USD 0.019/h |
+| c7i-flex.large + public IPv4 + 20 GB gp3 | USD 0.105/h | USD 0.061/h |
+
+See [ADR 008](docs/decisions/008-k3s-on-ec2-over-eks.md) (k3s on EC2, not EKS), [ADR 009](docs/decisions/009-spot-and-on-demand.md) (Spot and on-demand), [ADR 010](docs/decisions/010-public-subnet-without-nat.md) (network and access) and the live results in [docs/aws-test-log.md](docs/aws-test-log.md).
 
 ### CI/CD (GitHub Actions)
 - On every push and pull request: lint, tests, alert-rule tests, hadolint, repo-level tests, ShellCheck and the offline Terraform checks, then build and Trivy scan.
@@ -143,7 +172,12 @@ bash ci/shellcheck.sh      # ShellCheck on every shell script (pinned Docker ima
 bash ci/gitleaks.sh        # scan the full git history for secrets, values redacted (pinned Docker image)
 make tf-check              # offline Terraform checks: fmt, validate, terraform test, tflint, trivy
 make cost-check            # AWS: read-only scan for billable leftovers (needs `aws login --profile devops`)
+make owner-ip              # AWS: store this machine's public IP (/32) for the node's security group
+make cloud-up              # AWS: store your IP, then create the ephemeral stack after Terraform shows the plan and you type yes (billed hourly)
+make cloud-down            # AWS: destroy it (also asks first), then run cost-check
 ```
+
+`make cloud-up CLOUD_ARGS='-var use_spot=true'` starts the node on Spot. A shell on the node: `aws ssm start-session --target "$(cd terraform/envs/aws && terraform output -raw instance_id)"`.
 
 Grafana and Prometheus are reached with a port-forward:
 
@@ -163,7 +197,7 @@ kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:909
 
 ## Project structure
 
-- `terraform/` — AWS infrastructure: `persistent/` (state bucket, budgets, IAM), with tests in each stack's `tests/`
+- `terraform/` — AWS infrastructure: `persistent/` (state bucket, budgets, IAM, the node's role and the owner-IP parameter), `envs/aws/` (the ephemeral stack) and `modules/` (`network`, `compute`, and `names`: the names both stacks share), with tests in each directory's `tests/`
 - `ansible/` — inventory, playbook, `common` and `node_exporter` roles
 - `infra/nodes/` — node image, startup script, Docker Compose file
 - `app/` — FastAPI service, tests, Dockerfile
@@ -171,8 +205,8 @@ kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:909
 - `monitoring/` — Helm values, ServiceMonitor, alert rules and their tests, dashboard
 - `backup/` — backup CronJob, restore Job, restore test
 - `ci/` — scripts shared by the Makefile and GitHub Actions (lint, test, rule tests, build, scan, ShellCheck, gitleaks)
-- `scripts/` — toolchain check (`bootstrap.sh`) and the read-only AWS cost check (`cost-check.sh`)
-- `tests/` — repo-level tests: the cost check (against a fake `aws` CLI) and the `.gitignore` rules
+- `scripts/` — toolchain check (`bootstrap.sh`), the read-only AWS cost check (`cost-check.sh`), `owner-ip.sh`, and `ephemeral-tf.sh` (the Terraform run behind `make cloud-up` / `cloud-down`)
+- `tests/` — repo-level tests: the cost check (against a fake `aws` CLI), the AWS session Make targets (against fake `terraform`, `aws` and `curl`), the scripts' copies of shared Terraform names, and the `.gitignore` rules
 - `.github/workflows/` — CI on every push, manual CD
 - `docs/` — architecture, decisions, runbook, fresh-clone test log
 
@@ -184,6 +218,7 @@ kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:909
 - **One snapshot per day.** Retention keeps the newest snapshot of each day, so a manual backup (or `make restore-test`) replaces that day's scheduled one.
 - **SQLite means one replica.** The dev overlay runs a single pod; scaling out needs a different database.
 - **`make restore-test` changes the dev database.** It wipes and restores `/data/app.db`, and leaves its test items behind. Run it only against a dev cluster.
+- **The AWS node is a bare server so far.** It runs Ubuntu and the SSM agent; k3s and the app come in later phases. It is a single instance with no high availability, and a Spot interruption takes it away until it is rebuilt.
 - **The prod overlay is a template.** It renders and points at an image CI really pushes, but it isn't deployed anywhere, and neither is anything outside this one machine.
 
 ## Troubleshooting
@@ -208,7 +243,7 @@ More in [docs/runbook.md](docs/runbook.md).
 ## Next steps
 
 - Off-site backups: copy the restic repository to object storage.
-- Terraform plus real cloud VMs or Proxmox, using the same Ansible roles.
+- Finish the AWS environment: k3s on the node with the same Ansible roles, PolicyPal, secrets from SSM Parameter Store, and CI/CD that authenticates to AWS with OIDC.
 - Loki for logs; cert-manager and TLS.
 - Pull-based CD into a long-lived cluster.
 

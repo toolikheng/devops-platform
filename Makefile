@@ -4,7 +4,7 @@
         cluster-up cluster-down deploy \
         monitoring-up monitoring-down \
         backup restore-test \
-        test-infra cost-check tf-check \
+        test-infra cost-check tf-check owner-ip cloud-up cloud-down \
         destroy all clean
 
 SHELL := /bin/bash
@@ -30,9 +30,11 @@ VENV_STAMP := $(VENV)/.installed
 # Repo-level tests in tests/ (cost check, .gitignore rules) have their own venv (gitignored).
 TESTS_VENV := $(REPO_ROOT)/tests/.venv
 TESTS_VENV_STAMP := $(TESTS_VENV)/.installed
-# AWS profile and region for the cost check (`aws login --profile devops` first).
+# AWS profile and region for the AWS targets (`aws login --profile devops` first).
 AWS_PROFILE ?= devops
 AWS_REGION ?= ap-southeast-1
+# Extra Terraform arguments for cloud-up/cloud-down, e.g. CLOUD_ARGS='-var use_spot=true'.
+CLOUD_ARGS ?=
 
 # Color output (if tty)
 ifeq ($(shell [ -t 1 ] && echo 1),1)
@@ -91,6 +93,9 @@ help:
 	@$(ECHO) "$(BLUE)AWS (v2):$(NC)"
 	@$(ECHO) "  $(GREEN)make cost-check$(NC)    Read-only scan for billable AWS leftovers (all regions)"
 	@$(ECHO) "  $(GREEN)make tf-check$(NC)      Offline Terraform checks: fmt, validate, test, tflint, trivy"
+	@$(ECHO) "  $(GREEN)make owner-ip$(NC)      Store your public IP (/32) for the node's firewall (AWS write)"
+	@$(ECHO) "  $(GREEN)make cloud-up$(NC)      Store your IP, then create the ephemeral stack (asks before applying; billed hourly)"
+	@$(ECHO) "  $(GREEN)make cloud-down$(NC)    Destroy the ephemeral stack (asks first), then run cost-check"
 	@$(ECHO) ""
 	@$(ECHO) "$(BLUE)Utilities:$(NC)"
 	@$(ECHO) "  $(GREEN)make all$(NC)           Run all phases (check → infra → deploy)"
@@ -261,6 +266,19 @@ tf-check:
 # Read-only: describe/list/get calls only, never the Cost Explorer API. Exit 1 if anything billable is left.
 cost-check:
 	@AWS_PROFILE="$(AWS_PROFILE)" AWS_REGION="$(AWS_REGION)" bash "$(REPO_ROOT)/scripts/cost-check.sh"
+
+# AWS writes. owner-ip overwrites one free SSM parameter with this machine's IP straight away. cloud-up
+# runs it first, then shows Terraform's plan and waits for "yes", as cloud-down does; never add -auto-approve.
+owner-ip:
+	@AWS_PROFILE="$(AWS_PROFILE)" bash "$(REPO_ROOT)/scripts/owner-ip.sh"
+
+cloud-up: owner-ip
+	@AWS_PROFILE="$(AWS_PROFILE)" bash "$(REPO_ROOT)/scripts/ephemeral-tf.sh" apply $(CLOUD_ARGS)
+
+# cost-check runs only after a successful destroy, and fails the target if anything billable is left.
+cloud-down:
+	@AWS_PROFILE="$(AWS_PROFILE)" bash "$(REPO_ROOT)/scripts/ephemeral-tf.sh" destroy $(CLOUD_ARGS)
+	@$(MAKE) --no-print-directory cost-check
 
 # Utilities
 all: check infra-up provision test build cluster-up deploy monitoring-up

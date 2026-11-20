@@ -66,7 +66,8 @@ The local cluster runs an image built on the machine and imported with `k3d imag
 | Ansible | `ansible/` | `common` role (packages, timezone, SSH hardening, motd) and `node_exporter` role (systemd or SysV init, depending on the host). Run from WSL; idempotent |
 | Monitoring | `monitoring/` | kube-prometheus-stack values (chart pinned to 92.16.0), ServiceMonitor, alert rules with promtool tests, dashboard JSON wrapped in a ConfigMap for Grafana's sidecar |
 | Backup | `backup/` | Daily CronJob (SQLite online backup, then restic), restore Job, restore test |
-| Terraform persistent stack (AWS) | `terraform/persistent` | S3 state bucket (versioned, SSE-S3, TLS-only, native lockfile), `zero-spend` and `monthly-cap` budgets, and the USD 15 budget action that denies new spend. Only $0-at-rest resources; applied from the laptop. See ADRs 005–007 |
+| Terraform persistent stack (AWS) | `terraform/persistent` | S3 state bucket (versioned, SSE-S3, TLS-only, native lockfile), `zero-spend` and `monthly-cap` budgets, and the USD 15 budget action that denies new spend. Also the node's role (11 SSM-agent actions only), its instance profile, and the SSM parameter `/devops-platform/owner-cidr`. Only $0-at-rest resources; applied from the laptop. See ADRs 005–007 |
+| Terraform ephemeral stack (AWS) | `terraform/envs/aws`, `terraform/modules/{network,compute}` | Everything billed by the hour, created with `make cloud-up` and destroyed with `make cloud-down` every session. `network`: one VPC with a public subnet and internet gateway (no NAT, Elastic IP or endpoints). `compute`: one Ubuntu 24.04 node (allowlisted type, IMDSv2 hop limit 1, encrypted gp3, on-demand or Spot) and its security group, allowing TCP 80 from the owner's /32 only. It finds the instance profile and owner IP by name, not through the persistent state. See ADRs 008–012 |
 | Shared scripts | `ci/`, `scripts/` | Lint, test, rule-test, build and scan scripts used by the Makefile and CI; toolchain check/install |
 
 ## Data flows
@@ -81,6 +82,21 @@ The local cluster runs an image built on the machine and imported with `k3d imag
 
 **Backup path.** The CronJob runs at 02:00. Its init container opens the live database read-only and copies it with SQLite's online backup API, then runs `PRAGMA integrity_check` on the copy. The restic container backs up that copy, runs `restic check`, and applies `forget --prune` with 7 daily / 4 weekly / 12 monthly retention. The restore Job restores the latest snapshot over `/data/app.db`.
 
+**AWS session path.** `make cloud-up` first writes this machine's public IP as a /32 to `/devops-platform/owner-cidr` (its `owner-ip` step), then plans the ephemeral stack, which reads that parameter and the `devops-platform-node` instance profile by name, and applies after confirmation. The node boots with a public IPv4 and reaches AWS, GitHub, GHCR and the apt mirrors through the internet gateway on ports 443 and 80. Its SSM agent registers with AWS using the instance role, whose short-lived credentials it gets from IMDSv2. `aws ssm start-session` then opens a shell through AWS, with no inbound port. The only inbound rule is TCP 80 from the owner's /32. `make cloud-down` destroys the stack and runs `make cost-check`.
+
+```mermaid
+flowchart LR
+    laptop["Laptop (aws login, MFA)"] -->|terraform plan/apply| state[(S3 state bucket)]
+    laptop -->|make cloud-up: owner-ip step| param[(SSM /devops-platform/owner-cidr)]
+    laptop -->|aws ssm start-session| ssm[AWS Systems Manager]
+    subgraph vpc["VPC 10.20.0.0/16, public subnet 10.20.1.0/24"]
+        node["EC2 node<br/>Ubuntu 24.04, IMDSv2 hop 1<br/>SSM agent"]
+    end
+    ssm <-->|"agent connects out (443)"| node
+    browser["Owner browser"] -->|"TCP 80, owner /32 only"| node
+    node -->|"443/80 via internet gateway"| internet["AWS APIs, GitHub, GHCR, apt"]
+```
+
 ## Known limitations
 
 - **The systemd branch of the node_exporter role is untested.** The Docker nodes have no systemd, so only the SysV init path has run.
@@ -89,4 +105,5 @@ The local cluster runs an image built on the machine and imported with `k3d imag
 - **One snapshot per day.** Retention keeps the newest snapshot of each day, so a manual backup replaces that day's scheduled one.
 - **SQLite on one replica.** The app is single-writer; scaling out needs a different database.
 - **`make restore-test` wipes and restores the dev database** and leaves its test items behind. Run it only against a dev cluster.
-- **Single machine only.** Nothing has been deployed beyond k3d on one machine; the `prod` overlay is a template.
+- **The app runs on one machine only.** It has not been deployed beyond k3d; the `prod` overlay is a template. The AWS node exists only during a session and does not run k3s yet.
+- **The AWS node is a single instance** with no high availability. A Spot interruption or a terminated instance takes it down until it is rebuilt.

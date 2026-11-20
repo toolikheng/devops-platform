@@ -102,6 +102,13 @@ BILLABLE = [
     ("rds.describe-db-instances", "rds-instance-test\tdb.t3.micro"),
     ("rds.describe-db-clusters", "rds-cluster-test"),
     ("secretsmanager.list-secrets", "secret-test"),
+    ("ec2.describe-spot-instance-requests", "sir-0abc123\topen\tpersistent"),
+    ("route53.list-hosted-zones", "/hostedzone/Z0TEST\texample.com."),
+    ("ecr.describe-repositories", "ecr-repo-test"),
+    ("lightsail.get-instances", "lightsail-instance-test\trunning"),
+    ("lightsail.get-relational-databases", "lightsail-db-test\tavailable"),
+    ("sagemaker.list-notebook-instances", "notebook-test\tStopped"),
+    ("sagemaker.list-endpoints", "endpoint-test\tInService"),
 ]
 
 
@@ -192,3 +199,48 @@ def test_none_output_counts_as_empty(aws: FakeAws) -> None:
     aws.answer("eks.list-clusters", "None", region=HOME_REGION)
     result = aws.run()
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_only_open_or_active_spot_requests_count(aws: FakeAws) -> None:
+    # A one-time request is closed or cancelled once its instance is gone, and costs nothing. An open or
+    # active one (persistent, or still waiting for capacity) can start an instance again on its own.
+    aws.run()
+    spot = [c for c in aws.calls() if c.startswith("ec2 describe-spot-instance-requests")]
+    assert len(spot) == 1, "Spot requests are checked once, in the home region"
+    assert "Name=state,Values=open,active" in spot[0]
+    assert f"--region {HOME_REGION}" in spot[0]
+
+
+# list-keys can't tell customer-managed keys (USD 1/month each) from the free AWS-managed ones such as
+# aws/ssm and aws/ebs, so each key is described.
+def test_customer_managed_kms_key_is_reported(aws: FakeAws) -> None:
+    aws.answer("kms.list-keys", "key-0abc\tkey-0def", region=HOME_REGION)
+    aws.answer("kms.describe-key", "CUSTOMER\tEnabled", region=HOME_REGION)
+    result = aws.run()
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "key-0abc" in result.stdout and "key-0def" in result.stdout
+
+
+def test_aws_managed_kms_keys_are_not_reported(aws: FakeAws) -> None:
+    aws.answer("kms.list-keys", "key-0abc\tkey-0def", region=HOME_REGION)
+    aws.answer("kms.describe-key", "AWS\tEnabled", region=HOME_REGION)
+    result = aws.run()
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert any(c.startswith("kms describe-key") for c in aws.calls()), "each key must be described"
+
+
+def test_kms_key_already_scheduled_for_deletion_is_not_reported(aws: FakeAws) -> None:
+    aws.answer("kms.list-keys", "key-0abc", region=HOME_REGION)
+    aws.answer("kms.describe-key", "CUSTOMER\tPendingDeletion", region=HOME_REGION)
+    result = aws.run()
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert any(c.startswith("kms describe-key") for c in aws.calls()), "each key must be described"
+
+
+def test_kms_key_that_cannot_be_described_is_an_error(aws: FakeAws) -> None:
+    aws.answer("kms.list-keys", "key-0abc", region=HOME_REGION)
+    aws.fail("kms.describe-key", region=HOME_REGION)
+    result = aws.run()
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "No billable leftovers" not in result.stdout
+
