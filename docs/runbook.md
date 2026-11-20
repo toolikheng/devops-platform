@@ -148,7 +148,7 @@ aws login --profile devops   # short-lived credentials for the IAM user, never r
 make cost-check              # AWS_PROFILE=devops and AWS_REGION=ap-southeast-1 by default
 ```
 
-It is read-only: only describe, list and get calls, which are free. It never calls the Cost Explorer API, which is billed per request. It checks ap-southeast-1 in full and every other enabled region for instances, volumes and Elastic IPs, which takes about a minute and a half.
+It is read-only: only describe, list and get calls, which are free. It never calls the Cost Explorer API, which is billed per request. It checks ap-southeast-1 in full, including open or active Spot requests, and every other enabled region for instances, volumes and Elastic IPs. That takes about a minute and a half. Closed and cancelled one-time Spot requests are history and are not reported.
 
 | Exit code | Meaning | What to do |
 |-----------|---------|------------|
@@ -195,6 +195,56 @@ At USD 15 actual spend in a month, AWS Budgets attaches `devops-platform-deny-ne
 1. Destroy the hourly stack and run `make cost-check` until it is clean.
 2. In the Billing console (Bills, by service and region), find what cost money.
 3. Fix the cause, then detach the policy deliberately (Billing → Budgets → `monthly-cap` → Actions, or `aws iam detach-user-policy`). It is not removed automatically next month.
+
+## AWS working session (ephemeral stack)
+
+Everything billed by the hour lives in `terraform/envs/aws` and exists only during a session. About USD 0.021/h for t3.micro on-demand, USD 0.012/h on Spot (instance, public IPv4 and volume together).
+
+```bash
+aws login --profile devops
+make cost-check                                  # start from a clean account
+make owner-ip                                    # first session, and whenever your public IP changes
+make cloud-up                                    # shows the plan, applies only after you type yes
+#   Spot instead: make cloud-up CLOUD_ARGS='-var use_spot=true'
+aws ssm start-session --target "$(cd terraform/envs/aws && terraform output -raw instance_id)"
+# ... work ...
+make cloud-down                                  # shows the destroy plan, asks, then runs cost-check
+```
+
+`make cloud-up` and `make cloud-down` read `~/.ssh/id_ed25519.pub` (set `SSH_PUBLIC_KEY_FILE` to use another key). `make cloud-down` destroys everything in the stack's state, Spot or not, so it needs no `CLOUD_ARGS`.
+
+The session is over only when `make cost-check` exits 0. Measured runs are recorded in [aws-test-log.md](aws-test-log.md).
+
+### `owner_cidr must be one IPv4 address as a /32`
+
+The plan reads `/devops-platform/owner-cidr`, which still holds the placeholder `unset` or something that isn't a single IPv4 address. Run `make owner-ip`, then `make cloud-up` again.
+
+### The app is unreachable on port 80, but Session Manager works
+
+Your public IP has probably changed. Run `make owner-ip && make cloud-up`: only the security group rule changes, in place. Session Manager needs no inbound rule, so it keeps working.
+
+### The SSM agent doesn't show up, or `start-session` says the target is not connected
+
+The agent normally registers within about a minute of launch. Check `aws ssm describe-instance-information --filters Key=InstanceIds,Values=<id>`. If it never appears:
+
+1. The instance profile must be `devops-platform-node`: `aws ec2 describe-instances --instance-ids <id> --query 'Reservations[0].Instances[0].IamInstanceProfile'`.
+2. Outbound 443 must be allowed in the security group, and the subnet must route `0.0.0.0/0` to the internet gateway.
+3. The node needs its public IPv4: there is no NAT gateway.
+
+### `Cannot perform start session: EOF` in a script
+
+`session-manager-plugin` needs a terminal. Without one, its input closes at once and the session ends, sometimes before the command has run. Interactive use is not affected. In a script, give it a pseudo-terminal:
+
+```bash
+script -qec "aws ssm start-session --target <id> --document-name AWS-StartNonInteractiveCommand --parameters file://params.json" /dev/null
+```
+
+The `AWS-StartNonInteractiveCommand` document runs the command without a shell, so wrap pipelines in `bash -c '...'`.
+
+### A Spot apply fails
+
+- `InsufficientInstanceCapacity`: no Spot capacity for that type in the AZ. Use on-demand (`make cloud-up` without `CLOUD_ARGS`) or try again later.
+- A failed apply can leave a launched instance behind, marked *tainted* in the state. It is still billed, but Terraform knows about it: run `make cloud-down`, then `make cost-check`. If cost-check finds something Terraform does not know about, delete it in the console.
 
 ## Secret scanning
 
