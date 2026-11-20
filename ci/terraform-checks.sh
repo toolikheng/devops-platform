@@ -13,6 +13,10 @@ TFLINT_IMAGE="ghcr.io/terraform-linters/tflint:v0.66.0"
 TRIVY_IMAGE="aquasec/trivy:0.75.0"
 export TF_PLUGIN_CACHE_DIR="${TF_PLUGIN_CACHE_DIR:-$HOME/.terraform.d/plugin-cache}"
 mkdir -p "$TF_PLUGIN_CACHE_DIR"
+# Each stack is checked with its own throwaway data dir. `init -backend=false` reuses whatever backend a
+# directory was initialised with, so in a stack that was really applied it would ask for AWS credentials.
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
 
 echo "--- terraform fmt"
 terraform fmt -check -recursive -diff "$TF_ROOT"
@@ -22,7 +26,9 @@ for stack in "${stacks[@]}"; do
   echo "--- ${stack#"$REPO_ROOT"/}: init, validate, test"
   (
     cd "$stack"
-    terraform init -backend=false -input=false >/dev/null
+    export TF_DATA_DIR="$work/${stack//\//_}"
+    # readonly: the committed .terraform.lock.hcl must already cover every provider.
+    terraform init -backend=false -input=false -lockfile=readonly >/dev/null
     terraform validate
     terraform test
   )
