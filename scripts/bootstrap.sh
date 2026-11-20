@@ -65,7 +65,13 @@ install() {
 }
 
 case "${1:---check}" in
-  --check) check && echo -e "${GREEN}✓ All set.${NC}" || { echo -e "${RED}Run 'make install' to fix what it can.${NC}"; exit 1; } ;;
+  --check)
+    if check; then
+      echo -e "${GREEN}✓ All set.${NC}"
+    else
+      echo -e "${RED}Run 'make install' to fix what it can.${NC}"
+      exit 1
+    fi ;;
   --install) install || exit 1 ;;
   *) echo "Usage: $0 [--check | --install]" >&2; exit 2 ;;
 esac
