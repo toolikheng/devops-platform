@@ -21,21 +21,56 @@ trap 'rm -f "$err_file"' EXIT
 # Runs one read-only listing whose text output has one resource per line. Prints only what needs
 # attention: the resources it found, or why the check could not run.
 check() {
-  local label="$1" region="$2" out lines
+  local label="$1" region="$2" out
   shift 2
   checks=$((checks + 1))
   if ! out="$(aws "$@" --region "$region" --output text 2>"$err_file")"; then
-    printf 'ERROR  %s (%s): %s\n' "$label" "$region" "$(head -n 1 "$err_file")"
-    errors=$((errors + 1))
+    check_failed "$label" "$region"
     return
   fi
+  report "$label" "$region" "$out"
+}
+
+# check_failed LABEL REGION: says why a check could not run. An incomplete scan is never reported as clean.
+check_failed() {
+  printf 'ERROR  %s (%s): %s\n' "$1" "$2" "$(head -n 1 "$err_file")"
+  errors=$((errors + 1))
+}
+
+# report LABEL REGION OUTPUT: lists the resources in OUTPUT (one per line), if there are any.
+report() {
+  local lines
   # An empty result prints nothing, or "None" for a null.
-  mapfile -t lines < <(grep -v -x -e '' -e 'None' <<<"$out")
+  mapfile -t lines < <(grep -v -x -e '' -e 'None' <<<"$3")
   if [ "${#lines[@]}" -gt 0 ]; then
-    printf 'FOUND  %s (%s):\n' "$label" "$region"
+    printf 'FOUND  %s (%s):\n' "$1" "$2"
     printf '         %s\n' "${lines[@]}"
     found=$((found + ${#lines[@]}))
   fi
+}
+
+# Customer-managed KMS keys cost USD 1 a month each. list-keys also returns the free AWS-managed keys
+# (aws/ssm, aws/ebs), so each key is described. Keys already scheduled for deletion have been dealt with.
+check_kms_keys() {
+  local region="$1" label="KMS keys (customer-managed)" keys key info customer=""
+  checks=$((checks + 1))
+  if ! keys="$(aws kms list-keys --query 'Keys[].KeyId' --region "$region" --output text 2>"$err_file")"; then
+    check_failed "$label" "$region"
+    return
+  fi
+  for key in $keys; do
+    [ "$key" = None ] && continue
+    if ! info="$(aws kms describe-key --key-id "$key" --query 'KeyMetadata.[KeyManager,KeyState]' \
+        --region "$region" --output text 2>"$err_file")"; then
+      check_failed "$label" "$region"
+      return
+    fi
+    case "$info" in
+      CUSTOMER*PendingDeletion) ;;
+      CUSTOMER*) customer+="$key ${info#CUSTOMER}"$'\n' ;;
+    esac
+  done
+  report "$label" "$region" "$customer"
 }
 
 # The classic surprise bills: something left running, or started in the wrong region.
@@ -75,6 +110,17 @@ check_home_region_services() {
   check "Spot requests (open or active)" "$region" ec2 describe-spot-instance-requests \
     --filters Name=state,Values=open,active \
     --query 'SpotInstanceRequests[].[SpotInstanceRequestId,State,Type]'
+  # Services the budget deny policy blocks creating. Made by hand, each would bill while it exists.
+  # Route 53 is global, so one call covers every region.
+  check "Route 53 hosted zones" "$region" route53 list-hosted-zones --query 'HostedZones[].[Id,Name]'
+  check "ECR repositories" "$region" ecr describe-repositories --query 'repositories[].[repositoryName]'
+  check "Lightsail instances" "$region" lightsail get-instances --query 'instances[].[name,state.name]'
+  check "Lightsail databases" "$region" lightsail get-relational-databases \
+    --query 'relationalDatabases[].[name,state]'
+  check "SageMaker notebook instances" "$region" sagemaker list-notebook-instances \
+    --query 'NotebookInstances[].[NotebookInstanceName,NotebookInstanceStatus]'
+  check "SageMaker endpoints" "$region" sagemaker list-endpoints --query 'Endpoints[].[EndpointName,EndpointStatus]'
+  check_kms_keys "$region"
 }
 
 echo "== AWS cost check (read-only) =="

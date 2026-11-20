@@ -148,7 +148,7 @@ aws login --profile devops   # short-lived credentials for the IAM user, never r
 make cost-check              # AWS_PROFILE=devops and AWS_REGION=ap-southeast-1 by default
 ```
 
-It is read-only: only describe, list and get calls, which are free. It never calls the Cost Explorer API, which is billed per request. It checks ap-southeast-1 in full, including open or active Spot requests, and every other enabled region for instances, volumes and Elastic IPs. That takes about a minute and a half. Closed and cancelled one-time Spot requests are history and are not reported.
+It is read-only: only describe, list and get calls, which are free. It never calls the Cost Explorer API, which is billed per request. It checks ap-southeast-1 in full, including open or active Spot requests and everything the budget deny policy blocks creating (Route 53 zones, ECR, Lightsail, SageMaker, customer-managed KMS keys), and every other enabled region for instances, volumes and Elastic IPs. That takes about a minute and a half. Closed and cancelled one-time Spot requests are history and are not reported.
 
 | Exit code | Meaning | What to do |
 |-----------|---------|------------|
