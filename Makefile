@@ -4,7 +4,7 @@
         cluster-up cluster-down deploy \
         monitoring-up monitoring-down \
         backup restore-test \
-        test-infra cost-check \
+        test-infra cost-check tf-check \
         destroy all clean
 
 SHELL := /bin/bash
@@ -90,6 +90,7 @@ help:
 	@$(ECHO) ""
 	@$(ECHO) "$(BLUE)AWS (v2):$(NC)"
 	@$(ECHO) "  $(GREEN)make cost-check$(NC)    Read-only scan for billable AWS leftovers (all regions)"
+	@$(ECHO) "  $(GREEN)make tf-check$(NC)      Offline Terraform checks: fmt, validate, test, tflint, trivy"
 	@$(ECHO) ""
 	@$(ECHO) "$(BLUE)Utilities:$(NC)"
 	@$(ECHO) "  $(GREEN)make all$(NC)           Run all phases (check → infra → deploy)"
@@ -253,6 +254,10 @@ restore-test:
 	@bash "$(BACKUP_DIR)/scripts/restore-test.sh"
 
 # AWS (v2)
+# Offline: no AWS credentials needed (backends skipped, tests use mock providers).
+tf-check:
+	@bash "$(CI_DIR)/terraform-checks.sh"
+
 # Read-only: describe/list/get calls only, never the Cost Explorer API. Exit 1 if anything billable is left.
 cost-check:
 	@AWS_PROFILE="$(AWS_PROFILE)" AWS_REGION="$(AWS_REGION)" bash "$(REPO_ROOT)/scripts/cost-check.sh"

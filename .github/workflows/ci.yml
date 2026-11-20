@@ -86,6 +86,18 @@ jobs:
     - name: ShellCheck
       run: bash ci/shellcheck.sh
 
+    - name: Set up Terraform
+      uses: hashicorp/setup-terraform@v4
+      with:
+        terraform_version: 1.17.1
+        terraform_wrapper: false
+
+    # Offline: backends are skipped and terraform test uses mock providers, so no AWS credentials.
+    - name: Terraform checks (fmt, validate, test, tflint, trivy)
+      run: bash ci/terraform-checks.sh
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # tflint plugin download (avoids API rate limits)
+
   build:
     needs: [lint, test, hadolint, rules, infra-checks]
     runs-on: ubuntu-latest
