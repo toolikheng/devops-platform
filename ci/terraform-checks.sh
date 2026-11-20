@@ -1,8 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
-# Offline checks for every Terraform directory that has tests: fmt, validate, terraform test (mock
-# providers), then tflint and trivy over all of terraform/. No AWS credentials are needed: backends are
+# Offline checks for every directory under terraform/ that has .tf files (stacks and modules): fmt,
+# validate, terraform test (mock providers), then tflint and trivy over all of terraform/. No AWS credentials are needed: backends are
 # skipped and the tests never call AWS. tflint and trivy run as pinned Docker images.
 
 echo "=== Running Terraform checks ==="
@@ -21,7 +21,7 @@ trap 'rm -rf "$work"' EXIT
 echo "--- terraform fmt"
 terraform fmt -check -recursive -diff "$TF_ROOT"
 
-mapfile -t stacks < <(find "$TF_ROOT" -type d -name tests -not -path '*/.terraform/*' -printf '%h\n' | sort)
+mapfile -t stacks < <(find "$TF_ROOT" -name '*.tf' -not -path '*/.terraform/*' -printf '%h\n' | sort -u)
 for stack in "${stacks[@]}"; do
   echo "--- ${stack#"$REPO_ROOT"/}: init, validate, test"
   (
