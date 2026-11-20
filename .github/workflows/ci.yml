@@ -68,8 +68,26 @@ jobs:
     - name: Test Prometheus alert rules
       run: bash ci/rules-test.sh
 
+  infra-checks:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: Set up Python
+      uses: actions/setup-python@v7
+      with:
+        python-version: '3.12'
+
+    - name: Repo-level tests (cost check with a fake aws CLI, .gitignore rules)
+      run: |
+        pip install -q -r tests/requirements.txt
+        python -m pytest -q tests
+
+    - name: ShellCheck
+      run: bash ci/shellcheck.sh
+
   build:
-    needs: [lint, test, hadolint, rules]
+    needs: [lint, test, hadolint, rules, infra-checks]
     runs-on: ubuntu-latest
     permissions:
       contents: read
