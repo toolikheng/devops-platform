@@ -21,7 +21,7 @@ run "every_resource_gets_the_project_tags" {
       output.default_tags["ManagedBy"] == "terraform" &&
       output.default_tags["Stack"] == "ephemeral"
     )
-    error_message = "Default tags must be exactly Project, Owner, ManagedBy and Stack=ephemeral (cost-check and the CI destroy role rely on Stack)."
+    error_message = "Default tags must be exactly Project, Owner, ManagedBy and Stack=ephemeral (Stack=ephemeral marks what may be destroyed)."
   }
 }
 

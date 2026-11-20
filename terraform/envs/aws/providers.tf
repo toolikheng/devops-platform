@@ -8,7 +8,8 @@ provider "aws" {
 }
 
 locals {
-  # Stack=ephemeral is how the cost check, and later the CI destroy role, recognise what may be deleted.
+  # Stack=ephemeral marks what may be destroyed at the end of a session. The CI roles planned for Phase C6
+  # are to be limited to resources with this tag. (cost-check does not read tags: it lists by resource type.)
   default_tags = {
     Project   = "devops-platform"
     Owner     = "toolikheng"
