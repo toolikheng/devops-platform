@@ -1,5 +1,6 @@
 provider "aws" {
-  region = var.region
+  # Fixed, not a variable: backend.tf (which can't use variables) stores state in this region.
+  region = "ap-southeast-1"
 
   default_tags {
     tags = local.default_tags
@@ -14,5 +15,3 @@ locals {
     Stack     = "persistent"
   }
 }
-
-data "aws_caller_identity" "current" {}

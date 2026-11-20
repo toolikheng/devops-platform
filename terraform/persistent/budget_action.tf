@@ -3,10 +3,15 @@
 # the owner can always destroy what runs and detach the policy. Limits: running resources keep billing
 # until destroyed, and budget data refreshes only about three times a day.
 
-locals {
-  account_id     = data.aws_caller_identity.current.account_id
-  admin_user_arn = "arn:aws:iam::${local.account_id}:user/${var.admin_user_name}"
+data "aws_caller_identity" "current" {}
 
+# Looked up rather than built from its name, so a wrong user name fails the plan instead of failing the
+# action when the cap is reached.
+data "aws_iam_user" "admin" {
+  user_name = var.admin_user_name
+}
+
+locals {
   # Actions that start something billed by the hour, by size or per request.
   new_spend_actions = [
     "ec2:RunInstances",
@@ -60,7 +65,7 @@ resource "aws_iam_role" "budget_action" {
       Effect    = "Allow"
       Principal = { Service = "budgets.amazonaws.com" }
       Action    = "sts:AssumeRole"
-      Condition = { StringEquals = { "aws:SourceAccount" = local.account_id } }
+      Condition = { StringEquals = { "aws:SourceAccount" = data.aws_caller_identity.current.account_id } }
     }]
   })
 }
@@ -74,7 +79,7 @@ resource "aws_iam_role_policy" "budget_action" {
       Sid       = "AttachOnlyTheDenyPolicyToTheAdminUser"
       Effect    = "Allow"
       Action    = ["iam:AttachUserPolicy", "iam:DetachUserPolicy"]
-      Resource  = local.admin_user_arn
+      Resource  = data.aws_iam_user.admin.arn
       Condition = { ArnEquals = { "iam:PolicyARN" = aws_iam_policy.deny_new_spend.arn } }
     }]
   })
@@ -95,7 +100,7 @@ resource "aws_budgets_budget_action" "deny_new_spend" {
   definition {
     iam_action_definition {
       policy_arn = aws_iam_policy.deny_new_spend.arn
-      users      = [var.admin_user_name]
+      users      = [data.aws_iam_user.admin.user_name]
     }
   }
 

@@ -6,7 +6,8 @@
 # Access logging would need a second bucket and log storage for a bucket only this project touches.
 #trivy:ignore:AWS-0089
 resource "aws_s3_bucket" "state" {
-  bucket = var.state_bucket_name
+  # Fixed, not a variable: backend.tf (which can't use variables) points at this bucket.
+  bucket = "toolikheng-devops-platform-tfstate"
 
   # The bucket holds Terraform's own state: Terraform must never delete it.
   lifecycle {

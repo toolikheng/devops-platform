@@ -1,14 +1,3 @@
-variable "region" {
-  description = "AWS region for every resource in this project."
-  type        = string
-  default     = "ap-southeast-1"
-
-  validation {
-    condition     = var.region == "ap-southeast-1"
-    error_message = "This project runs only in ap-southeast-1 (Singapore)."
-  }
-}
-
 variable "alert_email" {
   description = "Email address that receives budget alerts and budget action notices."
   type        = string
@@ -23,12 +12,6 @@ variable "admin_user_name" {
   description = "IAM user the budget action restricts when the monthly cap is reached."
   type        = string
   default     = "toolikheng-admin"
-}
-
-variable "state_bucket_name" {
-  description = "Globally unique name of the S3 bucket that holds Terraform state."
-  type        = string
-  default     = "toolikheng-devops-platform-tfstate"
 }
 
 variable "monthly_budget_usd" {

@@ -8,14 +8,6 @@ variables {
   alert_email = "alerts@example.com"
 }
 
-run "only_the_singapore_region_is_allowed" {
-  command = plan
-  variables {
-    region = "us-east-1"
-  }
-  expect_failures = [var.region]
-}
-
 run "alert_email_must_look_like_an_email_address" {
   command = plan
   variables {
