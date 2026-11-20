@@ -102,6 +102,7 @@ BILLABLE = [
     ("rds.describe-db-instances", "rds-instance-test\tdb.t3.micro"),
     ("rds.describe-db-clusters", "rds-cluster-test"),
     ("secretsmanager.list-secrets", "secret-test"),
+    ("ec2.describe-spot-instance-requests", "sir-0abc123\topen\tpersistent"),
 ]
 
 
@@ -192,3 +193,15 @@ def test_none_output_counts_as_empty(aws: FakeAws) -> None:
     aws.answer("eks.list-clusters", "None", region=HOME_REGION)
     result = aws.run()
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+
+def test_only_open_or_active_spot_requests_count(aws: FakeAws) -> None:
+    # A one-time request is closed or cancelled once its instance is gone, and costs nothing. An open or
+    # active one (persistent, or still waiting for capacity) can start an instance again on its own.
+    aws.run()
+    spot = [c for c in aws.calls() if c.startswith("ec2 describe-spot-instance-requests")]
+    assert len(spot) == 1, "Spot requests are checked once, in the home region"
+    assert "Name=state,Values=open,active" in spot[0]
+    assert f"--region {HOME_REGION}" in spot[0]
+

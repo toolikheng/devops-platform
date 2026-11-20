@@ -69,6 +69,12 @@ check_home_region_services() {
     --query 'DBInstances[].[DBInstanceIdentifier,DBInstanceClass]'
   check "RDS DB clusters" "$region" rds describe-db-clusters --query 'DBClusters[].[DBClusterIdentifier]'
   check "Secrets Manager secrets" "$region" secretsmanager list-secrets --query 'SecretList[].[Name]'
+  # A request costs nothing itself, but an open or active one (persistent, or waiting for capacity) can
+  # start an instance on its own. Closed and cancelled one-time requests are history. Home region only:
+  # the instances such a request starts are already checked in every region.
+  check "Spot requests (open or active)" "$region" ec2 describe-spot-instance-requests \
+    --filters Name=state,Values=open,active \
+    --query 'SpotInstanceRequests[].[SpotInstanceRequestId,State,Type]'
 }
 
 echo "== AWS cost check (read-only) =="
