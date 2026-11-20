@@ -52,14 +52,14 @@ class FakeAws:
         # Text output of a list of strings is one tab-separated line.
         self.answer("ec2.describe-regions", f"us-east-1\t{OTHER_REGION}\t{HOME_REGION}")
 
-    def _path(self, call: str, region: str | None) -> Path:
-        return self.fixtures / (f"{call}@{region}" if region else call)
+    def _path(self, call: str, region: str | None, suffix: str = "") -> Path:
+        return self.fixtures / ((f"{call}@{region}" if region else call) + suffix)
 
     def answer(self, call: str, output: str, region: str | None = None) -> None:
         self._path(call, region).write_text(output + "\n")
 
     def fail(self, call: str, region: str | None = None) -> None:
-        self._path(call, region).with_name(self._path(call, region).name + ".fail").touch()
+        self._path(call, region, ".fail").touch()
 
     def run(self) -> subprocess.CompletedProcess[str]:
         env = {k: v for k, v in os.environ.items() if not k.startswith("AWS_")}
@@ -123,6 +123,24 @@ def test_other_enabled_regions_are_checked(aws: FakeAws, call: str) -> None:
     assert result.returncode == 1, result.stdout + result.stderr
     assert "leftover-in-other-region" in result.stdout
     assert OTHER_REGION in result.stdout
+
+
+def test_each_enabled_region_is_checked_exactly_once(aws: FakeAws) -> None:
+    aws.run()
+    regions = []
+    for call in aws.calls():
+        args = call.split()
+        if args[:2] == ["ec2", "describe-instances"]:
+            regions.append(args[args.index("--region") + 1])
+    assert sorted(regions) == sorted(["us-east-1", OTHER_REGION, HOME_REGION])
+
+
+def test_home_region_is_still_checked_when_region_listing_fails(aws: FakeAws) -> None:
+    aws.fail("ec2.describe-regions")
+    aws.answer("ec2.describe-instances", "i-0home123\tt3.micro\trunning", region=HOME_REGION)
+    result = aws.run()
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "i-0home123" in result.stdout
 
 
 def test_only_read_only_calls_and_never_cost_explorer(aws: FakeAws) -> None:

@@ -1,43 +1,74 @@
 #!/usr/bin/env bash
 # cost-check.sh - read-only scan of the AWS account for resources that cost money while they exist.
 #
-# The home region (AWS_REGION, default ap-southeast-1) gets the full list of checks. Every other
-# enabled region is checked for the most common leftovers: instances, volumes and Elastic IPs.
-# Only describe/list/get calls are made. They are free; the Cost Explorer API is billed per request
-# and is never called.
+# Every enabled region is checked for the usual leftovers (instances, volumes, Elastic IPs). The home
+# region (AWS_REGION, default ap-southeast-1) is also checked for every other billable service this
+# project could create. Only describe/list/get calls are made. They are free; the Cost Explorer API
+# is billed per request and is never called.
 #
 # Exit codes: 0 nothing billable found, 1 billable leftovers found,
 #             2 a check could not run (an incomplete scan is never reported as clean).
 set -uo pipefail
 
 HOME_REGION="${AWS_REGION:-ap-southeast-1}"
+checks=0
 found=0
 errors=0
-show_ok=1
 err_file="$(mktemp)"
 trap 'rm -f "$err_file"' EXIT
 
 # check LABEL REGION AWS_ARGS...
-# Runs one read-only listing whose text output has one resource per line, and reports the result.
+# Runs one read-only listing whose text output has one resource per line. Prints only what needs
+# attention: the resources it found, or why the check could not run.
 check() {
-  local label="$1" region="$2" out
+  local label="$1" region="$2" out lines
   shift 2
+  checks=$((checks + 1))
   if ! out="$(aws "$@" --region "$region" --output text 2>"$err_file")"; then
-    printf '  ERROR  %s (%s): %s\n' "$label" "$region" "$(head -n 1 "$err_file")"
+    printf 'ERROR  %s (%s): %s\n' "$label" "$region" "$(head -n 1 "$err_file")"
     errors=$((errors + 1))
     return
   fi
   # An empty result prints nothing, or "None" for a null.
-  out="$(grep -v -x -e '' -e 'None' <<<"$out")"
-  if [ -z "$out" ]; then
-    [ "$show_ok" -eq 1 ] && printf '  ok     %s\n' "$label"
-  else
-    local lines
-    mapfile -t lines <<<"$out"
-    printf '  FOUND  %s (%s):\n' "$label" "$region"
-    printf '           %s\n' "${lines[@]}"
+  mapfile -t lines < <(grep -v -x -e '' -e 'None' <<<"$out")
+  if [ "${#lines[@]}" -gt 0 ]; then
+    printf 'FOUND  %s (%s):\n' "$label" "$region"
+    printf '         %s\n' "${lines[@]}"
     found=$((found + ${#lines[@]}))
   fi
+}
+
+# The classic surprise bills: something left running, or started in the wrong region.
+check_common_leftovers() {
+  local region="$1"
+  check "EC2 instances (not terminated)" "$region" ec2 describe-instances \
+    --filters Name=instance-state-name,Values=pending,running,stopping,stopped \
+    --query 'Reservations[].Instances[].[InstanceId,InstanceType,State.Name]'
+  check "EBS volumes" "$region" ec2 describe-volumes --query 'Volumes[].[VolumeId,Size,State]'
+  check "Elastic IPs" "$region" ec2 describe-addresses --query 'Addresses[].[PublicIp,AllocationId]'
+}
+
+# Every other billable service this project could create, in the one region it works in.
+check_home_region_services() {
+  local region="$1"
+  check "EBS snapshots (owned)" "$region" ec2 describe-snapshots --owner-ids self \
+    --query 'Snapshots[].[SnapshotId,VolumeSize]'
+  check "Public IPv4 addresses in use" "$region" ec2 describe-network-interfaces \
+    --query 'NetworkInterfaces[?Association.PublicIp].[NetworkInterfaceId,Association.PublicIp]'
+  check "NAT gateways" "$region" ec2 describe-nat-gateways --filter Name=state,Values=pending,available \
+    --query 'NatGateways[].[NatGatewayId,State]'
+  check "Interface VPC endpoints" "$region" ec2 describe-vpc-endpoints \
+    --filters Name=vpc-endpoint-type,Values=Interface,GatewayLoadBalancer \
+    --query 'VpcEndpoints[].[VpcEndpointId,ServiceName]'
+  check "Load balancers (ALB/NLB/GWLB)" "$region" elbv2 describe-load-balancers \
+    --query 'LoadBalancers[].[LoadBalancerName,Type]'
+  check "Classic load balancers" "$region" elb describe-load-balancers \
+    --query 'LoadBalancerDescriptions[].[LoadBalancerName]'
+  check "EKS clusters" "$region" eks list-clusters --query 'clusters[]'
+  check "RDS DB instances" "$region" rds describe-db-instances \
+    --query 'DBInstances[].[DBInstanceIdentifier,DBInstanceClass]'
+  check "RDS DB clusters" "$region" rds describe-db-clusters --query 'DBClusters[].[DBClusterIdentifier]'
+  check "Secrets Manager secrets" "$region" secretsmanager list-secrets --query 'SecretList[].[Name]'
 }
 
 echo "== AWS cost check (read-only) =="
@@ -51,51 +82,20 @@ case "$identity" in
   *:root) echo "WARNING: this is the root user. Use the IAM user instead (aws login --profile devops)." ;;
 esac
 
-echo "Region $HOME_REGION (full check):"
-check "EC2 instances (not terminated)" "$HOME_REGION" ec2 describe-instances \
-  --filters Name=instance-state-name,Values=pending,running,stopping,stopped \
-  --query 'Reservations[].Instances[].[InstanceId,InstanceType,State.Name]'
-check "EBS volumes" "$HOME_REGION" ec2 describe-volumes --query 'Volumes[].[VolumeId,Size,State]'
-check "EBS snapshots (owned)" "$HOME_REGION" ec2 describe-snapshots --owner-ids self \
-  --query 'Snapshots[].[SnapshotId,VolumeSize]'
-check "Elastic IPs" "$HOME_REGION" ec2 describe-addresses --query 'Addresses[].[PublicIp,AllocationId]'
-check "Public IPv4 addresses in use" "$HOME_REGION" ec2 describe-network-interfaces \
-  --query 'NetworkInterfaces[?Association.PublicIp].[NetworkInterfaceId,Association.PublicIp]'
-check "NAT gateways" "$HOME_REGION" ec2 describe-nat-gateways --filter Name=state,Values=pending,available \
-  --query 'NatGateways[].[NatGatewayId,State]'
-check "Interface VPC endpoints" "$HOME_REGION" ec2 describe-vpc-endpoints \
-  --filters Name=vpc-endpoint-type,Values=Interface,GatewayLoadBalancer \
-  --query 'VpcEndpoints[].[VpcEndpointId,ServiceName]'
-check "Load balancers (ALB/NLB/GWLB)" "$HOME_REGION" elbv2 describe-load-balancers \
-  --query 'LoadBalancers[].[LoadBalancerName,Type]'
-check "Classic load balancers" "$HOME_REGION" elb describe-load-balancers \
-  --query 'LoadBalancerDescriptions[].[LoadBalancerName]'
-check "EKS clusters" "$HOME_REGION" eks list-clusters --query 'clusters[]'
-check "RDS DB instances" "$HOME_REGION" rds describe-db-instances \
-  --query 'DBInstances[].[DBInstanceIdentifier,DBInstanceClass]'
-check "RDS DB clusters" "$HOME_REGION" rds describe-db-clusters --query 'DBClusters[].[DBClusterIdentifier]'
-check "Secrets Manager secrets" "$HOME_REGION" secretsmanager list-secrets --query 'SecretList[].[Name]'
-
-# A resource started in the wrong region is a classic surprise bill, so look everywhere for the big three.
-other_regions=0
 if ! regions="$(aws ec2 describe-regions --query 'Regions[].RegionName' --output text \
     --region "$HOME_REGION" 2>"$err_file")"; then
-  echo "  ERROR  listing enabled regions: $(head -n 1 "$err_file")"
+  printf 'ERROR  listing enabled regions: %s (checking %s only)\n' "$(head -n 1 "$err_file")" "$HOME_REGION"
   errors=$((errors + 1))
-else
-  show_ok=0
-  for region in $regions; do
-    [ "$region" = "$HOME_REGION" ] && continue
-    other_regions=$((other_regions + 1))
-    check "EC2 instances (not terminated)" "$region" ec2 describe-instances \
-      --filters Name=instance-state-name,Values=pending,running,stopping,stopped \
-      --query 'Reservations[].Instances[].[InstanceId,InstanceType,State.Name]'
-    check "EBS volumes" "$region" ec2 describe-volumes --query 'Volumes[].[VolumeId,Size,State]'
-    check "Elastic IPs" "$region" ec2 describe-addresses --query 'Addresses[].[PublicIp,AllocationId]'
-  done
-  echo "Other enabled regions: $other_regions checked for instances, volumes and Elastic IPs."
+  regions="$HOME_REGION"
 fi
+region_count=0
+for region in $regions; do
+  region_count=$((region_count + 1))
+  check_common_leftovers "$region"
+done
+check_home_region_services "$HOME_REGION"
 
+echo "Ran $checks checks: $HOME_REGION in full, and instances, volumes and Elastic IPs in $region_count enabled regions."
 echo
 if [ "$found" -gt 0 ]; then
   echo "✗ Billable leftovers found: $found. Destroy them (make cloud-down, or the console if Terraform"
@@ -106,5 +106,5 @@ if [ "$errors" -gt 0 ]; then
 fi
 [ "$found" -gt 0 ] && exit 1
 [ "$errors" -gt 0 ] && exit 2
-echo "✓ No billable leftovers ($HOME_REGION in full, plus $other_regions other regions)."
+echo "✓ No billable leftovers."
 echo "  Not listed: \$0-at-rest persistent resources (S3 state bucket, budgets, IAM, SSM Standard parameters)."
