@@ -1,6 +1,6 @@
 ---
 # Reload (SIGHUP), not restart: on the Docker nodes sshd is PID 1, and stopping it would stop the container.
-- name: reload sshd
-  service:
+- name: Reload sshd
+  ansible.builtin.service:
     name: ssh
     state: reloaded

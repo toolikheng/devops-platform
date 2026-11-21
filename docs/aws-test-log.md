@@ -53,4 +53,55 @@ Then, from the laptop: a second `terraform plan` (must show no changes), `aws ec
 
 Total for these runs: about USD 0.011 before tax.
 
+## Ansible and k3s on the node (Phase C3)
+
+### Steps
+
+```bash
+aws login --profile devops
+make cost-check                                   # clean before starting
+make cloud-up                                     # t3.small Spot by default
+make cloud-config ANSIBLE_ARGS='--check --diff'   # optional preview (see below for a fresh node)
+make cloud-config                                 # common, node_exporter, k3s; copies the kubeconfig
+make cloud-config                                 # second run: must report changed=0
+make cloud-tunnel                                 # in a second terminal; Ctrl-C closes it
+KUBECONFIG=~/.kube/devops-aws.yaml kubectl get nodes
+make cloud-down
+make cloud-rebuild                                # from nothing: cloud-up, then cloud-config
+make cloud-down
+```
+
+On the node, through `ansible -i ansible/inventory/aws.yml aws -m shell -a '...'` (the same SSH-over-Session-Manager path): `k3s secrets-encrypt status`, `stat` on the k3s files, `sshd -T`, `systemctl` for ssh and node_exporter, `free -m`. From the laptop: connection attempts to the public IP on 22, 6443, 9100 and 10250, and `curl` on 80.
+
+### Expected results
+
+| Check | Expected |
+|---|---|
+| First `make cloud-config` | `failed=0`; k3s installed and the node Ready inside the run |
+| Second run | `changed=0` |
+| `--check --diff` on the configured node | `changed=0`, no diff |
+| On the node | k3s v1.36.6+k3s1; secrets encryption enabled; `k3s.yaml` and `config.yaml` mode 600, owner root; `permitrootlogin no`, `passwordauthentication no`; node_exporter active under systemd |
+| Laptop | `~/.kube/devops-aws.yaml` mode 600 with server `https://127.0.0.1:16443`; `kubectl get nodes` Ready through the tunnel with TLS verified |
+| From the laptop to the public IP | 22, 6443, 9100, 10250 no connection; 80 answered by Traefik (404, nothing deployed yet) |
+| Rebuild | `make cloud-rebuild` from an empty stack gives a Ready node with no manual steps |
+| End | destroy, `make cost-check` exit 0, no active Session Manager sessions |
+
+### Result log
+
+| Date (MYT) | Run | Result | Notes |
+|---|---|---|---|
+| 2026-11-21 15:29 | Apply, t3.small Spot | Pass | 9 added in 21 s. Spot price USD 0.0097/h in ap-southeast-1a. SSM agent Online right after the apply finished. |
+| 2026-11-21 15:29 | `--check --diff` on the fresh node | **Fail**, then fixed | SSH through Session Manager worked on the first try (facts gathered). In check mode Ansible skipped both wait tasks, and apt found no packages: a fresh Ubuntu cloud image has empty package lists, and check mode only pretended to refresh them. Fixed test-first: the two waits and the package-list refresh run in check mode too (`2f9e518`). The rerun went as far as the node_exporter download into a directory check mode had only pretended to create. That is how check mode works on a fresh node, so it is used on configured nodes, where it shows drift. |
+| 2026-11-21 15:31 | First real run | Pass | 103 s, `changed=19`, `failed=0`, including the k3s install, a restart for its config and the wait for Ready. Standard CPU credits did not noticeably slow the install. |
+| 2026-11-21 15:33 | Second run | Pass | `changed=0` (126 s). `--check --diff` afterwards: `changed=0`, no diff (43 s). |
+| 2026-11-21 15:36 | Checks on the node | Pass | k3s v1.36.6+k3s1; "Encryption Status: Enabled"; `k3s.yaml` and `config.yaml` 600 root; `sshd -T`: permitrootlogin no, passwordauthentication no, pubkeyauthentication yes. node_exporter active and enabled under systemd, serving 724 `node_` metrics: the role's systemd path ran for the first time. Memory with k3s idle: 1112 of 1905 MiB used, 793 MiB available. `ssh.socket` and `ssh.service` both enabled and active (see the runbook). |
+| 2026-11-21 15:37 | Tunnel and kubectl | Pass | Tunnel up in 10 s. `kubectl get nodes`: Ready, v1.36.6+k3s1 (kubectl v1.37.0), TLS verified. CoreDNS, Traefik, ServiceLB, local-path and metrics-server Running. From the laptop: 22, 6443, 9100 and 10250 no connection; 80 returned Traefik's 404. |
+| 2026-11-21 15:41 | Destroy | Pass | 9 destroyed; cost-check clean. The tunnel's session stayed listed as active because I had stopped the plugin with SIGTERM instead of Ctrl-C; it was terminated with `aws ssm terminate-session` at the end of the session. About USD 0.004. |
+| 2026-11-21 16:38 | Rebuild from nothing | Pass | Apply, then `make cloud-config` straight away with no manual waiting: a configured, Ready node 175 s after the apply started (`changed=20`: the package-list refresh is the extra change). Second run `changed=0` (136 s). With Ansible's per-task timing every task took 6–13 s, all of it round trips through Session Manager. The same run with pipelining took 30 s, still `changed=0`; pipelining is now on for the aws group. Tunnel, `kubectl get nodes` Ready. Closing the tunnel with SIGINT (Ctrl-C) ended its session on the AWS side. |
+| 2026-11-21 16:51 | Destroy | Pass | 9 destroyed; cost-check clean; no active Session Manager sessions. About USD 0.004. |
+
+| 2026-11-21 18:22 | Rebuild after the code review | Pass | Checks the review changes on a real node: the k3s role without its check-mode guards, and the kubeconfig steps moved from the role into the playbook. Apply 22 s, then `make cloud-config` straight away: configured 147 s after the apply started, `changed=20`, `failed=0`; the kubeconfig was saved 600 pointing at port 16443, with the existing `~/.kube` left alone. Second run `changed=0`. `kubectl get nodes` Ready through the tunnel. **Pipelining measured back to back** on no-change runs, alternating: off 39 s and 44 s, on 35 s and 39 s, all `changed=0`. With `-vvv`: 151 SSH calls and 29 file transfers without pipelining, 39 calls and 3 transfers with it. SSH keeps one shared connection open (`ControlPersist=60s`), so each extra call is cheap and the gain is about 10%. The 16:38 comparison (136 s → 30 s) was two single runs and mostly showed how much Session Manager latency varies. Destroy: 9 destroyed; cost-check clean; no active sessions. About USD 0.005 (including about 6 minutes for the timing runs). |
+
+Total for these runs: about USD 0.013 before tax.
+
 Record each run here, including failures and what was changed.

@@ -1,0 +1,6 @@
+---
+# k3s reads its config only at start.
+- name: Restart k3s
+  ansible.builtin.systemd:
+    name: k3s
+    state: restarted

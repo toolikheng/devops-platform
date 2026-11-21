@@ -1,0 +1,6 @@
+---
+# sshd PermitRootLogin. The homelab's Docker nodes are provisioned as root with SSH keys, so they keep
+# this value; the AWS node logs in as ubuntu and sets "no" (inventory/group_vars/aws.yml).
+common_permit_root_login: without-password
+# Title line of the login banner (at most 36 characters, the width of the box).
+common_motd_title: DevOps Platform - Homelab Node

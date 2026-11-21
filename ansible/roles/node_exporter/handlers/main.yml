@@ -1,6 +1,6 @@
 ---
-- name: restart node_exporter
-  service:
+- name: Restart node_exporter
+  ansible.builtin.service:
     name: node_exporter
     state: restarted
     use: "{{ 'systemd' if ansible_service_mgr == 'systemd' else 'sysvinit' }}"

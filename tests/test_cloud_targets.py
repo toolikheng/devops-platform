@@ -1,7 +1,8 @@
-"""Tests for the AWS session targets `make owner-ip`, `make cloud-up` and `make cloud-down`.
+"""Tests for the AWS session targets `make owner-ip`, `cloud-up`, `cloud-down`, `cloud-config`,
+`cloud-tunnel` and `cloud-rebuild`.
 
-They run the real Make targets with fake `terraform`, `aws` and `curl` commands first on PATH, so no AWS
-call is made. Every fake appends one line per call to a shared log: the tool name, the directory it ran
+They run the real Make targets with fake `terraform`, `aws`, `curl` and `ansible-playbook` commands first
+on PATH, so no AWS call is made and nothing is configured. Every fake appends one line per call to a shared log: the tool name, the directory it ran
 in, the AWS profile, whether an SSH public key was passed, and its arguments. That shows what ran, where,
 and in which order.
 """
@@ -11,9 +12,12 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 EPHEMERAL_DIR = REPO_ROOT / "terraform" / "envs" / "aws"
+ANSIBLE_DIR = REPO_ROOT / "ansible"
+INSTANCE_ID = "i-0123456789abcdef0"
 PUBLIC_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleExampleExampleExampleExampleExample test@example"
 
 FAKE = r"""#!/usr/bin/env bash
@@ -23,6 +27,7 @@ case "$(basename "$0") $1 $2" in
   "curl "*)                       cat "$FAKE_DIR/checkip" ;;
   "aws sts get-caller-identity")  echo "arn:aws:iam::111122223333:user/tester" ;;
   "aws ec2 describe-regions")     echo "ap-southeast-1" ;;
+  "terraform output -raw")        printf '%s' "$(cat "$FAKE_DIR/instance_id")" ;;
 esac
 if [ "$(basename "$0")" = terraform ] && [ -e "$FAKE_DIR/fail-$1" ]; then
   echo "fake terraform: $1 failed" >&2
@@ -42,11 +47,18 @@ class Fakes:
         self.log.touch()
         (self.home / ".ssh").mkdir(parents=True)
         (self.home / ".ssh" / "id_ed25519.pub").write_text(PUBLIC_KEY + "\n")
-        for tool in ("terraform", "aws", "curl"):
+        for tool in ("terraform", "aws", "curl", "ansible-playbook"):
             path = self.bin / tool
             path.write_text(FAKE)
             path.chmod(0o755)
         self.checkip("203.0.113.10")
+        self.instance_id(INSTANCE_ID)
+        # Tests write the generated inventory here, never into the repo (a live one may be in use).
+        self.inventory = root / "inventory" / "aws.yml"
+
+    def instance_id(self, answer: str) -> None:
+        """What `terraform output -raw instance_id` prints (nothing when the stack is down)."""
+        (self.dir / "instance_id").write_text(answer)
 
     def checkip(self, answer: str) -> None:
         (self.dir / "checkip").write_text(answer + "\n")
@@ -62,6 +74,7 @@ class Fakes:
         return [r for r in rows if tool is None or r["tool"] == tool]
 
     def make(self, target: str, *overrides: str) -> subprocess.CompletedProcess[str]:
+        overrides = (f"AWS_INVENTORY={self.inventory}", *overrides)
         env = {
             "PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}",
             "HOME": str(self.home),
@@ -200,9 +213,107 @@ def test_cloud_down_fails_when_destroy_fails(fakes: Fakes) -> None:
     assert result.returncode != 0
 
 
+# --- make cloud-config ----------------------------------------------------------------------------------
+
+def test_cloud_config_writes_the_inventory_from_terraform_output(fakes: Fakes) -> None:
+    result = fakes.make("cloud-config")
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    tf = fakes.calls("terraform")
+    assert [c["args"] for c in tf if not c["args"].startswith("init")] == ["output -raw instance_id"]
+    assert all(c["cwd"] == str(EPHEMERAL_DIR) and c["profile"] == "devops" for c in tf)
+
+    # The host name is the instance ID: SSH hands it to Session Manager as the target (%h).
+    assert yaml.safe_load(fakes.inventory.read_text()) == {"aws": {"hosts": {INSTANCE_ID: None}}}
+
+
+def test_cloud_config_runs_the_aws_playbook_on_that_inventory(fakes: Fakes) -> None:
+    result = fakes.make("cloud-config")
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    runs = fakes.calls("ansible-playbook")
+    assert len(runs) == 1
+    assert runs[0]["cwd"] == str(ANSIBLE_DIR)
+    assert runs[0]["profile"] == "devops", "the SSH ProxyCommand calls aws ssm with this profile"
+    assert runs[0]["args"] == f"-i {fakes.inventory} playbooks/aws-node.yml"
+
+    calls = fakes.calls()
+    assert calls.index(runs[0]) > max(i for i, c in enumerate(calls) if c["tool"] == "terraform")
+
+
+def test_cloud_config_passes_extra_ansible_arguments(fakes: Fakes) -> None:
+    result = fakes.make("cloud-config", "ANSIBLE_ARGS=--check --diff")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert fakes.calls("ansible-playbook")[0]["args"].endswith("playbooks/aws-node.yml --check --diff")
+
+
+@pytest.mark.parametrize("answer", ["", "No outputs found", "i-xyz", "i-0123", "i-0123456789abcdef0 extra"])
+def test_cloud_config_stops_without_a_valid_instance_id(fakes: Fakes, answer: str) -> None:
+    fakes.instance_id(answer)
+    result = fakes.make("cloud-config")
+    assert any(c["args"].startswith("output") for c in fakes.calls("terraform")), "it must ask Terraform"
+    assert result.returncode != 0
+    assert not fakes.inventory.exists()
+    assert not fakes.calls("ansible-playbook")
+    assert "make cloud-up" in result.stdout + result.stderr
+
+
+# --- make cloud-tunnel ----------------------------------------------------------------------------------
+
+def test_cloud_tunnel_forwards_the_kubernetes_api_to_local_port_16443(fakes: Fakes) -> None:
+    result = fakes.make("cloud-tunnel")
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    sessions = [c for c in fakes.calls("aws") if c["args"].startswith("ssm start-session")]
+    assert len(sessions) == 1
+    args = sessions[0]["args"].split()
+    assert args[args.index("--target") + 1] == INSTANCE_ID
+    assert args[args.index("--document-name") + 1] == "AWS-StartPortForwardingSession"
+    assert args[args.index("--parameters") + 1] == "portNumber=6443,localPortNumber=16443"
+    assert args[args.index("--region") + 1] == "ap-southeast-1"
+    assert sessions[0]["profile"] == "devops"
+
+
+def test_cloud_tunnel_stops_without_a_running_node(fakes: Fakes) -> None:
+    fakes.instance_id("")
+    result = fakes.make("cloud-tunnel")
+    assert fakes.calls("terraform"), "it must ask Terraform"
+    assert result.returncode != 0
+    assert not [c for c in fakes.calls("aws") if c["args"].startswith("ssm start-session")]
+
+
+# --- make cloud-rebuild ---------------------------------------------------------------------------------
+
+def test_cloud_rebuild_applies_then_configures(fakes: Fakes) -> None:
+    result = fakes.make("cloud-rebuild")
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    steps = [c["args"].split()[0] for c in fakes.calls() if c["tool"] in ("terraform", "ansible-playbook")
+             and not c["args"].startswith("init")]
+    assert steps == ["apply", "output", "-i"]
+
+
+def test_cloud_rebuild_does_not_configure_after_a_failed_apply(fakes: Fakes) -> None:
+    fakes.fail("apply")
+    result = fakes.make("cloud-rebuild")
+    assert "apply" in [c["args"].split()[0] for c in fakes.calls("terraform")], "it must try to apply"
+    assert result.returncode != 0
+    assert not fakes.calls("ansible-playbook")
+
+
 # --- Rules for every AWS session target -----------------------------------------------------------------
 
-@pytest.mark.parametrize("target", ["cloud-up", "cloud-down"])
+@pytest.mark.parametrize("target", ["cloud-config", "cloud-tunnel"])
+def test_session_helpers_never_change_the_stack(fakes: Fakes, target: str) -> None:
+    result = fakes.make(target)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert fakes.calls("terraform"), "the target must run Terraform"
+    for call in fakes.calls("terraform"):
+        assert call["args"].split()[0] in ("init", "output")
+    assert not [c for c in fakes.calls("aws") if "put-parameter" in c["args"]]
+
+
+@pytest.mark.parametrize("target", ["cloud-up", "cloud-down", "cloud-rebuild"])
 def test_terraform_always_asks_for_confirmation(fakes: Fakes, target: str) -> None:
     result = fakes.make(target)
     assert result.returncode == 0, result.stdout + result.stderr
@@ -212,7 +323,8 @@ def test_terraform_always_asks_for_confirmation(fakes: Fakes, target: str) -> No
         assert "-lock=false" not in call["args"]
 
 
-@pytest.mark.parametrize("target", ["owner-ip", "cloud-up", "cloud-down"])
+@pytest.mark.parametrize("target", ["owner-ip", "cloud-up", "cloud-down", "cloud-config", "cloud-tunnel",
+                                    "cloud-rebuild"])
 def test_no_cost_explorer_calls(fakes: Fakes, target: str) -> None:
     result = fakes.make(target)
     assert result.returncode == 0, result.stdout + result.stderr

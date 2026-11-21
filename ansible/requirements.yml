@@ -1,0 +1,6 @@
+---
+# Collections the roles use beyond ansible.builtin. ansible-lint installs these into its own cache;
+# the pinned version matches the one Ubuntu's ansible package ships on the control machine.
+collections:
+  - name: community.general  # timezone module (common role)
+    version: "8.3.0"

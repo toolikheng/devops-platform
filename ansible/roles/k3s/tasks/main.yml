@@ -1,0 +1,53 @@
+---
+# Single-server k3s with its bundled Traefik, ServiceLB, local-path storage and metrics-server. The
+# admin kubeconfig stays on the node (root only); playbooks/aws-node.yml copies it to the laptop.
+
+- name: Create the k3s config directory
+  ansible.builtin.file:
+    path: /etc/rancher/k3s
+    state: directory
+    mode: "0755"
+
+- name: Write the k3s config
+  ansible.builtin.copy:
+    src: config.yaml
+    dest: /etc/rancher/k3s/config.yaml
+    mode: "0600"
+  notify: Restart k3s
+
+# Pinned to the release tag and checked against a recorded sha256, so a changed script never runs.
+- name: Download the k3s install script for the pinned release
+  ansible.builtin.get_url:
+    url: "https://raw.githubusercontent.com/k3s-io/k3s/{{ k3s_version }}/install.sh"
+    dest: /usr/local/lib/k3s-install.sh
+    checksum: "sha256:{{ k3s_install_script_sha256 }}"
+    mode: "0755"
+
+# Read-only, so it also runs in check mode (the install task below needs its output).
+- name: Read the installed k3s version
+  ansible.builtin.command: /usr/local/bin/k3s --version
+  register: k3s_installed
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+# Runs only when the pinned version is not the one installed (first run, or after a version bump).
+- name: Install k3s {{ k3s_version }}
+  ansible.builtin.command: /usr/local/lib/k3s-install.sh
+  environment:
+    INSTALL_K3S_VERSION: "{{ k3s_version }}"
+  when: k3s_version not in k3s_installed.stdout
+  changed_when: true
+
+- name: Restart k3s now if its config changed
+  ansible.builtin.meta: flush_handlers
+
+# Retried because just after a (re)start the node object may not exist yet, and `kubectl wait` fails at
+# once with "no matching resources" instead of waiting.
+- name: Wait for the node to be Ready
+  ansible.builtin.command: /usr/local/bin/k3s kubectl wait --for=condition=Ready node --all --timeout=30s
+  register: k3s_node_ready
+  until: k3s_node_ready.rc == 0
+  retries: 10
+  delay: 5
+  changed_when: false

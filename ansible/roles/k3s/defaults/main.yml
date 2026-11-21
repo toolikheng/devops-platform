@@ -1,0 +1,7 @@
+---
+# k3s release: the newest v1.36 patch when pinned. kubectl 1.37 on the laptop is within the supported
+# version skew (one minor version either way).
+k3s_version: "v1.36.6+k3s1"
+# sha256 of install.sh at that tag (fetched from raw.githubusercontent.com and the GitHub API, both
+# matched). The script then checks the k3s binary against the release's sha256sum-amd64.txt.
+k3s_install_script_sha256: "46177d4c99440b4c0311b67233823a8e8a2fc09693f6c89af1a7161e152fbfad"
