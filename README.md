@@ -121,8 +121,8 @@ Cost while the stack exists (ap-southeast-1, before tax). Nothing is billed once
 | Node | On-demand | Spot (typical) |
 |---|---|---|
 | t3.micro + public IPv4 + 20 GB gp3 | USD 0.021/h | USD 0.012/h |
-| t3.small + public IPv4 + 20 GB gp3 (default) | USD 0.034/h | USD 0.019/h |
-| c7i-flex.large + public IPv4 + 20 GB gp3 | USD 0.105/h | USD 0.061/h |
+| t3.small + public IPv4 + 20 GB gp3 | USD 0.034/h | USD 0.019/h |
+| c7i-flex.large + public IPv4 + 20 GB gp3 (default) | USD 0.105/h | USD 0.061/h |
 
 See [ADR 008](docs/decisions/008-k3s-on-ec2-over-eks.md) (k3s on EC2, not EKS), [ADR 009](docs/decisions/009-spot-and-on-demand.md) (Spot and on-demand), [ADR 010](docs/decisions/010-public-subnet-without-nat.md) (network and access) and the live results in [docs/aws-test-log.md](docs/aws-test-log.md).
 
@@ -194,7 +194,7 @@ make cloud-rebuild         # AWS: cloud-up, then cloud-config
 make ansible-check         # ansible-lint and syntax checks on both playbooks (offline)
 ```
 
-The node is a t3.small on Spot by default; `make cloud-up CLOUD_ARGS='-var use_spot=false'` starts it on-demand. With the tunnel open: `KUBECONFIG=~/.kube/devops-aws.yaml kubectl get nodes`. A shell on the node: `aws ssm start-session --target "$(cd terraform/envs/aws && terraform output -raw instance_id)"`.
+The node is a c7i-flex.large on Spot by default (k3s plus PolicyPal need more than a t3.small's 2 GiB); `make cloud-up CLOUD_ARGS='-var use_spot=false'` starts it on-demand. With the tunnel open: `KUBECONFIG=~/.kube/devops-aws.yaml kubectl get nodes`. A shell on the node: `aws ssm start-session --target "$(cd terraform/envs/aws && terraform output -raw instance_id)"`.
 
 Grafana and Prometheus are reached with a port-forward:
 

@@ -1,7 +1,7 @@
 variable "instance_type" {
-  description = "EC2 instance type (must be on the allowlist enforced by modules/compute). t3.small: k3s needs 2 GiB."
+  description = "EC2 instance type (must be on the allowlist enforced by modules/compute). c7i-flex.large (4 GiB): k3s + PolicyPal."
   type        = string
-  default     = "t3.small"
+  default     = "c7i-flex.large"
 }
 
 variable "use_spot" {

@@ -201,7 +201,7 @@ At USD 15 actual spend in a month, AWS Budgets attaches `devops-platform-deny-ne
 
 ## AWS working session (ephemeral stack)
 
-Everything billed by the hour lives in `terraform/envs/aws` and exists only during a session. The default node is a t3.small on Spot: about USD 0.019/h, or USD 0.034/h on-demand (instance, public IPv4 and volume together).
+Everything billed by the hour lives in `terraform/envs/aws` and exists only during a session. The default node is a c7i-flex.large on Spot: about USD 0.061/h, or USD 0.105/h on-demand (instance, public IPv4 and volume together).
 
 ```bash
 aws login --profile devops
