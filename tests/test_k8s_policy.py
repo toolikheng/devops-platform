@@ -31,10 +31,6 @@ EXPECTED = WORKLOADS | {
     ("PersistentVolumeClaim", "policypal-uploads"),
     ("Ingress", "policypal"),
 }
-# Secret name -> keys. The objects are created outside Git (scripts/policypal-secrets.sh now, External
-# Secrets Operator from C5); the manifests only reference them.
-SECRET_KEYS = {"policypal-db": {"POSTGRES_PASSWORD", "DATABASE_URL"}, "policypal-admin": {"ADMIN_TOKEN"}}
-
 overlay_param = pytest.mark.parametrize("overlay", OVERLAYS)
 
 
@@ -240,6 +236,8 @@ def test_postgres_keeps_its_data_on_a_5gi_claim(rendered: dict, overlay: str) ->
 
 @overlay_param
 def test_secrets_come_only_from_the_expected_secret_keys(rendered: dict, overlay: str) -> None:
+    # The Secrets are created outside Git (scripts/policypal-secrets.sh now, External Secrets Operator from
+    # C5); the manifests only reference them. test_policypal_scripts.py checks the script against these refs.
     docs = rendered[overlay]
     expected = {
         ("policypal-api", "api", "DATABASE_URL"): ("policypal-db", "DATABASE_URL"),
@@ -253,7 +251,6 @@ def test_secrets_come_only_from_the_expected_secret_keys(rendered: dict, overlay
             for name, value in env(c).items():
                 if isinstance(value, dict) and "secretKeyRef" in value:
                     ref = value["secretKeyRef"]
-                    assert ref["key"] in SECRET_KEYS[ref["name"]]
                     found[(workload["metadata"]["name"], c["name"], name)] = (ref["name"], ref["key"])
                 elif re.search(r"PASSWORD|TOKEN|SECRET|DATABASE_URL", name):
                     pytest.fail(f"{name} in {c['name']} is a literal value: it must come from a Secret")

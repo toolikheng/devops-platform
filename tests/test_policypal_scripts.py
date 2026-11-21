@@ -8,7 +8,8 @@
 
 They run with fake `kubectl`, `curl`, `docker`, `k3d`, `terraform` and `aws` first on PATH, so no cluster,
 container or AWS account is touched. Each fake appends one JSON line per call (tool, args, KUBECONFIG,
-AWS_PROFILE) to a log, and answers from files the test writes (secrets that exist, revisions, API replies).
+AWS_PROFILE; for kubectl also the namespace, taken out of the args) to a log, and answers from files the test
+writes (secrets that exist, revisions, API replies).
 """
 
 import json
@@ -45,9 +46,21 @@ from pathlib import Path
 
 tool, args = Path(sys.argv[0]).name, sys.argv[1:]
 d = Path(os.environ["FAKE_DIR"])
+# kubectl: the namespace is logged on its own; args keep everything else, in order.
+ns = ""
+if tool == "kubectl":
+    rest, it = [], iter(args)
+    for x in it:
+        if x in ("-n", "--namespace"):
+            ns = next(it)
+        elif x.startswith("--namespace="):
+            ns = x.split("=", 1)[1]
+        else:
+            rest.append(x)
+    args = rest
 stdin = sys.stdin.read() if "-" in args or any(a.endswith("/dev/stdin") for a in args) or tool == "docker" and "-i" in args else ""
 with open(os.environ["FAKE_LOG"], "a") as log:
-    log.write(json.dumps({"tool": tool, "args": args, "kubeconfig": os.environ.get("KUBECONFIG", ""),
+    log.write(json.dumps({"tool": tool, "args": args, "ns": ns, "kubeconfig": os.environ.get("KUBECONFIG", ""),
                           "profile": os.environ.get("AWS_PROFILE", ""), "stdin": stdin}) + "\n")
 
 def answer(name, default_rc=0):
@@ -61,7 +74,7 @@ def answer(name, default_rc=0):
     sys.exit(default_rc)
 
 if tool == "kubectl":
-    a = [x for x in args if x not in ("-n", "policypal", "--namespace=policypal")]
+    a = args
     if a[:2] == ["get", "namespace"]:
         sys.exit(0 if (d / "namespace-exists").exists() else 1)
     if a[:2] == ["get", "secret"]:
@@ -161,17 +174,17 @@ class Fakes:
         return [r for r in rows if tool is None or r["tool"] == tool]
 
     def kubectl(self, *prefix: str) -> list[list[str]]:
-        """kubectl calls (namespace flags removed) that start with these words."""
-        found = []
-        for call in self.calls("kubectl"):
-            a = [x for x in call["args"] if x not in ("-n", "policypal", "--namespace=policypal")]
-            if a[:len(prefix)] == list(prefix):
-                found.append(a)
-        return found
+        """The args of kubectl calls that start with these words (the namespace is in each call's "ns")."""
+        return [c["args"] for c in self.calls("kubectl") if c["args"][:len(prefix)] == list(prefix)]
 
     def created_secret(self, name: str) -> dict[str, str]:
         text = (self.dir / f"secret-{name}").read_text()
         return dict(line.split("=", 1) for line in text.splitlines() if line)
+
+    def created_secrets(self) -> dict[str, set[str]]:
+        """Secret name -> keys, for every Secret the scripts created."""
+        return {p.name.removeprefix("secret-"): set(self.created_secret(p.name.removeprefix("secret-")))
+                for p in self.dir.glob("secret-*")}
 
     # --- running --------------------------------------------------------------------------------------
     def env(self) -> dict[str, str]:
@@ -188,6 +201,20 @@ class Fakes:
                               timeout=120)
 
 
+def secret_keys_referenced(docs: list[dict[str, Any]]) -> dict[str, set[str]]:
+    """Secret name -> keys, from every secretKeyRef in rendered manifests: what the cluster must hold."""
+    keys: dict[str, set[str]] = {}
+    for doc in docs:
+        if doc["kind"] in ("Deployment", "StatefulSet"):
+            spec = doc["spec"]["template"]["spec"]
+            for c in spec["containers"] + spec.get("initContainers", []):
+                for e in c.get("env", []):
+                    ref = e.get("valueFrom", {}).get("secretKeyRef")
+                    if ref:
+                        keys.setdefault(ref["name"], set()).add(ref["key"])
+    return keys
+
+
 @pytest.fixture
 def fakes(tmp_path: Path) -> Fakes:
     return Fakes(tmp_path)
@@ -199,11 +226,13 @@ def output(result: subprocess.CompletedProcess[str]) -> str:
 
 # --- scripts/policypal-secrets.sh -----------------------------------------------------------------------
 
-def test_secrets_are_created_with_the_keys_the_manifests_reference(fakes: Fakes) -> None:
+def test_secrets_are_created_with_the_keys_the_manifests_reference(fakes: Fakes, rendered: dict) -> None:
+    # The manifests are the source of truth: a key renamed there but not here would only show up as a pod
+    # that can't start, after the rollout times out.
     result = fakes.script("policypal-secrets.sh")
     assert result.returncode == 0, output(result)
-    assert set(fakes.created_secret("policypal-db")) == {"POSTGRES_PASSWORD", "DATABASE_URL"}
-    assert set(fakes.created_secret("policypal-admin")) == {"ADMIN_TOKEN"}
+    for overlay, docs in rendered.items():
+        assert fakes.created_secrets() == secret_keys_referenced(docs), overlay
     assert fakes.kubectl("create", "namespace"), "the namespace must exist before its Secrets"
 
 
@@ -212,7 +241,7 @@ def test_a_new_namespace_is_ready_for_kubectl_apply(fakes: Fakes) -> None:
     # configuration (seen on both AWS runs), then patches it in.
     fakes.script("policypal-secrets.sh")
     creates = fakes.kubectl("create", "namespace")
-    assert creates and "--save-config" in creates[0]
+    assert creates and creates[0][:3] == ["create", "namespace", "policypal"] and "--save-config" in creates[0]
 
 
 def test_an_existing_namespace_is_left_to_the_manifests(fakes: Fakes) -> None:
@@ -356,11 +385,14 @@ def test_smoke_test_needs_the_ui_url(fakes: Fakes) -> None:
 
 # --- scripts/deploy-policypal.sh ------------------------------------------------------------------------
 
-def test_deploy_applies_the_rendered_overlay_then_waits_and_smoke_tests(fakes: Fakes) -> None:
+def test_deploy_applies_the_rendered_overlay_then_waits_and_smoke_tests(fakes: Fakes, rendered: dict) -> None:
     fakes.secret_exists("policypal-db")
     fakes.secret_exists("policypal-admin")
     result = fakes.script("deploy-policypal.sh", "aws", UI_URL)
     assert result.returncode == 0, output(result)
+
+    checked = [sorted(a[2:]) for a in fakes.kubectl("get", "secret")]
+    assert checked == [sorted(secret_keys_referenced(rendered["aws"]))], "checks exactly the Secrets the pods need"
 
     renders = [c for c in fakes.calls("docker") if any("kustomize" in a for a in c["args"])]
     assert len(renders) == 1 and renders[0]["args"][-1].endswith("/policypal/overlays/aws")
@@ -455,8 +487,7 @@ def test_policypal_secrets_local_targets_the_k3d_cluster(fakes: Fakes) -> None:
     assert result.returncode == 0, output(result)
     calls = fakes.calls("kubectl")
     switch = [i for i, c in enumerate(calls) if c["args"][:3] == ["config", "use-context", "k3d-devops"]]
-    create = [i for i, c in enumerate(calls) if c["args"][:2] == ["create", "secret"]
-              or c["args"][2:4] == ["create", "secret"]]
+    create = [i for i, c in enumerate(calls) if c["args"][:2] == ["create", "secret"]]
     assert switch and create and switch[0] < create[0]
     assert all("devops-aws" not in c["kubeconfig"] for c in calls)
 
@@ -510,6 +541,24 @@ def test_cloud_smoke_only_reads(fakes: Fakes) -> None:
     assert fakes.kubectl("port-forward")
     assert not fakes.kubectl("apply") and not fakes.kubectl("create", "secret")
     assert not fakes.kubectl("rollout")
+
+
+# Calls that name no namespace on purpose: the namespace itself, and the rendered manifests, which carry their
+# own (test_k8s_policy.py checks that every object is in policypal).
+NAMESPACE_FREE = (["get", "namespace"], ["create", "namespace"], ["apply", "-f", "-"])
+
+
+@pytest.mark.parametrize("target", ["cloud-deploy", "policypal-local"])
+def test_every_namespaced_kubectl_call_targets_policypal(fakes: Fakes, target: str) -> None:
+    # Without -n, kubectl uses the context's namespace (default): Secrets, rollouts and the port-forward
+    # would all look in the wrong place.
+    result = fakes.make(target)
+    assert result.returncode == 0, output(result)
+    namespaced = [c for c in fakes.calls("kubectl")
+                  if not any(c["args"][:len(p)] == p for p in NAMESPACE_FREE)
+                  and c["args"][:2] not in (["config", "use-context"], ["wait", "--for=condition=Ready"])]
+    assert namespaced, "the deploy must have run"
+    assert [(c["args"][:2], c["ns"]) for c in namespaced if c["ns"] != "policypal"] == []
 
 
 @pytest.mark.parametrize("target", ["cloud-deploy", "cloud-smoke"])
