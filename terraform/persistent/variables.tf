@@ -39,3 +39,25 @@ variable "alert_thresholds_usd" {
     error_message = "alert_thresholds_usd needs 1 to 5 amounts, each above 0 and below monthly_budget_usd."
   }
 }
+
+variable "db_password_version" {
+  description = "Version of PolicyPal's database password in SSM. Raise it by 1 to write a new random value (runbook: change it in Postgres first)."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = var.db_password_version >= 1 && floor(var.db_password_version) == var.db_password_version
+    error_message = "db_password_version must be a whole number from 1."
+  }
+}
+
+variable "admin_token_version" {
+  description = "Version of PolicyPal's admin token in SSM. Raise it by 1 to write a new random value (rotation)."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = var.admin_token_version >= 1 && floor(var.admin_token_version) == var.admin_token_version
+    error_message = "admin_token_version must be a whole number from 1."
+  }
+}

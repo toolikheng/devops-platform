@@ -11,7 +11,7 @@ module "names" {
 # the instance metadata service (IMDSv2), so no access keys exist anywhere.
 resource "aws_iam_role" "node" {
   name        = module.names.node
-  description = "Role of the ephemeral EC2 node: SSM agent only (C5 adds its parameters, C7 its backups)."
+  description = "Role of the ephemeral EC2 node: SSM agent and PolicyPal's parameters (C7 adds its backups)."
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{

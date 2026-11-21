@@ -4,7 +4,8 @@
 #
 # The permission set is checked as an exact list on purpose. The usual shortcut, the managed policy
 # AmazonSSMManagedInstanceCore, also allows ssm:GetParameter on every parameter, so any process on the
-# node could read every secret. Parameter access is added in C5, scoped to /policypal/aws/* only.
+# node could read every secret. Parameter access is a separate policy, scoped to /policypal/aws/* only
+# (policypal_parameters.tftest.hcl).
 
 mock_provider "aws" {
   source = "./tests/mocks"

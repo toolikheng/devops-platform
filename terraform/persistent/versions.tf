@@ -7,5 +7,10 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 6.73"
     }
+    # Ephemeral random_password (never stored in state) for the PolicyPal secrets.
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.9"
+    }
   }
 }

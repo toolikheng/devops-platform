@@ -27,3 +27,12 @@ mock_resource "aws_iam_role" {
     arn = "arn:aws:iam::111122223333:role/devops-platform-budget-action"
   }
 }
+
+# A default only fills an attribute the configuration does not set. policypal_parameters.tftest.hcl uses this
+# marker to prove that no secret parameter sets value or insecure_value (both are stored in state).
+mock_resource "aws_ssm_parameter" {
+  defaults = {
+    value          = "NOT-SET-IN-CONFIG"
+    insecure_value = "NOT-SET-IN-CONFIG"
+  }
+}
