@@ -17,6 +17,8 @@ metadata:
   name: policypal-ui
 spec:
   replicas: 1
+  # Same image as the API, so the same slow first pull: see api.yaml.
+  progressDeadlineSeconds: 900
   selector:
     matchLabels:
       app.kubernetes.io/name: policypal-ui

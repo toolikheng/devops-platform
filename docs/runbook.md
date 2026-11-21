@@ -347,6 +347,12 @@ It prints one `PASS` or `FAIL` line per check and runs them all:
 - `UI not healthy through the ingress`: on AWS, your IP may have changed (`make cloud-up` again); locally, the ingress needs the host `policypal.localhost`.
 - `kubectl port-forward to the API did not start`: kubectl can't reach the cluster (on AWS: is `make cloud-tunnel` running?) or the `policypal-api` Service is missing; kubectl's own error follows. The smoke test then stops, because without its own forward it can't be sure which API it would be talking to. It lets kubectl pick a free local port each time, so a forward you left open (like the one below) never gets in its way.
 
+### The first deploy on a new cluster is slow, or stops with `exceeded its progress deadline`
+
+A new cluster pulls the PolicyPal image (641 MB compressed) on every node that runs a PolicyPal pod. On k3d the first pull took between 2 minutes and 11 minutes in different runs, depending on the network and on other pulls on the same node. The local-path provisioner's helper pod can queue behind that pull and fail with `create process timeout after 120 seconds`; it retries on its own, so the Postgres volume is just late.
+
+The Deployments allow 15 minutes without progress (`progressDeadlineSeconds: 900`, the same as the deploy script's `ROLLOUT_TIMEOUT`); with the default of 10 minutes a slow pull stopped the deploy. If it still runs out, Kubernetes keeps pulling anyway: wait for the pods (`kubectl -n policypal get pods -w`), then run the deploy again. It has nothing to change and goes straight to the smoke test. For a known-slow network, `ROLLOUT_TIMEOUT=30m` gives the script more time (raise `progressDeadlineSeconds` with it).
+
 ### A deploy rolled back
 
 `kubectl -n policypal get pods` and `kubectl -n policypal describe pod <name>` show why (often `ImagePullBackOff`: the tag doesn't exist on GHCR). kubectl warns that `rollout undo` doesn't update the last-applied annotation; the next deploy with a good tag sets it again. While a bad API version was being tried the API was down (`Recreate`); the UI kept serving.

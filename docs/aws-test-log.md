@@ -116,6 +116,8 @@ Everything below ran on the local k3d cluster before any AWS time: `make policyp
 
 The rollback was shown on k3d too: a tag that doesn't exist left the new pods in ImagePullBackOff, the rollout timed out, both Deployments went back to their previous revision and the smoke test passed again. The UI kept serving during the bad deploy; the API (`Recreate`) was down until the rollback.
 
+After the code review, a new k3d cluster ran the reviewed smoke test end to end. The first deploy stopped with "exceeded its progress deadline": the image pull took 11 minutes on one node (the local-path provisioner's helper also timed out three times behind it), longer than a Deployment's default 10-minute progress deadline, which `kubectl rollout status` obeys whatever the script's own timeout says. Both Deployments now allow 900 s, matching the script (test-first). The next deploy passed the smoke test 6/6 with another port-forward left open on the old fixed port 18000.
+
 Memory on k3d (steady, then peak from the container's cgroup `memory.peak`): API 910 / 1016 MiB, UI 81 / 90 MiB, Postgres 71 / 101 MiB. With k3s and Ubuntu already using about 1.1 GiB of a t3.small's 2 GiB (C3), the default node became c7i-flex.large (4 GiB).
 
 ### Steps

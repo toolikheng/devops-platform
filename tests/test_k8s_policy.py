@@ -18,6 +18,7 @@ from conftest import OVERLAYS
 REPO_ROOT = Path(__file__).resolve().parent.parent
 K3S_DEFAULTS = REPO_ROOT / "ansible" / "roles" / "k3s" / "defaults" / "main.yml"
 K8S_CHECKS = REPO_ROOT / "ci" / "k8s-checks.sh"
+DEPLOY_SCRIPT = REPO_ROOT / "scripts" / "deploy-policypal.sh"
 
 NAMESPACE = "policypal"
 POLICYPAL_IMAGE = re.compile(r"^ghcr\.io/toolikheng/policypal(:[0-9a-f]{40}|@sha256:[0-9a-f]{64})$")
@@ -131,6 +132,21 @@ def test_api_start_up_has_a_long_startup_probe(rendered: dict, overlay: str) -> 
     # Migrations, ingesting every policy and loading the embedding model: measured 34-44 s; allow 5 min+.
     probe = container(api(rendered[overlay]), "api")["startupProbe"]
     assert probe["periodSeconds"] * probe["failureThreshold"] >= 300
+
+
+@overlay_param
+def test_deployments_wait_as_long_as_the_deploy_script(rendered: dict, overlay: str) -> None:
+    # Kubernetes marks a Deployment failed after progressDeadlineSeconds (default 600) without progress, and
+    # `kubectl rollout status` stops there, whatever deploy-policypal.sh's ROLLOUT_TIMEOUT says. Found on k3d:
+    # a slow first pull of the image stopped the deploy at 10 minutes. The API also needs room for its whole
+    # startup-probe budget after the pull.
+    rollout_timeout = re.search(r'ROLLOUT_TIMEOUT="\$\{ROLLOUT_TIMEOUT:-(\d+)m\}"', DEPLOY_SCRIPT.read_text())
+    assert rollout_timeout, "ROLLOUT_TIMEOUT default (in minutes) not found in deploy-policypal.sh"
+    for name in ("policypal-api", "policypal-ui"):
+        deadline = get(rendered[overlay], "Deployment", name)["spec"].get("progressDeadlineSeconds", 600)
+        assert deadline >= int(rollout_timeout[1]) * 60, name
+    startup = container(api(rendered[overlay]), "api")["startupProbe"]
+    assert api(rendered[overlay])["spec"]["progressDeadlineSeconds"] > startup["periodSeconds"] * startup["failureThreshold"]
 
 
 @overlay_param

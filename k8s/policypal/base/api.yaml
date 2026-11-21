@@ -32,6 +32,9 @@ metadata:
   name: policypal-api
 spec:
   replicas: 1
+  # Kubernetes gives up on a rollout after this long without progress (default 600 s). A slow first pull of
+  # the image plus up to 6 minutes of startup probe can need more; 900 s matches deploy-policypal.sh.
+  progressDeadlineSeconds: 900
   strategy:
     type: Recreate
   selector:

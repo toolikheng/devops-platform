@@ -8,7 +8,8 @@
 # records each Deployment's revision; on failure, every Deployment whose revision changed goes back to the
 # one it had. Postgres is never rolled back (its data volume stays as it is). A first deploy has nothing to
 # roll back to. The Secrets must exist first (policypal-secrets.sh). ROLLOUT_TIMEOUT allows for the first
-# pull of the ~2.8 GB image.
+# pull of the ~2.8 GB image; the Deployments' progressDeadlineSeconds must be at least as long, or Kubernetes
+# gives up first (a test checks).
 set -euo pipefail
 
 NAMESPACE="policypal"
