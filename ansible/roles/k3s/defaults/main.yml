@@ -5,8 +5,3 @@ k3s_version: "v1.36.6+k3s1"
 # sha256 of install.sh at that tag (fetched from raw.githubusercontent.com and the GitHub API, both
 # matched). The script then checks the k3s binary against the release's sha256sum-amd64.txt.
 k3s_install_script_sha256: "46177d4c99440b4c0311b67233823a8e8a2fc09693f6c89af1a7161e152fbfad"
-
-# The laptop's copy of the admin kubeconfig: outside the repo, mode 0600 (cluster-admin credentials).
-k3s_kubeconfig_path: "{{ lookup('env', 'HOME') }}/.kube/devops-aws.yaml"
-# make cloud-tunnel forwards this local port to 6443 on the node (scripts/cloud-tunnel.sh).
-k3s_kubeconfig_local_port: 16443

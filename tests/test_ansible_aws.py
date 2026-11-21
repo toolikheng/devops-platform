@@ -2,8 +2,9 @@
 
 ansible-lint checks style and syntax, and a live run checks behaviour. These tests pin the rules neither
 of them knows about: Ansible reaches the node only through Session Manager, the homelab keeps its old
-SSH setting, k3s is pinned and its installer checksum-verified, Secrets are encrypted at rest, and the
-kubeconfig points at the same local port that `make cloud-tunnel` opens.
+SSH setting, k3s is pinned and its installer checksum-verified, Secrets are encrypted at rest, the k3s
+role only configures the node, and the admin kubeconfig reaches the laptop privately, pointing at the same
+local port that `make cloud-tunnel` opens.
 """
 
 import re
@@ -15,6 +16,8 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ANSIBLE = REPO_ROOT / "ansible"
 K3S_ROLE = ANSIBLE / "roles" / "k3s"
+AWS_PLAYBOOK = ANSIBLE / "playbooks" / "aws-node.yml"
+AWS_GROUP_VARS = ANSIBLE / "inventory" / "group_vars" / "aws.yml"
 TUNNEL_SCRIPT = REPO_ROOT / "scripts" / "cloud-tunnel.sh"
 
 
@@ -28,6 +31,22 @@ def tasks(role: Path) -> list[dict[str, Any]]:
     for path in sorted((role / "tasks").glob("*.yml")):
         found.extend(load(path) or [])
     return found
+
+
+def flatten(task_list: list[dict[str, Any]], inherited: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Tasks with any `block:` unrolled; each task gets the block's delegate_to/become unless it sets its own."""
+    found: list[dict[str, Any]] = []
+    for task in task_list:
+        if "block" in task:
+            keys = {k: task[k] for k in ("delegate_to", "become") if k in task}
+            found.extend(flatten(task["block"], {**(inherited or {}), **keys}))
+        else:
+            found.append({**(inherited or {}), **task})
+    return found
+
+
+def module_args(task: dict[str, Any], module: str) -> dict[str, Any]:
+    return task[f"ansible.builtin.{module}"]
 
 
 # --- How Ansible reaches the node --------------------------------------------------------------------------
@@ -99,21 +118,58 @@ def test_k3s_encrypts_secrets_and_keeps_its_kubeconfig_private() -> None:
     assert config["write-kubeconfig-mode"] == "0600"
 
 
-def test_kubeconfig_goes_to_the_owners_home_not_the_repo() -> None:
+def test_k3s_role_only_configures_the_node() -> None:
+    # Reaching the node from the laptop (tunnel port, kubeconfig copy) belongs to the AWS playbook and
+    # group_vars, next to the Session Manager settings, not to the role that installs k3s.
     defaults = load(K3S_ROLE / "defaults" / "main.yml")
-    path = defaults["k3s_kubeconfig_path"]
+    assert set(defaults) == {"k3s_version", "k3s_install_script_sha256"}
+    assert not [t["name"] for t in flatten(tasks(K3S_ROLE)) if "delegate_to" in t]
+
+
+# --- The admin kubeconfig on the laptop --------------------------------------------------------------------
+
+def laptop_kubeconfig_tasks() -> dict[str, dict[str, Any]]:
+    return {t["name"]: t for t in flatten(load(AWS_PLAYBOOK)[0]["post_tasks"])}
+
+
+def test_kubeconfig_goes_to_the_owners_home_not_the_repo() -> None:
+    path = load(AWS_GROUP_VARS)["kubeconfig_path"]
     assert path.startswith("{{ lookup('env', 'HOME') }}/.kube/")
     assert path.endswith("/devops-aws.yaml")
 
 
 def test_kubeconfig_port_matches_the_tunnel() -> None:
-    defaults = load(K3S_ROLE / "defaults" / "main.yml")
     script = TUNNEL_SCRIPT.read_text()
     local_port = re.search(r"^LOCAL_PORT=(\d+)$", script, re.M)
     remote_port = re.search(r"^REMOTE_PORT=(\d+)$", script, re.M)
     assert local_port and remote_port, "cloud-tunnel.sh must define LOCAL_PORT and REMOTE_PORT"
-    assert defaults["k3s_kubeconfig_local_port"] == int(local_port.group(1)) == 16443
+    assert load(AWS_GROUP_VARS)["kubeconfig_tunnel_port"] == int(local_port.group(1)) == 16443
     assert int(remote_port.group(1)) == 6443
+
+
+def test_admin_kubeconfig_reaches_the_laptop_privately() -> None:
+    post = laptop_kubeconfig_tasks()
+
+    read = post["Read the admin kubeconfig"]
+    assert module_args(read, "slurp")["src"] == "/etc/rancher/k3s/k3s.yaml"
+    assert read.get("no_log") is True, "the file holds a cluster-admin client key"
+
+    # ~/.kube holds admin credentials: created 0700 if missing, an existing one left as it is (owner choice).
+    kube_dir = post["Create ~/.kube on this machine"]
+    assert module_args(kube_dir, "file")["mode"] == "0700"
+    assert kube_dir["when"] == "not kube_dir.stat.exists"
+
+    save = post["Save the kubeconfig on this machine, pointing at the tunnel"]
+    copy = module_args(save, "copy")
+    assert copy["dest"] == "{{ kubeconfig_path }}"
+    assert copy["mode"] == "0600"
+    assert "replace('https://127.0.0.1:6443', 'https://127.0.0.1:' ~ kubeconfig_tunnel_port)" in copy["content"]
+    assert save.get("no_log") is True
+
+    for name in ("Check for ~/.kube on this machine", "Create ~/.kube on this machine",
+                 "Save the kubeconfig on this machine, pointing at the tunnel"):
+        assert post[name].get("delegate_to") == "localhost", name
+        assert post[name].get("become") is False, f"{name}: no sudo on the laptop"
 
 
 # --- Check mode (make cloud-config ANSIBLE_ARGS='--check --diff') ------------------------------------------

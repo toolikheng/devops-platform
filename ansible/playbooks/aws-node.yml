@@ -1,6 +1,7 @@
 ---
-# Configures the AWS node (make cloud-config): the homelab's common and node_exporter roles, then k3s.
-# Ansible connects through Session Manager (inventory/group_vars/aws.yml).
+# Configures the AWS node (make cloud-config): the homelab's common and node_exporter roles, then k3s,
+# then copies the k3s admin kubeconfig to this laptop. Ansible connects through Session Manager
+# (inventory/group_vars/aws.yml).
 - name: Configure the AWS node
   hosts: aws
   gather_facts: false  # facts need a connection, which may not be ready yet
@@ -35,3 +36,44 @@
     - role: k3s
       tags:
         - k3s
+
+  # kubectl on this laptop talks to the node through make cloud-tunnel, never through an open port.
+  # slurp + copy rather than fetch: the laptop copy is edited (tunnel port), so fetch would see a difference
+  # and download it again on every run, and the playbook would never reach changed=0.
+  post_tasks:
+    - name: Read the admin kubeconfig
+      ansible.builtin.slurp:
+        src: /etc/rancher/k3s/k3s.yaml
+      register: admin_kubeconfig
+      no_log: true  # cluster-admin client key
+      tags:
+        - k3s
+
+    - name: Copy the admin kubeconfig to this machine
+      delegate_to: localhost
+      become: false
+      tags:
+        - k3s
+      block:
+        - name: Check for ~/.kube on this machine
+          ansible.builtin.stat:
+            path: "{{ kubeconfig_path | dirname }}"
+          register: kube_dir
+
+        # Created only if missing, 0700 because it holds admin credentials; an existing ~/.kube (k3d uses
+        # it) keeps its permissions.
+        - name: Create ~/.kube on this machine
+          ansible.builtin.file:
+            path: "{{ kubeconfig_path | dirname }}"
+            state: directory
+            mode: "0700"
+          when: not kube_dir.stat.exists
+
+        - name: Save the kubeconfig on this machine, pointing at the tunnel
+          ansible.builtin.copy:
+            content: >-
+              {{ admin_kubeconfig.content | b64decode
+                 | replace('https://127.0.0.1:6443', 'https://127.0.0.1:' ~ kubeconfig_tunnel_port) }}
+            dest: "{{ kubeconfig_path }}"
+            mode: "0600"
+          no_log: true  # cluster-admin client key

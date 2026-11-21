@@ -7,7 +7,7 @@
 # server https://127.0.0.1:16443 (the k3s certificate is valid for 127.0.0.1).
 set -euo pipefail
 
-# LOCAL_PORT must match k3s_kubeconfig_local_port in ansible/roles/k3s (tests/test_ansible_aws.py checks it).
+# LOCAL_PORT must match kubeconfig_tunnel_port in ansible/inventory/group_vars/aws.yml (tests check it).
 LOCAL_PORT=16443
 REMOTE_PORT=6443
 # The stacks fix their region in code.

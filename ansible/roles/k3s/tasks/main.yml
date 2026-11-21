@@ -1,6 +1,6 @@
 ---
-# Single-server k3s with its bundled Traefik, ServiceLB, local-path storage and metrics-server, then a
-# copy of the admin kubeconfig on the laptop that points at the SSM tunnel (make cloud-tunnel).
+# Single-server k3s with its bundled Traefik, ServiceLB, local-path storage and metrics-server. The
+# admin kubeconfig stays on the node (root only); playbooks/aws-node.yml copies it to the laptop.
 
 - name: Create the k3s config directory
   ansible.builtin.file:
@@ -51,39 +51,3 @@
   retries: 10
   delay: 5
   changed_when: false
-
-# slurp + copy rather than fetch: the laptop copy is edited (tunnel port), so fetch would see a
-# difference and download it again on every run, and the playbook would never reach changed=0.
-- name: Read the admin kubeconfig
-  ansible.builtin.slurp:
-    src: /etc/rancher/k3s/k3s.yaml
-  register: k3s_admin_kubeconfig
-  no_log: true  # cluster-admin client key
-
-- name: Check for ~/.kube on this machine
-  ansible.builtin.stat:
-    path: "{{ k3s_kubeconfig_path | dirname }}"
-  register: k3s_kube_dir
-  delegate_to: localhost
-  become: false
-
-# Created only if missing, so an existing ~/.kube (used by k3d) keeps its permissions.
-- name: Create ~/.kube on this machine
-  ansible.builtin.file:
-    path: "{{ k3s_kubeconfig_path | dirname }}"
-    state: directory
-    mode: "0700"
-  delegate_to: localhost
-  become: false
-  when: not k3s_kube_dir.stat.exists
-
-- name: Save the kubeconfig on this machine, pointing at the tunnel
-  ansible.builtin.copy:
-    content: >-
-      {{ k3s_admin_kubeconfig.content | b64decode
-         | replace('https://127.0.0.1:6443', 'https://127.0.0.1:' ~ k3s_kubeconfig_local_port) }}
-    dest: "{{ k3s_kubeconfig_path }}"
-    mode: "0600"
-  delegate_to: localhost
-  become: false
-  no_log: true  # cluster-admin client key

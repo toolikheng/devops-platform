@@ -16,5 +16,11 @@ ansible_python_interpreter: /usr/bin/python3
 # Works with sudo because Ubuntu's sudoers has no requiretty.
 ansible_pipelining: true
 
+# The laptop's copy of the k3s admin kubeconfig (written by playbooks/aws-node.yml): outside the repo,
+# mode 0600, because it holds cluster-admin credentials.
+kubeconfig_path: "{{ lookup('env', 'HOME') }}/.kube/devops-aws.yaml"
+# The localhost port make cloud-tunnel forwards to the node's 6443 (LOCAL_PORT in scripts/cloud-tunnel.sh).
+kubeconfig_tunnel_port: 16443
+
 common_permit_root_login: "no"
 common_motd_title: DevOps Platform - AWS Node
