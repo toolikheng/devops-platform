@@ -53,6 +53,8 @@ MUST_KEEP = [
     "ansible/inventory/docker-nodes.yml",
     "ansible/inventory/group_vars/aws.yml",
     "ansible/playbooks/aws-node.yml",
+    # The secrets script holds no values (it generates them inside the cluster), so it is committed.
+    "scripts/policypal-secrets.sh",
 ]
 
 LOCAL_ONLY = ["CLAUDE.md", "CLAUDE.local.md", "planning", ".local-archive", ".claude", ".agents",
@@ -91,3 +93,18 @@ def test_no_local_only_paths_in_committed_gitignore() -> None:
         if line.strip() and not line.startswith("#")
     }
     assert not patterns & set(LOCAL_ONLY)
+
+
+def test_every_policypal_manifest_can_be_committed(tmp_path: Path) -> None:
+    """Patterns such as *-secret.yaml would silently drop a manifest; check every file that exists."""
+    root = REPO_ROOT / "k8s" / "policypal"
+    files = sorted(str(p.relative_to(REPO_ROOT)) for p in root.rglob("*") if p.is_file())
+    assert files, "k8s/policypal has no files"
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    shutil.copy(GITIGNORE, tmp_path / ".gitignore")
+    result = subprocess.run(
+        ["git", "-c", "core.excludesFile=/dev/null", "check-ignore", "--no-index", "--stdin"],
+        cwd=tmp_path, input="\n".join(files) + "\n", capture_output=True, text=True,
+    )
+    assert result.returncode in (0, 1), result.stderr
+    assert result.stdout.split() == []

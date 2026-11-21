@@ -6,6 +6,7 @@
         backup restore-test \
         test-infra cost-check tf-check ansible-check owner-ip cloud-up cloud-down \
         cloud-config cloud-tunnel cloud-rebuild \
+        k8s-check \
         destroy all clean
 
 SHELL := /bin/bash
@@ -99,6 +100,7 @@ help:
 	@$(ECHO) "  $(GREEN)make cost-check$(NC)    Read-only scan for billable AWS leftovers (all regions)"
 	@$(ECHO) "  $(GREEN)make tf-check$(NC)      Offline Terraform checks: fmt, validate, test, tflint, trivy"
 	@$(ECHO) "  $(GREEN)make ansible-check$(NC) Offline Ansible checks: ansible-lint, syntax-check (both playbooks)"
+	@$(ECHO) "  $(GREEN)make k8s-check$(NC)     Offline Kubernetes checks: render both PolicyPal overlays, kubeconform -strict"
 	@$(ECHO) "  $(GREEN)make owner-ip$(NC)      Store your public IP (/32) for the node's firewall (AWS write)"
 	@$(ECHO) "  $(GREEN)make cloud-up$(NC)      Store your IP, then create the ephemeral stack (asks before applying; billed hourly)"
 	@$(ECHO) "  $(GREEN)make cloud-down$(NC)    Destroy the ephemeral stack (asks first), then run cost-check"
@@ -274,6 +276,9 @@ tf-check:
 
 ansible-check:
 	@bash "$(CI_DIR)/ansible-checks.sh"
+
+k8s-check:
+	@bash "$(CI_DIR)/k8s-checks.sh"
 
 # Read-only: describe/list/get calls only, never the Cost Explorer API. Exit 1 if anything billable is left.
 cost-check:

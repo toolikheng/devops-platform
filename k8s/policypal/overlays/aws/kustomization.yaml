@@ -1,0 +1,12 @@
+# The EC2 node. The ingress answers on any host name: the public IP changes every session and there is no DNS.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+- ../../base
+
+# The PolicyPal commit to run (its CI publishes an image per commit to GHCR; public, amd64 only).
+# Quoted: a commit hash made only of digits would otherwise be a YAML number.
+images:
+- name: ghcr.io/toolikheng/policypal
+  newTag: "16d4edb48b0508a75680831c186d435ae565bccf"

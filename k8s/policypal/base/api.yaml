@@ -1,0 +1,137 @@
+# The PolicyPal API (FastAPI, port 8000). Its entrypoint runs the migrations, ingests the policies baked into
+# the image (files that haven't changed are skipped), then starts uvicorn. One process owns the upload lock
+# and the uploads volume, so there is exactly one replica and an update stops the old pod first (Recreate).
+# There is no Ingress for it: /docs and the admin endpoints are reachable only inside the cluster.
+apiVersion: v1
+kind: Service
+metadata:
+  name: policypal-api
+spec:
+  selector:
+    app.kubernetes.io/name: policypal-api
+  ports:
+  - name: http
+    port: 8000
+---
+# Uploaded policies. Ingestion deletes database rows whose upload file is missing, so this volume must live
+# (and later be backed up and restored) together with the database.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: policypal-uploads
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: policypal-api
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: policypal-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: policypal-api
+    spec:
+      automountServiceAccountToken: false
+      # The image's policypal user (1000); fsGroup makes the uploads volume writable for it.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      # The entrypoint's migrations fail if Postgres isn't accepting connections yet; wait here instead of
+      # crash-looping. Same image as the database, so nothing extra is pulled on a one-node cluster.
+      initContainers:
+      - name: wait-for-postgres
+        image: pgvector/pgvector:0.8.7-pg17
+        command: ["sh", "-c", "until pg_isready -h postgres -p 5432 -U policypal; do sleep 2; done"]
+        resources:
+          requests:
+            cpu: 10m
+            memory: 16Mi
+          limits:
+            memory: 64Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+      containers:
+      - name: api
+        image: ghcr.io/toolikheng/policypal # tag set by the overlay
+        ports:
+        - name: http
+          containerPort: 8000
+        env:
+        # No LLM on the cluster: answers quote the policy text. Without this the API tries Ollama first
+        # and /health reports "degraded".
+        - name: LLM_PROVIDER
+          value: extractive
+        - name: UPLOAD_DIR
+          value: /app/uploads
+        - name: LOG_LEVEL
+          value: INFO
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: policypal-db
+              key: DATABASE_URL
+        - name: ADMIN_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: policypal-admin
+              key: ADMIN_TOKEN
+        # Migrations, ingestion and loading the embedding model take about 80 s on a laptop. Up to 6 minutes
+        # here; liveness and readiness only start once the port is open.
+        startupProbe:
+          tcpSocket:
+            port: 8000
+          periodSeconds: 10
+          failureThreshold: 36
+        # /health is 503 while the database is down: stop sending traffic, but don't restart the API.
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          periodSeconds: 10
+          timeoutSeconds: 5
+        livenessProbe:
+          tcpSocket:
+            port: 8000
+          periodSeconds: 20
+          failureThreshold: 3
+        # Leave the Service endpoints before uvicorn gets SIGTERM, so in-flight requests aren't dropped.
+        lifecycle:
+          preStop:
+            exec:
+              command: ["sleep", "10"]
+        # Measured on k3d: 910Mi steady, 1016Mi peak (start-up ingestion + the embedding model). The limit
+        # doubles that for uploads and concurrent questions.
+        resources:
+          requests:
+            cpu: 250m
+            memory: 1Gi
+          limits:
+            memory: 2Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+        volumeMounts:
+        - name: uploads
+          mountPath: /app/uploads
+      volumes:
+      - name: uploads
+        persistentVolumeClaim:
+          claimName: policypal-uploads
