@@ -52,6 +52,13 @@ def test_aws_hosts_log_in_as_ubuntu_and_never_as_root() -> None:
     assert group_vars["common_permit_root_login"] == "no"
 
 
+def test_aws_hosts_use_pipelining() -> None:
+    # Every round trip goes through Session Manager. Measured in C3: a run with nothing to change took
+    # 136 s without pipelining and 30 s with it (one SSH round trip per task instead of several).
+    group_vars = load(ANSIBLE / "inventory" / "group_vars" / "aws.yml")
+    assert group_vars["ansible_pipelining"] is True
+
+
 def test_homelab_keeps_its_root_login_setting() -> None:
     # The Docker nodes are provisioned as root over SSH keys; C3 must not change that.
     defaults = load(ANSIBLE / "roles" / "common" / "defaults" / "main.yml")
