@@ -5,6 +5,7 @@
         monitoring-up monitoring-down \
         backup restore-test \
         test-infra cost-check tf-check owner-ip cloud-up cloud-down \
+        cloud-config cloud-tunnel cloud-rebuild \
         destroy all clean
 
 SHELL := /bin/bash
@@ -35,6 +36,10 @@ AWS_PROFILE ?= devops
 AWS_REGION ?= ap-southeast-1
 # Extra Terraform arguments for cloud-up/cloud-down, e.g. CLOUD_ARGS='-var use_spot=false' for on-demand.
 CLOUD_ARGS ?=
+# Where make cloud-config writes the generated AWS inventory (gitignored; tests point it elsewhere).
+AWS_INVENTORY ?= $(ANSIBLE_DIR)/inventory/aws.yml
+# Extra ansible-playbook arguments for cloud-config, e.g. ANSIBLE_ARGS='--check --diff'.
+ANSIBLE_ARGS ?=
 
 # Color output (if tty)
 ifeq ($(shell [ -t 1 ] && echo 1),1)
@@ -96,6 +101,9 @@ help:
 	@$(ECHO) "  $(GREEN)make owner-ip$(NC)      Store your public IP (/32) for the node's firewall (AWS write)"
 	@$(ECHO) "  $(GREEN)make cloud-up$(NC)      Store your IP, then create the ephemeral stack (asks before applying; billed hourly)"
 	@$(ECHO) "  $(GREEN)make cloud-down$(NC)    Destroy the ephemeral stack (asks first), then run cost-check"
+	@$(ECHO) "  $(GREEN)make cloud-config$(NC)  Configure the running node with Ansible over Session Manager (common, node_exporter, k3s)"
+	@$(ECHO) "  $(GREEN)make cloud-tunnel$(NC)  Forward the node's Kubernetes API to localhost:16443 (foreground; Ctrl-C stops it)"
+	@$(ECHO) "  $(GREEN)make cloud-rebuild$(NC) cloud-up, then cloud-config: from nothing to a Ready k3s node"
 	@$(ECHO) ""
 	@$(ECHO) "$(BLUE)Utilities:$(NC)"
 	@$(ECHO) "  $(GREEN)make all$(NC)           Run all phases (check → infra → deploy)"
@@ -279,6 +287,20 @@ cloud-up: owner-ip
 cloud-down:
 	@AWS_PROFILE="$(AWS_PROFILE)" bash "$(REPO_ROOT)/scripts/ephemeral-tf.sh" destroy $(CLOUD_ARGS)
 	@$(MAKE) --no-print-directory cost-check
+
+# No AWS changes: these read Terraform output and talk to the node through Session Manager (free).
+# The SSH ProxyCommand in ansible/inventory/group_vars/aws.yml calls aws ssm with AWS_PROFILE.
+cloud-config:
+	@AWS_PROFILE="$(AWS_PROFILE)" bash "$(REPO_ROOT)/scripts/aws-inventory.sh" "$(AWS_INVENTORY)"
+	@cd "$(ANSIBLE_DIR)" && AWS_PROFILE="$(AWS_PROFILE)" ansible-playbook -i "$(AWS_INVENTORY)" playbooks/aws-node.yml $(ANSIBLE_ARGS)
+
+cloud-tunnel:
+	@AWS_PROFILE="$(AWS_PROFILE)" bash "$(REPO_ROOT)/scripts/cloud-tunnel.sh"
+
+# One command from nothing to a Ready node. cloud-up still shows the plan and waits for "yes".
+cloud-rebuild:
+	@$(MAKE) --no-print-directory cloud-up
+	@$(MAKE) --no-print-directory cloud-config
 
 # Utilities
 all: check infra-up provision test build cluster-up deploy monitoring-up
