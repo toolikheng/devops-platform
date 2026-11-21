@@ -8,6 +8,7 @@ Commands are run from the repo root in WSL2. `make help` lists every target.
 - `make check` must pass. It checks `git`, `ssh`, `curl`, `make`, `jq`, `openssl`, `ansible`, `python3` and its venv module, `docker`, `kubectl`, `k3d`, `helm`, that the Docker daemon is reachable, and that `~/.ssh/id_ed25519` exists. `make install` apt-installs missing packages with sudo, generates the SSH key, and prints install links for Docker, kubectl, k3d and helm.
 - hadolint, Trivy, promtool and yq are not needed on the host; they run as pinned Docker images.
 - Host port 8080 must be free (the k3d load balancer).
+- For the AWS targets: AWS CLI v2.32 or newer, the Session Manager plugin and Terraform 1.11 or newer. `make ansible-check` also needs ansible-lint (`pipx install ansible-lint`).
 
 ## Everything from scratch
 
@@ -106,7 +107,9 @@ make provision        # run the Ansible playbook from WSL; a second run reports 
 make infra-down       # stop and remove the node containers
 ```
 
-The nodes mount `~/.ssh/id_ed25519.pub` and install it as root's `authorized_keys` at startup. node_exporter runs from a SysV init script on these nodes and restarts with the container. On a host with systemd the role installs a systemd unit instead; that path has not been run yet.
+The nodes mount `~/.ssh/id_ed25519.pub` and install it as root's `authorized_keys` at startup. node_exporter runs from a SysV init script on these nodes and restarts with the container. On a host with systemd the role installs a systemd unit instead; that path runs on the AWS node (first run in Phase C3).
+
+`make ansible-check` runs ansible-lint and `--syntax-check` on both playbooks (the homelab's `site.yml` and the AWS node's `aws-node.yml`) without contacting any host. CI runs it too.
 
 ## Backup and restore
 
@@ -205,10 +208,19 @@ aws login --profile devops
 make cost-check                                  # start from a clean account
 make cloud-up                                    # stores your current IP, shows the plan, applies only after you type yes
 #   on-demand instead: make cloud-up CLOUD_ARGS='-var use_spot=false'
-aws ssm start-session --target "$(cd terraform/envs/aws && terraform output -raw instance_id)"
+make cloud-config                                # Ansible over Session Manager: common, node_exporter, k3s (about 2 min)
+make cloud-tunnel                                # in a second terminal: localhost:16443 -> the node's 6443; Ctrl-C closes it
+KUBECONFIG=~/.kube/devops-aws.yaml kubectl get nodes
+aws ssm start-session --target "$(cd terraform/envs/aws && terraform output -raw instance_id)"   # a shell, if needed
 # ... work ...
 make cloud-down                                  # shows the destroy plan, asks, then runs cost-check
 ```
+
+`make cloud-rebuild` does `cloud-up` and then `cloud-config`: from nothing to a Ready k3s node in about three minutes, with one "yes" to type. It stops if the apply fails.
+
+`make cloud-config` writes `ansible/inventory/aws.yml` from `terraform output` (the host is the instance ID; the file is gitignored) and runs `ansible/playbooks/aws-node.yml`. SSH goes inside a Session Manager session (`AWS-StartSSHSession`), so port 22 stays closed; the settings are in `ansible/inventory/group_vars/aws.yml`. It changes nothing in AWS. A second run reports `changed=0`. Extra Ansible arguments go in `ANSIBLE_ARGS`, e.g. `make cloud-config ANSIBLE_ARGS='--check --diff'` to see drift on a configured node.
+
+The kubeconfig at `~/.kube/devops-aws.yaml` (mode 600) holds cluster-admin credentials. It points at `https://127.0.0.1:16443`, so it only works while `make cloud-tunnel` runs, and it is replaced on every `make cloud-config`: each session is a new cluster.
 
 `make cloud-up` and `make cloud-down` read `~/.ssh/id_ed25519.pub` (set `SSH_PUBLIC_KEY_FILE` to use another key). `make cloud-down` destroys everything in the stack's state, Spot or not, so it needs no `CLOUD_ARGS`.
 
@@ -239,6 +251,50 @@ script -qec "aws ssm start-session --target <id> --document-name AWS-StartNonInt
 ```
 
 The `AWS-StartNonInteractiveCommand` document runs the command without a shell, so wrap pipelines in `bash -c '...'`.
+
+### `kubectl`: connection refused on `127.0.0.1:16443`
+
+The tunnel isn't running. Start `make cloud-tunnel` in another terminal and leave it open. If it says the target is not connected, see the SSM agent section above.
+
+### Closing the tunnel
+
+Press Ctrl-C in the tunnel's terminal: that ends the session on the AWS side too. Killing the plugin another way (closing the terminal, `kill`) can leave the session listed as active. It costs nothing, but to tidy up:
+
+```bash
+aws ssm describe-sessions --state Active --query 'Sessions[].[SessionId,Target]' --output text
+aws ssm terminate-session --session-id <id>
+```
+
+### `make cloud-config` reports the host UNREACHABLE
+
+SSH runs through `aws ssm start-session`, so anything that breaks Session Manager breaks Ansible:
+
+1. `aws sts get-caller-identity --profile devops`: an expired `aws login` shows up as an SSH connection error.
+2. The SSM agent must be Online (see above). On a fresh node the playbook waits up to 5 minutes for it.
+3. The Session Manager plugin must be installed on the laptop.
+
+`make cloud-config ANSIBLE_ARGS=-vvv` shows the SSH and ProxyCommand output.
+
+### `--check` on a fresh node stops at "Download node_exporter"
+
+Expected. Check mode only pretends to create `/opt/node_exporter`, so the download into it can't run. Check mode is useful on a configured node, where `changed=0` and no diff mean the node matches the code. The waits and the package-list refresh run for real even in check mode; without the refresh, apt on a fresh cloud image (empty package lists) can't find any package.
+
+### `ssh.socket` and `ssh.service` are both enabled on the node
+
+Ubuntu 24.04 starts sshd through `ssh.socket`. The `common` role's "Ensure sshd is running" task, written for the homelab, also enables `ssh.service`. Both are then active and sshd uses the socket's listener; SSH works (checked live). The node is never rebooted, so a possible conflict at boot doesn't arise.
+
+### `make ansible-check` hangs at the start
+
+ansible-lint first installs `community.general` from Ansible Galaxy (`ansible/requirements.yml`) into `ansible/.ansible/collections`. If the Galaxy download stalls, fetch the file with resume, check it against the sha256 that Galaxy publishes for that version, and install the checked file:
+
+```bash
+v=8.3.0
+url=https://galaxy.ansible.com/api/v3/plugin/ansible/content/published/collections/index/community/general/versions/$v/
+curl -fsS "$url" | jq -r '.artifact.sha256'                    # expected checksum
+curl -fL -C - -o /tmp/community-general.tar.gz "$(curl -fsS "$url" | jq -r .download_url)"   # repeat until complete
+sha256sum /tmp/community-general.tar.gz                         # must match
+cd ansible && ansible-galaxy collection install /tmp/community-general.tar.gz -p .ansible/collections
+```
 
 ### A Spot apply fails
 

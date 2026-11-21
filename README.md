@@ -31,7 +31,7 @@ make destroy        # delete the cluster and the nodes
 | Claim | How it was checked |
 |-------|--------------------|
 | Fresh clone works | Cluster and nodes destroyed, repo cloned from GitHub into an empty directory, `make all` passed every step on the first run in 3m26s. Afterwards all pods were Ready, the app answered through the ingress, and Prometheus showed the app and all three nodes UP. |
-| Provisioning is idempotent | `make provision` run twice against freshly created nodes: the first run changed 12 tasks per node, the second reported `changed=0`. node_exporter comes back on its own after `docker restart`. |
+| Provisioning is idempotent | `make provision` run twice against freshly created nodes: the first run changed 12 tasks per node, the second reported `changed=0`. node_exporter comes back on its own after `docker restart`. Rechecked after the roles were changed for AWS: `changed=0` on running nodes and the same 12 changes, then `changed=0`, on fresh ones. |
 | CI gates every push | `ci.yml` runs ruff + mypy, 13 pytest tests, promtool alert-rule tests and hadolint. The image is built, scanned by Trivy, and pushed to GHCR only if there are no fixable HIGH/CRITICAL vulnerabilities. The lint, test, rule-test and Trivy gates were each shown to fail on a real problem before being trusted. |
 | CD smoke test | `cd.yml` (manual) builds the image, creates a throwaway k3d cluster on a GitHub-hosted runner, deploys the dev overlay, and checks `/healthz` and `/readyz`. Last run passed. |
 | Alert rules load and fire | All four rules are loaded by Prometheus. AppDown fired when the app was scaled to 0 pods (pending, then firing within about two minutes) and cleared when it came back. NodeExporterDown fired while node_exporter was missing and cleared once the nodes were provisioned. |
@@ -42,8 +42,12 @@ make destroy        # delete the cluster and the nodes
 | AWS cost check is read-only and fails safe | `make cost-check` lists anything billable left in the account: the full list in ap-southeast-1 (instances, volumes, snapshots, Elastic IPs, public IPv4, NAT gateways, VPC endpoints, load balancers, EKS, RDS, Secrets Manager, open or active Spot requests, Route 53 hosted zones, ECR repositories, Lightsail instances and databases, SageMaker notebooks and endpoints, customer-managed KMS keys) plus instances, volumes and Elastic IPs in every other enabled region. 38 tests run it against a fake `aws` CLI: each kind of leftover is reported, only describe/list/get calls are made, the Cost Explorer API is never called, and a check that can't run is an error, never a clean result. Run against the real account after every session: clean, and it ignored the two cancelled one-time Spot requests and the free AWS-managed `aws/ebs` key. |
 | Terraform state is private, TLS-only and locked | 16 `terraform test` runs check the persistent stack offline with a mock provider, and each one was shown to fail on a deliberately broken copy. Live: the apply created the state bucket and budgets; a second plan through the S3 backend shows no changes; a plain-HTTP request to the bucket gets AccessDenied even as the admin user; with two plans started at once, the second fails with "Error acquiring the state lock". |
 | The AWS node is reachable only the way it should be | Live, on-demand and Spot: a shell through SSM Session Manager worked with a role allowed only the 11 SSM-agent actions. From my IP, port 80 was allowed while 22 and 6443 were dropped even though sshd was listening. IMDSv1 got 401 and IMDSv2 worked. Outbound HTTPS and HTTP worked; other ports were blocked. Details in [docs/aws-test-log.md](docs/aws-test-log.md). |
-| The node's rules hold before anything is created | 32 offline `terraform test` runs on the network and compute modules and the ephemeral stack: allowlisted instance types only, x86 only, encrypted gp3 root volume of at most 30 GB deleted with the instance, IMDSv2 with hop limit 1, standard CPU credits, no inbound 22 or 6443, owner IP must be one /32. A mutation check broke 37 rules one at a time across the Terraform code; every one was caught. |
+| The node's rules hold before anything is created | 33 offline `terraform test` runs on the network and compute modules and the ephemeral stack: allowlisted instance types only, x86 only, encrypted gp3 root volume of at most 30 GB deleted with the instance, IMDSv2 with hop limit 1, standard CPU credits, no inbound 22 or 6443, owner IP must be one /32. A mutation check broke 37 rules one at a time across the Terraform code; every one was caught. |
 | Spot and on-demand both work, and both leave nothing behind | Live: each run was created, checked, destroyed and followed by a clean `make cost-check`; a second plan after each apply showed no changes. The first Spot run failed on a real AWS restriction (see [ADR 009](docs/decisions/009-spot-and-on-demand.md)); it was fixed test-first and the retry passed. The Spot request was one-time with the on-demand price as its cap. |
+| Ansible configures the AWS node with no inbound admin port | Live, twice: `make cloud-config` reached the node with SSH inside a Session Manager session and ran `common`, `node_exporter` and `k3s` in 103 s; the second run reported `changed=0`, and `--check --diff` afterwards showed no drift. On the node: k3s Secrets encryption enabled, the k3s kubeconfig and config readable by root only, root and password SSH logins off, node_exporter running under systemd. From my laptop, 22, 6443, 9100 and 10250 were dropped. |
+| kubectl works only through a tunnel | Live: `make cloud-tunnel` forwards the node's 6443 to `localhost:16443` through Session Manager, and `kubectl get nodes` showed the node Ready with TLS verified. The kubeconfig Ansible writes is mode 600 and outside the repo. |
+| One command from nothing to a Ready cluster | Live: after a destroy, the stack was applied and configured straight away with no manual step; the node was Ready 175 s after the apply started, and a second run reported `changed=0`. Destroy and a clean `make cost-check` followed. |
+| The rules for the AWS node's Ansible code hold | 11 pytest rules (Session Manager only, `ubuntu` with sudo, root login off on AWS but unchanged for the homelab, k3s pinned and its installer checksum-checked, Secrets encryption, kubeconfig port matches the tunnel, pipelining, check mode) and 18 tests of the Make targets against fake `terraform`, `aws` and `ansible-playbook`. A mutation check broke 35 rules one at a time; every one was caught. ansible-lint passes on its strictest profile. |
 | The budget action blocks new spend, never clean-up | IAM policy simulator with the deny policy added to the admin user: starting instances, NAT gateways or RDS is explicitly denied. Terminating, deleting, detaching the policy and reading or writing the state file stay allowed. The action's role can only attach that one policy to that one user. |
 | Rolling restarts drop no requests | Continuous requests through the ingress during a rolling restart: 1,549 and 1,520 requests in two runs, 0 failures. Before the `preStop` delay was added, the same test failed 24 of 1,533 requests (502s and a timeout). |
 
@@ -53,6 +57,7 @@ make destroy        # delete the cluster and the nodes
 - Three Ubuntu 24.04 containers stand in for VMs. They run `sshd` as PID 1 (no systemd), and your `~/.ssh/id_ed25519.pub` is mounted in at startup, so no key is committed.
 - `ansible-playbook` runs from WSL over real SSH to `localhost:2201-2203`.
 - Roles: `common` (packages, timezone, SSH hardening, motd) and `node_exporter` (checksum-verified download, run as a service). The role uses systemd on hosts that have it and a SysV init script on hosts that don't, such as these containers.
+- The same two roles, plus `k3s`, configure the AWS node (`playbooks/aws-node.yml`, see below). `make ansible-check` runs ansible-lint and syntax checks on both playbooks.
 
 ### Application (FastAPI)
 - `/`, `/healthz` (liveness), `/readyz` (checks the database), `/metrics`, CRUD on `/items`, SQLite on a PVC.
@@ -121,8 +126,16 @@ Cost while the stack exists (ap-southeast-1, before tax). Nothing is billed once
 
 See [ADR 008](docs/decisions/008-k3s-on-ec2-over-eks.md) (k3s on EC2, not EKS), [ADR 009](docs/decisions/009-spot-and-on-demand.md) (Spot and on-demand), [ADR 010](docs/decisions/010-public-subnet-without-nat.md) (network and access) and the live results in [docs/aws-test-log.md](docs/aws-test-log.md).
 
+#### k3s on the node, configured by Ansible
+`make cloud-config` runs `ansible/playbooks/aws-node.yml` against the running node: the homelab's `common` and `node_exporter` roles, then a `k3s` role.
+- **Connection:** the inventory is generated from `terraform output` and names the host by its instance ID. SSH runs inside a Session Manager session to that ID, so port 22 stays closed: IAM decides who may open the session, and my SSH key logs in as `ubuntu` ([ADR 013](docs/decisions/013-ansible-over-session-manager.md)). Pipelining keeps a no-change run at about 30 s instead of 136 s.
+- **k3s:** a single-server k3s pinned to v1.36.6+k3s1 with its bundled Traefik, ServiceLB, local-path storage and metrics-server. The install script is fetched for that release tag and checked against a recorded sha256; the script then checks the k3s binary. Secrets are encrypted at rest, and the admin kubeconfig on the node is readable by root only.
+- **kubectl from the laptop:** Ansible copies the kubeconfig to `~/.kube/devops-aws.yaml` (mode 600), pointing at `localhost:16443`. `make cloud-tunnel` forwards that port to the node's 6443 through Session Manager, so the Kubernetes API is never public.
+- **Same roles as the homelab:** `PermitRootLogin` and the login banner became variables. The homelab keeps root login with keys; the AWS node turns root login off.
+- **One command:** `make cloud-rebuild` (cloud-up, then cloud-config) goes from nothing to a Ready node in about three minutes.
+
 ### CI/CD (GitHub Actions)
-- On every push and pull request: lint, tests, alert-rule tests, hadolint, repo-level tests, ShellCheck and the offline Terraform checks, then build and Trivy scan.
+- On every push and pull request: lint, tests, alert-rule tests, hadolint, repo-level tests, ShellCheck, the Ansible checks and the offline Terraform checks, then build and Trivy scan.
 - On master: the image is pushed to GHCR as `master` and `sha-<commit>`. Actions are pinned to current major versions; trivy-action is pinned to a commit SHA.
 - Manual CD with an ephemeral k3d cluster and a smoke test.
 
@@ -175,9 +188,13 @@ make cost-check            # AWS: read-only scan for billable leftovers (needs `
 make owner-ip              # AWS: store this machine's public IP (/32) for the node's security group
 make cloud-up              # AWS: store your IP, then create the ephemeral stack after Terraform shows the plan and you type yes (billed hourly)
 make cloud-down            # AWS: destroy it (also asks first), then run cost-check
+make cloud-config          # AWS: configure the node with Ansible over Session Manager (common, node_exporter, k3s)
+make cloud-tunnel          # AWS: forward the node's Kubernetes API to localhost:16443 (leave it open; Ctrl-C closes it)
+make cloud-rebuild         # AWS: cloud-up, then cloud-config
+make ansible-check         # ansible-lint and syntax checks on both playbooks (offline)
 ```
 
-The node is a t3.small on Spot by default; `make cloud-up CLOUD_ARGS='-var use_spot=false'` starts it on-demand. A shell on the node: `aws ssm start-session --target "$(cd terraform/envs/aws && terraform output -raw instance_id)"`.
+The node is a t3.small on Spot by default; `make cloud-up CLOUD_ARGS='-var use_spot=false'` starts it on-demand. With the tunnel open: `KUBECONFIG=~/.kube/devops-aws.yaml kubectl get nodes`. A shell on the node: `aws ssm start-session --target "$(cd terraform/envs/aws && terraform output -raw instance_id)"`.
 
 Grafana and Prometheus are reached with a port-forward:
 
@@ -192,33 +209,33 @@ kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:909
 - WSL2 Ubuntu 24.04 with Docker Desktop (WSL integration on). Developed and tested on a machine with 8 CPUs and 11 GB RAM.
 - `git`, `make`, `curl`, `jq`, `openssl`, `ansible`, `python3` with the venv module, `docker`, `kubectl`, `k3d`, `helm`, and an SSH key at `~/.ssh/id_ed25519`. `make check` lists what's missing; `make install` apt-installs the packages it can (with sudo), creates the SSH key, and links to installers for the rest.
 - hadolint, Trivy, promtool, yq, ShellCheck, gitleaks and tflint don't need installing: they run as pinned Docker images.
-- For the AWS work (in progress): AWS CLI v2.32 or newer (for `aws login`), the Session Manager plugin, and Terraform 1.11 or newer.
+- For the AWS work (in progress): AWS CLI v2.32 or newer (for `aws login`), the Session Manager plugin, and Terraform 1.11 or newer. `make ansible-check` needs ansible-lint (`pipx install ansible-lint`).
 - Host port 8080 free (the k3d load balancer).
 
 ## Project structure
 
 - `terraform/` — AWS infrastructure: `persistent/` (state bucket, budgets, IAM, the node's role and the owner-IP parameter), `envs/aws/` (the ephemeral stack) and `modules/` (`network`, `compute`, and `names`: the names both stacks share), with tests in each directory's `tests/`
-- `ansible/` — inventory, playbook, `common` and `node_exporter` roles
+- `ansible/` — inventories (`docker-nodes.yml`; `aws.yml` is generated per session), playbooks (`site.yml` for the homelab, `aws-node.yml` for EC2), roles `common`, `node_exporter` and `k3s`, and `requirements.yml` for the one collection used
 - `infra/nodes/` — node image, startup script, Docker Compose file
 - `app/` — FastAPI service, tests, Dockerfile
 - `k8s/` — kustomize base and `dev` / `prod` overlays
 - `monitoring/` — Helm values, ServiceMonitor, alert rules and their tests, dashboard
 - `backup/` — backup CronJob, restore Job, restore test
-- `ci/` — scripts shared by the Makefile and GitHub Actions (lint, test, rule tests, build, scan, ShellCheck, gitleaks)
-- `scripts/` — toolchain check (`bootstrap.sh`), the read-only AWS cost check (`cost-check.sh`), `owner-ip.sh`, and `ephemeral-tf.sh` (the Terraform run behind `make cloud-up` / `cloud-down`)
-- `tests/` — repo-level tests: the cost check (against a fake `aws` CLI), the AWS session Make targets (against fake `terraform`, `aws` and `curl`), the scripts' copies of shared Terraform names, and the `.gitignore` rules
+- `ci/` — scripts shared by the Makefile and GitHub Actions (lint, test, rule tests, build, scan, ShellCheck, gitleaks, Terraform and Ansible checks)
+- `scripts/` — toolchain check (`bootstrap.sh`), the read-only AWS cost check (`cost-check.sh`), `owner-ip.sh`, `ephemeral-tf.sh` (the Terraform run behind `make cloud-up` / `cloud-down`), `node-id.sh` and `aws-inventory.sh` (behind `make cloud-config`) and `cloud-tunnel.sh`
+- `tests/` — repo-level tests: the cost check (against a fake `aws` CLI), the AWS session Make targets (against fake `terraform`, `aws`, `curl` and `ansible-playbook`), the rules for the AWS node's Ansible code, the scripts' copies of shared Terraform names, and the `.gitignore` rules
 - `.github/workflows/` — CI on every push, manual CD
 - `docs/` — architecture, decisions, runbook, fresh-clone test log
 
 ## Limitations
 
-- **The systemd branch of the node_exporter role is untested.** The Docker nodes have no systemd, so only the SysV path has run. The systemd unit renders correctly but has never been started on a real VM.
 - **`make deploy` always restarts the app.** The dev image tag is always `latest`, so the deployment is restarted on every deploy to pick up the new image, even when nothing changed. The restart drops no requests, but it does take about 25 seconds.
 - **Backups live on one node's disk.** The restic repository is a local PVC with no off-site copy, so losing that disk loses the backups.
 - **One snapshot per day.** Retention keeps the newest snapshot of each day, so a manual backup (or `make restore-test`) replaces that day's scheduled one.
 - **SQLite means one replica.** The dev overlay runs a single pod; scaling out needs a different database.
 - **`make restore-test` changes the dev database.** It wipes and restores `/data/app.db`, and leaves its test items behind. Run it only against a dev cluster.
-- **The AWS node is a bare server so far.** It runs Ubuntu and the SSM agent; k3s and the app come in later phases. It is a single instance with no high availability, and a Spot interruption takes it away until it is rebuilt.
+- **The AWS node runs an empty k3s so far.** The app comes in a later phase. It is a single instance with no high availability, and a Spot interruption takes it away until `make cloud-rebuild` (about three minutes).
+- **`--check` can't preview a fresh AWS node.** Check mode stops at the first task that needs an earlier change (it only pretends to create directories). On a configured node it works and shows drift.
 - **The prod overlay is a template.** It renders and points at an image CI really pushes, but it isn't deployed anywhere, and neither is anything outside this one machine.
 
 ## Troubleshooting
@@ -243,7 +260,7 @@ More in [docs/runbook.md](docs/runbook.md).
 ## Next steps
 
 - Off-site backups: copy the restic repository to object storage.
-- Finish the AWS environment: k3s on the node with the same Ansible roles, PolicyPal, secrets from SSM Parameter Store, and CI/CD that authenticates to AWS with OIDC.
+- Finish the AWS environment: PolicyPal on the k3s node, secrets from SSM Parameter Store, and CI/CD that authenticates to AWS with OIDC.
 - Loki for logs; cert-manager and TLS.
 - Pull-based CD into a long-lived cluster.
 
