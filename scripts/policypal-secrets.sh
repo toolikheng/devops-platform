@@ -10,8 +10,9 @@ set -euo pipefail
 
 NAMESPACE="policypal"
 
-# Only when missing: the manifests own the namespace (and its labels) once they are applied.
-kubectl get namespace "$NAMESPACE" >/dev/null 2>&1 || kubectl create namespace "$NAMESPACE" >/dev/null
+# Only when missing: the manifests own the namespace (and its labels) once they are applied. --save-config
+# records it the way kubectl apply expects, so the first deploy doesn't warn about a missing annotation.
+kubectl get namespace "$NAMESPACE" >/dev/null 2>&1 || kubectl create namespace "$NAMESPACE" --save-config >/dev/null
 
 # create_secret <name>: the KEY=value lines come in on stdin.
 create_secret() {

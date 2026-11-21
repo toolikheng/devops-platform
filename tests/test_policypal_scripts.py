@@ -201,6 +201,14 @@ def test_secrets_are_created_with_the_keys_the_manifests_reference(fakes: Fakes)
     assert fakes.kubectl("create", "namespace"), "the namespace must exist before its Secrets"
 
 
+def test_a_new_namespace_is_ready_for_kubectl_apply(fakes: Fakes) -> None:
+    # Without --save-config the deploy's kubectl apply warns that the namespace has no last-applied
+    # configuration (seen on both AWS runs), then patches it in.
+    fakes.script("policypal-secrets.sh")
+    creates = fakes.kubectl("create", "namespace")
+    assert creates and "--save-config" in creates[0]
+
+
 def test_an_existing_namespace_is_left_to_the_manifests(fakes: Fakes) -> None:
     # Re-applying a bare Namespace would strip the labels the deploy gives it, and the next deploy would put
     # them back: "configured" on every run although nothing really changed.
