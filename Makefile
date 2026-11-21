@@ -7,6 +7,7 @@
         test-infra cost-check tf-check ansible-check owner-ip cloud-up cloud-down \
         cloud-config cloud-tunnel cloud-rebuild \
         k8s-check policypal-secrets-local policypal-local cloud-deploy cloud-smoke \
+        check-state-secrets \
         destroy all clean
 
 SHELL := /bin/bash
@@ -115,6 +116,7 @@ help:
 	@$(ECHO) "  $(GREEN)make cloud-rebuild$(NC) cloud-up, then cloud-config: from nothing to a Ready k3s node"
 	@$(ECHO) "  $(GREEN)make cloud-deploy$(NC)  Deploy PolicyPal to the node and smoke-test it (needs make cloud-tunnel running)"
 	@$(ECHO) "  $(GREEN)make cloud-smoke$(NC)   Smoke-test PolicyPal on the node only (needs make cloud-tunnel running)"
+	@$(ECHO) "  $(GREEN)make check-state-secrets$(NC) Read-only: show that no secret value is in the persistent Terraform state"
 	@$(ECHO) ""
 	@$(ECHO) "$(BLUE)Utilities:$(NC)"
 	@$(ECHO) "  $(GREEN)make all$(NC)           Run all phases (check → infra → deploy)"
@@ -298,6 +300,10 @@ policypal-local: policypal-secrets-local
 # Read-only: describe/list/get calls only, never the Cost Explorer API. Exit 1 if anything billable is left.
 cost-check:
 	@AWS_PROFILE="$(AWS_PROFILE)" AWS_REGION="$(AWS_REGION)" bash "$(REPO_ROOT)/scripts/cost-check.sh"
+
+# Read-only: terraform state pull and ssm get-parameter. Prints names and counts, never a value.
+check-state-secrets:
+	@AWS_PROFILE="$(AWS_PROFILE)" bash "$(REPO_ROOT)/scripts/check-state-secrets.sh"
 
 # AWS writes. owner-ip overwrites one free SSM parameter with this machine's IP straight away. cloud-up
 # runs it first, then shows Terraform's plan and waits for "yes", as cloud-down does; never add -auto-approve.

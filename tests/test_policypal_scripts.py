@@ -4,17 +4,20 @@
 - scripts/smoke-test.sh: /health, one answered and cited question, one refusal (the API through a kubectl
   port-forward to its Service), the UI through the ingress, and the API not reachable through it.
 - scripts/deploy-policypal.sh: render, apply, wait, smoke test, and roll back what it changed on failure.
-- make k8s-check, policypal-secrets-local, policypal-local, cloud-deploy, cloud-smoke.
+- scripts/check-state-secrets.sh: counts each live secret value in the persistent state, never shows it.
+- make k8s-check, policypal-secrets-local, policypal-local, cloud-deploy, cloud-smoke, check-state-secrets.
 
 They run with fake `kubectl`, `curl`, `docker`, `k3d`, `terraform` and `aws` first on PATH, so no cluster,
 container or AWS account is touched. Each fake appends one JSON line per call (tool, args, KUBECONFIG,
-AWS_PROFILE; for kubectl also the namespace, taken out of the args) to a log, and answers from files the test
-writes (secrets that exist, revisions, API replies).
+AWS_PROFILE, working directory; for kubectl also the namespace, taken out of the args) to a log, and answers
+from files the test writes (secrets that exist, revisions, API replies, state, parameters).
 """
 
 import json
 import os
 import re
+import secrets
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -61,7 +64,7 @@ if tool == "kubectl":
 stdin = sys.stdin.read() if "-" in args or any(a.endswith("/dev/stdin") for a in args) or tool == "docker" and "-i" in args else ""
 with open(os.environ["FAKE_LOG"], "a") as log:
     log.write(json.dumps({"tool": tool, "args": args, "ns": ns, "kubeconfig": os.environ.get("KUBECONFIG", ""),
-                          "profile": os.environ.get("AWS_PROFILE", ""), "stdin": stdin}) + "\n")
+                          "profile": os.environ.get("AWS_PROFILE", ""), "cwd": os.getcwd(), "stdin": stdin}) + "\n")
 
 def answer(name, default_rc=0):
     f = d / name
@@ -109,6 +112,10 @@ if tool == "docker":
     sys.exit(0)
 if tool == "terraform" and args[:2] == ["output", "-raw"]:
     answer(f"tf-{args[2]}", 1)
+if tool == "terraform" and args[:2] == ["state", "pull"]:
+    answer("tf-state", 1)
+if tool == "aws" and args[:2] == ["ssm", "get-parameter"]:
+    answer("ssm" + args[args.index("--name") + 1].replace("/", "_"), 254)
 if tool == "k3d" and args[:2] == ["cluster", "get"]:
     sys.exit(0)
 sys.exit(0)
@@ -158,6 +165,16 @@ class Fakes:
 
     def secret_exists(self, name: str) -> None:
         self.write(f"secret-{name}", "existing")
+
+    def parameter(self, name: str, value: str) -> None:
+        self.write("ssm" + name.replace("/", "_"), value)
+
+    def log_grep(self) -> None:
+        """Put a grep first on PATH that records its arguments, then runs the real grep."""
+        real = shutil.which("grep")
+        path = self.bin / "grep"
+        path.write_text(f'#!/bin/bash\nprintf "%s\\n" "$@" >> "$FAKE_DIR/grep-args"\nexec {real} "$@"\n')
+        path.chmod(0o755)
 
     def revisions(self, name: str, before: str | None, after: str | None) -> None:
         if before is not None:
@@ -468,6 +485,10 @@ def test_deploy_stops_when_apply_fails(fakes: Fakes) -> None:
 
 # --- make targets ---------------------------------------------------------------------------------------
 
+def flag_value(args: list[str], flag: str) -> str:
+    return args[args.index(flag) + 1]
+
+
 def test_k8s_check_validates_both_overlays_strictly_against_the_nodes_version(fakes: Fakes) -> None:
     result = fakes.make("k8s-check")
     assert result.returncode == 0, output(result)
@@ -568,3 +589,83 @@ def test_deploy_targets_never_change_aws(fakes: Fakes, target: str) -> None:
     for call in fakes.calls("terraform"):
         assert call["args"][0] in ("init", "output"), call["args"]
     assert not fakes.calls("aws")
+
+
+# --- scripts/check-state-secrets.sh, make check-state-secrets -------------------------------------------
+
+DB_PARAM = "/policypal/aws/db-password"
+ADMIN_PARAM = "/policypal/aws/admin-token"
+
+
+def parameter_state(name: str, kind: str, **attributes: Any) -> dict[str, Any]:
+    return {"mode": "managed", "type": "aws_ssm_parameter", "name": name.rsplit("/", 1)[-1],
+            "instances": [{"attributes": {"name": name, "type": kind, **attributes}}]}
+
+
+def persistent_state(*, extra: list[dict[str, Any]] | None = None, secure: bool = True) -> str:
+    resources = [parameter_state("/devops-platform/owner-cidr", "String", value="198.51.100.7/32")]
+    if secure:
+        resources += [parameter_state(n, "SecureString", value=None, value_wo=None, value_wo_version=1)
+                      for n in (DB_PARAM, ADMIN_PARAM)]
+    return json.dumps({"version": 4, "resources": resources + (extra or [])}, indent=2)
+
+
+@pytest.fixture
+def live_values(fakes: Fakes) -> dict[str, str]:
+    """Random values for the two parameters, made at run time, served by the fake aws."""
+    values = {DB_PARAM: secrets.token_hex(16), ADMIN_PARAM: secrets.token_hex(16)}
+    for name, value in values.items():
+        fakes.parameter(name, value)
+    fakes.log_grep()
+    return values
+
+
+def assert_never_shown(fakes: Fakes, result: subprocess.CompletedProcess[str], values: dict[str, str]) -> None:
+    grep_args = (fakes.dir / "grep-args").read_text() if (fakes.dir / "grep-args").exists() else ""
+    for value in values.values():
+        assert value not in output(result), "a value was printed"
+        assert all(value not in " ".join(c["args"]) for c in fakes.calls()), "a value was a command argument"
+        assert value not in grep_args, "a value was a grep argument (visible in ps)"
+
+
+def test_state_check_reports_zero_for_each_secret_without_showing_it(fakes: Fakes, live_values: dict) -> None:
+    fakes.write("tf-state", persistent_state())
+    result = fakes.script("check-state-secrets.sh")
+    assert result.returncode == 0, output(result)
+    for name in live_values:
+        assert re.search(rf"^{re.escape(name)}: 0$", result.stdout, re.M), result.stdout
+    read = sorted(flag_value(c["args"], "--name") for c in fakes.calls("aws"))
+    assert read == sorted(live_values), "reads exactly the SecureStrings in the state"
+    for call in fakes.calls("aws"):
+        assert call["args"][:2] == ["ssm", "get-parameter"] and "--with-decryption" in call["args"]
+        assert flag_value(call["args"], "--region") == "ap-southeast-1"
+    assert [c["args"] for c in fakes.calls("terraform")] == [["state", "pull"]]
+    assert_never_shown(fakes, result, live_values)
+
+
+def test_state_check_fails_when_a_value_is_in_the_state(fakes: Fakes, live_values: dict) -> None:
+    leak = {"mode": "managed", "type": "random_password", "name": "token",
+            "instances": [{"attributes": {"result": live_values[ADMIN_PARAM]}}]}
+    fakes.write("tf-state", persistent_state(extra=[leak]))
+    result = fakes.script("check-state-secrets.sh")
+    assert result.returncode == 1
+    assert re.search(rf"^{re.escape(ADMIN_PARAM)}: 1$", result.stdout, re.M), result.stdout
+    assert re.search(rf"^{re.escape(DB_PARAM)}: 0$", result.stdout, re.M), result.stdout
+    assert_never_shown(fakes, result, live_values)
+
+
+def test_state_check_fails_when_it_has_nothing_to_check(fakes: Fakes, live_values: dict) -> None:
+    fakes.write("tf-state", persistent_state(secure=False))
+    result = fakes.script("check-state-secrets.sh")
+    assert result.returncode != 0
+    assert "SecureString" in output(result)
+    assert fakes.calls("terraform"), "the state must have been read"
+
+
+def test_make_check_state_secrets_reads_the_persistent_stack_as_devops(fakes: Fakes, live_values: dict) -> None:
+    fakes.write("tf-state", persistent_state())
+    result = fakes.make("check-state-secrets")
+    assert result.returncode == 0, output(result)
+    [pull] = fakes.calls("terraform")
+    assert pull["cwd"] == str(REPO_ROOT / "terraform" / "persistent")
+    assert {c["profile"] for c in fakes.calls("terraform") + fakes.calls("aws")} == {"devops"}
