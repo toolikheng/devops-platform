@@ -1,7 +1,6 @@
 ---
-# k3s reads its config only at start. In check mode on a node without k3s there is nothing to restart.
+# k3s reads its config only at start.
 - name: Restart k3s
   ansible.builtin.systemd:
     name: k3s
     state: restarted
-  when: not ansible_check_mode or k3s_installed.rc | default(1) == 0

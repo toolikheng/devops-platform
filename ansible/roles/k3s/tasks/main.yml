@@ -23,7 +23,7 @@
     checksum: "sha256:{{ k3s_install_script_sha256 }}"
     mode: "0755"
 
-# Read-only, so it also runs in check mode; rc != 0 means k3s is not installed yet.
+# Read-only, so it also runs in check mode (the install task below needs its output).
 - name: Read the installed k3s version
   ansible.builtin.command: /usr/local/bin/k3s --version
   register: k3s_installed
@@ -36,7 +36,7 @@
   ansible.builtin.command: /usr/local/lib/k3s-install.sh
   environment:
     INSTALL_K3S_VERSION: "{{ k3s_version }}"
-  when: k3s_version not in k3s_installed.stdout | default('')
+  when: k3s_version not in k3s_installed.stdout
   changed_when: true
 
 - name: Restart k3s now if its config changed
@@ -59,7 +59,6 @@
     src: /etc/rancher/k3s/k3s.yaml
   register: k3s_admin_kubeconfig
   no_log: true  # cluster-admin client key
-  when: not ansible_check_mode or k3s_installed.rc | default(1) == 0
 
 - name: Check for ~/.kube on this machine
   ansible.builtin.stat:
@@ -88,4 +87,3 @@
   delegate_to: localhost
   become: false
   no_log: true  # cluster-admin client key
-  when: k3s_admin_kubeconfig is not skipped
