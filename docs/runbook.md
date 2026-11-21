@@ -198,13 +198,13 @@ At USD 15 actual spend in a month, AWS Budgets attaches `devops-platform-deny-ne
 
 ## AWS working session (ephemeral stack)
 
-Everything billed by the hour lives in `terraform/envs/aws` and exists only during a session. About USD 0.021/h for t3.micro on-demand, USD 0.012/h on Spot (instance, public IPv4 and volume together).
+Everything billed by the hour lives in `terraform/envs/aws` and exists only during a session. The default node is a t3.small on Spot: about USD 0.019/h, or USD 0.034/h on-demand (instance, public IPv4 and volume together).
 
 ```bash
 aws login --profile devops
 make cost-check                                  # start from a clean account
 make cloud-up                                    # stores your current IP, shows the plan, applies only after you type yes
-#   Spot instead: make cloud-up CLOUD_ARGS='-var use_spot=true'
+#   on-demand instead: make cloud-up CLOUD_ARGS='-var use_spot=false'
 aws ssm start-session --target "$(cd terraform/envs/aws && terraform output -raw instance_id)"
 # ... work ...
 make cloud-down                                  # shows the destroy plan, asks, then runs cost-check

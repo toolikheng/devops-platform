@@ -18,7 +18,7 @@ A public IPv4 (USD 0.005/h) and the volume (about USD 0.0026/h for 20 GB) cost t
 
 ## Decision
 
-- One variable, `use_spot` (default `false`), switches the node between on-demand and Spot: `make cloud-up CLOUD_ARGS='-var use_spot=true'`.
+- One variable, `use_spot`, switches the node between on-demand and Spot. It defaulted to `false` while C2 proved the stack; from Phase C3 it defaults to `true`, and on-demand is the explicit choice: `make cloud-up CLOUD_ARGS='-var use_spot=false'`.
 - Spot is a **one-time** request that **terminates** on interruption, with **no maximum price**. The price cap is then the on-demand price, so the node is never priced out mid-session, and nothing is left stopped or waiting to relaunch.
 - **On-demand** for the first ever apply of a phase and for recording the demo, where an interruption would waste human time. **Spot** for routine sessions from Phase C3 on.
 - `make cost-check` lists open or active Spot requests in the home region, because an open request could start an instance by itself.

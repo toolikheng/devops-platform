@@ -33,7 +33,7 @@ TESTS_VENV_STAMP := $(TESTS_VENV)/.installed
 # AWS profile and region for the AWS targets (`aws login --profile devops` first).
 AWS_PROFILE ?= devops
 AWS_REGION ?= ap-southeast-1
-# Extra Terraform arguments for cloud-up/cloud-down, e.g. CLOUD_ARGS='-var use_spot=true'.
+# Extra Terraform arguments for cloud-up/cloud-down, e.g. CLOUD_ARGS='-var use_spot=false' for on-demand.
 CLOUD_ARGS ?=
 
 # Color output (if tty)

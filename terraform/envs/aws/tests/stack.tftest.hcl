@@ -75,6 +75,22 @@ run "owner_ip_that_is_a_range_fails_the_plan" {
   expect_failures = [data.aws_ssm_parameter.owner_cidr]
 }
 
+# From Phase C3 a session runs k3s, which needs 2 GiB, and runs on Spot unless asked otherwise (ADR 009):
+# `make cloud-up CLOUD_ARGS='-var use_spot=false'` for on-demand.
+run "default_node_is_a_small_spot_instance" {
+  command = plan
+
+  assert {
+    condition     = var.instance_type == "t3.small"
+    error_message = "The default node must be t3.small (k3s needs 2 GiB)."
+  }
+
+  assert {
+    condition     = var.use_spot == true
+    error_message = "The default node must be Spot; on-demand is the explicit choice (-var use_spot=false)."
+  }
+}
+
 run "outputs_for_session_manager_and_ansible" {
   command = apply
 
