@@ -1,0 +1,14 @@
+# Local checks before each commit, run by the pre-commit framework (pip/pipx install pre-commit==4.7.0,
+# then `pre-commit install` once per clone). Only the pre-commit hook type: other git hooks in the clone
+# are left alone. The hook scans what is staged, with the same pinned gitleaks image and rules as CI.
+default_install_hook_types: [pre-commit]
+
+repos:
+- repo: local
+  hooks:
+  - id: gitleaks
+    name: gitleaks (staged changes)
+    entry: bash ci/gitleaks.sh --staged
+    language: system
+    pass_filenames: false
+    stages: [pre-commit]

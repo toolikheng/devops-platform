@@ -1,0 +1,9 @@
+# Known gitleaks findings that stay in git history on purpose. One fingerprint per line:
+# commit:file:rule:line. tests/test_secret_scanning.py fails if anything else is added here.
+#
+# 2026-11-20, two restic repository passwords committed in 7ca581f and removed in 8e7665b. They only
+# encrypted local restic repositories of demo data inside k3d clusters that no longer exist and were never
+# used anywhere else, so nothing needed rotating, and the history was not rewritten (docs/runbook.md,
+# "Leaked credentials"). Found by hand in C0; the plain-password-assignment rule now catches them.
+7ca581f213fbdebb6bc0dfebaa48612fdee91b62:backup/scripts/backup.sh:plain-password-assignment:9
+7ca581f213fbdebb6bc0dfebaa48612fdee91b62:backup/scripts/restore-test.sh:plain-password-assignment:9
