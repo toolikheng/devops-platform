@@ -72,8 +72,8 @@ def test_aws_hosts_log_in_as_ubuntu_and_never_as_root() -> None:
 
 
 def test_aws_hosts_use_pipelining() -> None:
-    # Every round trip goes through Session Manager. Measured in C3: a run with nothing to change took
-    # 136 s without pipelining and 30 s with it (one SSH round trip per task instead of several).
+    # Every round trip goes through Session Manager. Measured back to back in C3 on a no-change run:
+    # 39 SSH calls with pipelining instead of 151, about 10% faster (SSH already reuses one connection).
     group_vars = load(ANSIBLE / "inventory" / "group_vars" / "aws.yml")
     assert group_vars["ansible_pipelining"] is True
 

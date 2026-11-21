@@ -11,9 +11,10 @@ ansible_ssh_common_args: >-
   --document-name AWS-StartSSHSession --parameters portNumber=%p"
   -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no
 ansible_python_interpreter: /usr/bin/python3
-# One SSH round trip per task instead of several (temp dir, copy, run, clean up). Each round trip goes
-# through Session Manager, so this matters: a no-change run took 136 s without and 30 s with it.
-# Works with sudo because Ubuntu's sudoers has no requiretty.
+# One SSH round trip per task instead of several (temp dir, copy, run, clean up), each through Session
+# Manager. Measured back to back on a no-change run: 39 SSH calls instead of 151, but only about 10% faster
+# (35-39 s against 39-44 s), because SSH already reuses one connection. Works with sudo because Ubuntu's
+# sudoers has no requiretty.
 ansible_pipelining: true
 
 # The laptop's copy of the k3s admin kubeconfig (written by playbooks/aws-node.yml): outside the repo,

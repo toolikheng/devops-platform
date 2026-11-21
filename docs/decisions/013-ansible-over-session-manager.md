@@ -30,7 +30,7 @@ Options for Ansible:
 
 - No inbound admin port, measured live: 22, 6443, 9100 (node_exporter) and 10250 (kubelet) were dropped from my laptop while Ansible and kubectl worked. Two checks protect the node: IAM decides who may open a session, then the SSH key decides who may log in.
 - The roles see plain SSH, so the same `common` and `node_exporter` roles run on the Docker nodes and on EC2 unchanged, which was the point of ADR 003. The only role change was making `PermitRootLogin` and the login banner title variables, with defaults that leave the homelab output byte for byte the same.
-- Every round trip goes through AWS, so it is slower than direct SSH. Measured: a run with nothing to change took 136 s, and 30 s with pipelining. A full build from a fresh node took 103 s.
+- Every round trip goes through AWS, so it is slower than direct SSH, and Session Manager latency varies: single runs with nothing to change took anywhere from 30 s to 136 s. A full build from a fresh node took 103 s. Pipelining cuts a no-change run from 151 SSH calls to 39, but because SSH already reuses one connection it saves only about 10% of the time (35–39 s against 39–44 s, measured back to back). An earlier single comparison (136 s → 30 s) had made it look like a 4× gain.
 - The laptop needs the Session Manager plugin and a valid `aws login`; an expired login shows up as an SSH connection error.
 - The admin kubeconfig (cluster-admin credentials) leaves the node, but only over the SSH session, to a 0600 file outside the repo. It is useless without the tunnel, which needs my AWS login.
 - A tunnel closed with Ctrl-C ends its session on the AWS side too. Killing the plugin with SIGTERM left the session listed as active until it was terminated.
