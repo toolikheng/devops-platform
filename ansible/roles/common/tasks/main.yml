@@ -1,8 +1,11 @@
 ---
+# Runs in check mode too: it only refreshes the package index, and without it check mode on a fresh
+# cloud image (empty package lists) cannot tell which packages it would install.
 - name: Update package cache
   ansible.builtin.apt:
     update_cache: true
     cache_valid_time: 3600
+  check_mode: false
 
 - name: Install base packages
   ansible.builtin.apt:

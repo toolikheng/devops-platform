@@ -107,3 +107,17 @@ def test_kubeconfig_port_matches_the_tunnel() -> None:
     assert local_port and remote_port, "cloud-tunnel.sh must define LOCAL_PORT and REMOTE_PORT"
     assert defaults["k3s_kubeconfig_local_port"] == int(local_port.group(1)) == 16443
     assert int(remote_port.group(1)) == 6443
+
+
+# --- Check mode (make cloud-config ANSIBLE_ARGS='--check --diff') ------------------------------------------
+
+def test_check_mode_still_waits_for_the_node_and_reads_fresh_package_lists() -> None:
+    # Found live in C3: in check mode these tasks were skipped or only pretended to run, so the waits never
+    # waited and apt, with the empty package lists of a fresh cloud image, could not find any package.
+    # Each one only waits or refreshes the package index, so running it for real changes no configuration.
+    pre_tasks = {t["name"]: t for t in load(ANSIBLE / "playbooks" / "aws-node.yml")[0]["pre_tasks"]}
+    for name in ("Wait for SSH over Session Manager", "Wait for cloud-init to finish"):
+        assert pre_tasks[name].get("check_mode") is False, name
+
+    common = {t["name"]: t for t in tasks(ANSIBLE / "roles" / "common")}
+    assert common["Update package cache"].get("check_mode") is False

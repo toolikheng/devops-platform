@@ -7,9 +7,11 @@
 
   pre_tasks:
     # The SSM agent registers about a minute after boot; until then the ProxyCommand fails.
+    # The two waits change nothing, so they run in check mode too (it would skip them).
     - name: Wait for SSH over Session Manager
       ansible.builtin.wait_for_connection:
         timeout: 300
+      check_mode: false
 
     # cloud-init may still be configuring the node (and holding the apt lock) on a fresh boot.
     # Exit 2 means finished with recoverable warnings; only 1 is a failure.
@@ -18,6 +20,7 @@
       register: cloud_init_status
       changed_when: false
       failed_when: cloud_init_status.rc not in [0, 2]
+      check_mode: false
 
     - name: Gather facts
       ansible.builtin.setup:
