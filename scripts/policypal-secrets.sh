@@ -14,19 +14,26 @@ NAMESPACE="policypal"
 # records it the way kubectl apply expects, so the first deploy doesn't warn about a missing annotation.
 kubectl get namespace "$NAMESPACE" >/dev/null 2>&1 || kubectl create namespace "$NAMESPACE" --save-config >/dev/null
 
-# create_secret <name>: the KEY=value lines come in on stdin.
-create_secret() {
+# The KEY=value lines of each Secret, generated only when it is created.
+db_values() {
+  local password
+  password="$(openssl rand -hex 24)" # hex only: no escaping needed inside the database URL
+  printf 'POSTGRES_PASSWORD=%s\nDATABASE_URL=postgresql+psycopg://policypal:%s@postgres:5432/policypal\n' \
+    "$password" "$password"
+}
+admin_values() {
+  printf 'ADMIN_TOKEN=%s\n' "$(openssl rand -hex 24)"
+}
+
+# ensure_secret <name> <values function>
+ensure_secret() {
   if kubectl -n "$NAMESPACE" get secret "$1" >/dev/null 2>&1; then
-    cat >/dev/null
     echo "policypal-secrets: $1 exists, left unchanged"
   else
-    kubectl -n "$NAMESPACE" create secret generic "$1" --from-env-file=/dev/stdin >/dev/null
+    "$2" | kubectl -n "$NAMESPACE" create secret generic "$1" --from-env-file=/dev/stdin >/dev/null
     echo "policypal-secrets: $1 created"
   fi
 }
 
-# Hex only, so the password needs no escaping inside the database URL.
-password="$(openssl rand -hex 24)"
-printf 'POSTGRES_PASSWORD=%s\nDATABASE_URL=postgresql+psycopg://policypal:%s@postgres:5432/policypal\n' \
-  "$password" "$password" | create_secret policypal-db
-printf 'ADMIN_TOKEN=%s\n' "$(openssl rand -hex 24)" | create_secret policypal-admin
+ensure_secret policypal-db db_values
+ensure_secret policypal-admin admin_values
