@@ -1,9 +1,12 @@
 # The EC2 node. The ingress answers on any host name: the public IP changes every session and there is no DNS.
+# The Secrets come from SSM Parameter Store through External Secrets Operator (make cloud-addons installs it).
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
 - ../../base
+- externalsecret-db.yaml
+- externalsecret-admin.yaml
 
 # The PolicyPal commit to run (its CI publishes an image per commit to GHCR; public, amd64 only).
 # Quoted: a commit hash made only of digits would otherwise be a YAML number.

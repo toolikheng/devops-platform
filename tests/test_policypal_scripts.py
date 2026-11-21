@@ -1,16 +1,20 @@
 """Tests for the PolicyPal deploy scripts and their Make targets.
 
-- scripts/policypal-secrets.sh: creates the two temporary Secrets once, with random values, never printed.
+- scripts/policypal-secrets.sh: creates the two Secrets on k3d once, with random values, never printed (on AWS,
+  External Secrets Operator makes them from SSM Parameter Store).
 - scripts/smoke-test.sh: /health, one answered and cited question, one refusal (the API through a kubectl
   port-forward to its Service), the UI through the ingress, and the API not reachable through it.
-- scripts/deploy-policypal.sh: render, apply, wait, smoke test, and roll back what it changed on failure.
+- scripts/deploy-policypal.sh: render, apply, wait for the Secrets and the rollout, smoke test, and roll back
+  what it changed on failure.
+- scripts/install-eso.sh and render-eso.sh: External Secrets Operator's pinned chart, installed and rendered.
 - scripts/check-state-secrets.sh: counts each live secret value in the persistent state, never shows it.
-- make k8s-check, policypal-secrets-local, policypal-local, cloud-deploy, cloud-smoke, check-state-secrets.
+- make k8s-check, policypal-secrets-local, policypal-local, cloud-deploy, cloud-smoke, cloud-addons,
+  check-state-secrets.
 
-They run with fake `kubectl`, `curl`, `docker`, `k3d`, `terraform` and `aws` first on PATH, so no cluster,
-container or AWS account is touched. Each fake appends one JSON line per call (tool, args, KUBECONFIG,
-AWS_PROFILE, working directory; for kubectl also the namespace, taken out of the args) to a log, and answers
-from files the test writes (secrets that exist, revisions, API replies, state, parameters).
+They run with fake `kubectl`, `curl`, `docker`, `k3d`, `terraform`, `aws` and `helm` first on PATH, so no
+cluster, container or AWS account is touched. Each fake appends one JSON line per call (tool, args,
+KUBECONFIG, AWS_PROFILE, working directory; for kubectl also the namespace, taken out of the args) to a log,
+and answers from files the test writes (secrets that exist, revisions, API replies, state, parameters).
 """
 
 import json
@@ -28,6 +32,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO_ROOT / "scripts"
 AWS_GROUP_VARS = REPO_ROOT / "ansible" / "inventory" / "group_vars" / "aws.yml"
+ESO_DIR = REPO_ROOT / "k8s" / "platform" / "external-secrets"
 
 G04 = "How many days of compassionate leave do I get when my grandmother passes away?"
 G41 = "How many months of bonus will we get at the end of the year?"
@@ -40,6 +45,7 @@ ANSWER_G41 = {"mode": "refused", "refused": True, "answer": "I couldn't find thi
               "citations": []}
 UI_URL = "http://203.0.113.20"
 MANIFEST = "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: policypal\n"
+ESO_MANIFEST = "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: external-secrets\n"
 FORWARD_PORT = "41234"  # the local port the fake `kubectl port-forward` says it picked
 API = f"http://127.0.0.1:{FORWARD_PORT}"
 
@@ -85,6 +91,15 @@ if tool == "kubectl":
     if a[:3] == ["create", "secret", "generic"]:
         (d / f"secret-{a[3]}").write_text(stdin)
         sys.exit(0)
+    if a[:2] == ["wait", "--for=create"]:
+        # Like kubectl 1.37: --for=create waits for one resource; given several, it fails at once on the
+        # first missing one (seen on k3d).
+        names = [x.split("/", 1)[1] for x in a[2:] if x.startswith("secret/")]
+        missing = [n for n in names if not (d / f"secret-{n}").exists()]
+        if missing:
+            print(f'Error from server (NotFound): secrets "{missing[0]}" not found' if len(names) > 1
+                  else "error: timed out waiting for the condition", file=sys.stderr)
+        sys.exit(1 if missing or not names else 0)
     if a[:1] == ["apply"]:
         (d / "applied").write_text(stdin)
         sys.exit(1 if (d / "fail-apply").exists() else 0)
@@ -109,6 +124,8 @@ if tool == "curl":
 if tool == "docker":
     if any("kustomize" in x for x in args):
         answer("manifest")
+    if any(x.startswith("alpine/helm:") for x in args):
+        answer("eso-manifest")
     sys.exit(0)
 if tool == "terraform" and args[:2] == ["output", "-raw"]:
     answer(f"tf-{args[2]}", 1)
@@ -116,6 +133,8 @@ if tool == "terraform" and args[:2] == ["state", "pull"]:
     answer("tf-state", 1)
 if tool == "aws" and args[:2] == ["ssm", "get-parameter"]:
     answer("ssm" + args[args.index("--name") + 1].replace("/", "_"), 254)
+if tool == "helm":
+    sys.exit(1 if (d / "fail-helm").exists() else 0)
 if tool == "k3d" and args[:2] == ["cluster", "get"]:
     sys.exit(0)
 sys.exit(0)
@@ -133,11 +152,12 @@ class Fakes:
         # ephemeral-tf.sh (behind the node's IP lookup) needs a public key even for `terraform output`.
         (self.home / ".ssh").mkdir(parents=True)
         (self.home / ".ssh" / "id_ed25519.pub").write_text("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample test\n")
-        for tool in ("kubectl", "curl", "docker", "k3d", "terraform", "aws"):
+        for tool in ("kubectl", "curl", "docker", "k3d", "terraform", "aws", "helm"):
             path = self.bin / tool
             path.write_text(FAKE)
             path.chmod(0o755)
         self.write("manifest", MANIFEST)
+        self.write("eso-manifest", ESO_MANIFEST)
         self.write("forward-port", FORWARD_PORT)
         self.write("tf-public_ip", "203.0.113.20")
         self.api(health=HEALTH_OK, g04=ANSWER_G04, g41=ANSWER_G41)
@@ -165,6 +185,11 @@ class Fakes:
 
     def secret_exists(self, name: str) -> None:
         self.write(f"secret-{name}", "existing")
+
+    def eso_synced(self) -> None:
+        """What External Secrets Operator does on AWS: both Secrets exist once the ExternalSecrets are applied."""
+        self.secret_exists("policypal-db")
+        self.secret_exists("policypal-admin")
 
     def parameter(self, name: str, value: str) -> None:
         self.write("ssm" + name.replace("/", "_"), value)
@@ -403,13 +428,24 @@ def test_smoke_test_needs_the_ui_url(fakes: Fakes) -> None:
 # --- scripts/deploy-policypal.sh ------------------------------------------------------------------------
 
 def test_deploy_applies_the_rendered_overlay_then_waits_and_smoke_tests(fakes: Fakes, rendered: dict) -> None:
-    fakes.secret_exists("policypal-db")
-    fakes.secret_exists("policypal-admin")
+    fakes.eso_synced()
     result = fakes.script("deploy-policypal.sh", "aws", UI_URL)
     assert result.returncode == 0, output(result)
 
-    checked = [sorted(a[2:]) for a in fakes.kubectl("get", "secret")]
-    assert checked == [sorted(secret_keys_referenced(rendered["aws"]))], "checks exactly the Secrets the pods need"
+    # The Secrets are waited for after the apply (ExternalSecrets make them only then), before the rollout:
+    # one call per Secret, because kubectl's --for=create only waits when it is given a single resource.
+    calls = fakes.calls("kubectl")
+    waits = [i for i, c in enumerate(calls) if c["args"][:2] == ["wait", "--for=create"]]
+    waited = []
+    for i in waits:
+        names = [a.removeprefix("secret/") for a in calls[i]["args"] if a.startswith("secret/")]
+        assert len(names) == 1, f"one Secret per kubectl wait: {calls[i]['args']}"
+        assert calls[i]["ns"] == "policypal" and "--timeout=2m" in calls[i]["args"]
+        waited += names
+    assert sorted(waited) == sorted(secret_keys_referenced(rendered["aws"])), "exactly the Secrets the pods need"
+    applied = next(i for i, c in enumerate(calls) if c["args"][:2] == ["apply", "-f"])
+    rollout = next(i for i, c in enumerate(calls) if c["args"][:2] == ["rollout", "status"])
+    assert applied < min(waits) and max(waits) < rollout
 
     renders = [c for c in fakes.calls("docker") if any("kustomize" in a for a in c["args"])]
     assert len(renders) == 1 and renders[0]["args"][-1].endswith("/policypal/overlays/aws")
@@ -428,17 +464,26 @@ def test_deploy_accepts_only_the_two_overlays(fakes: Fakes, overlay: str) -> Non
     assert not fakes.kubectl("apply")
 
 
-def test_deploy_stops_before_applying_when_the_secrets_are_missing(fakes: Fakes) -> None:
+@pytest.mark.parametrize("overlay", ["local", "aws"])
+def test_deploy_stops_soon_when_the_secrets_do_not_appear(fakes: Fakes, overlay: str) -> None:
+    # On AWS the ExternalSecrets make the Secrets after the apply; if External Secrets Operator can't (no
+    # store, no IAM access) or the k3d script wasn't run, the deploy stops after the 2-minute wait instead of
+    # the 15-minute rollout timeout, says where to look, and rolls back what the apply changed.
     fakes.secret_exists("policypal-admin")
-    result = fakes.script("deploy-policypal.sh", "aws", UI_URL)
+    fakes.revisions("policypal-api", before="3", after="4")
+    fakes.revisions("policypal-ui", before="2", after="2")
+    result = fakes.script("deploy-policypal.sh", overlay, UI_URL)
     assert result.returncode != 0
-    assert "policypal-secrets" in output(result)
-    assert not fakes.kubectl("apply")
+    assert fakes.kubectl("apply", "-f", "-"), "the apply comes first"
+    assert fakes.kubectl("wait", "--for=create"), "then the wait"
+    assert ["rollout", "status", "statefulset/postgres"] not in [a[:3] for a in fakes.kubectl("rollout", "status")]
+    text = output(result)
+    assert "externalsecret" in text and "policypal-secrets.sh" in text
+    assert fakes.kubectl("rollout", "undo") == [["rollout", "undo", "deployment/policypal-api", "--to-revision=3"]]
 
 
 def test_failed_rollout_rolls_back_what_this_deploy_changed(fakes: Fakes) -> None:
-    fakes.secret_exists("policypal-db")
-    fakes.secret_exists("policypal-admin")
+    fakes.eso_synced()
     fakes.revisions("policypal-api", before="3", after="4")
     fakes.revisions("policypal-ui", before="2", after="2")
     fakes.flag("fail-rollout-policypal-api")
@@ -449,8 +494,7 @@ def test_failed_rollout_rolls_back_what_this_deploy_changed(fakes: Fakes) -> Non
 
 
 def test_failed_smoke_test_rolls_back_too(fakes: Fakes) -> None:
-    fakes.secret_exists("policypal-db")
-    fakes.secret_exists("policypal-admin")
+    fakes.eso_synced()
     fakes.revisions("policypal-api", before="3", after="4")
     fakes.revisions("policypal-ui", before="2", after="3")
     fakes.api(g41=ANSWER_G04)
@@ -463,8 +507,7 @@ def test_failed_smoke_test_rolls_back_too(fakes: Fakes) -> None:
 
 
 def test_first_deploy_has_nothing_to_roll_back(fakes: Fakes) -> None:
-    fakes.secret_exists("policypal-db")
-    fakes.secret_exists("policypal-admin")
+    fakes.eso_synced()
     fakes.revisions("policypal-api", before=None, after="1")
     fakes.flag("fail-rollout-policypal-api")
     result = fakes.script("deploy-policypal.sh", "aws", UI_URL)
@@ -474,8 +517,7 @@ def test_first_deploy_has_nothing_to_roll_back(fakes: Fakes) -> None:
 
 
 def test_deploy_stops_when_apply_fails(fakes: Fakes) -> None:
-    fakes.secret_exists("policypal-db")
-    fakes.secret_exists("policypal-admin")
+    fakes.eso_synced()
     fakes.flag("fail-apply")
     result = fakes.script("deploy-policypal.sh", "aws", UI_URL)
     assert result.returncode != 0
@@ -489,18 +531,31 @@ def flag_value(args: list[str], flag: str) -> str:
     return args[args.index(flag) + 1]
 
 
-def test_k8s_check_validates_both_overlays_strictly_against_the_nodes_version(fakes: Fakes) -> None:
+def test_k8s_check_validates_policypal_and_eso_strictly_against_the_nodes_version(fakes: Fakes) -> None:
     result = fakes.make("k8s-check")
     assert result.returncode == 0, output(result)
     docker = fakes.calls("docker")
     renders = [c["args"][-1] for c in docker if any("kustomize" in a for a in c["args"])]
     assert [r.rsplit("/", 1)[-1] for r in renders] == ["local", "aws"]
+    assert [c for c in docker if any(a.startswith("alpine/helm:") for a in c["args"])], "renders the ESO chart"
     validations = [c for c in docker if any("kubeconform" in a for a in c["args"])]
-    assert len(validations) == 2
+    assert len(validations) == 3
+    catalog = re.compile(r"https://raw\.githubusercontent\.com/datreeio/CRDs-catalog/[0-9a-f]{40}/"
+                         r"\{\{\.Group\}\}/\{\{\.ResourceKind\}\}_\{\{\.ResourceAPIVersion\}\}\.json")
     for call in validations:
-        assert "-strict" in call["args"]
-        assert call["args"][call["args"].index("-kubernetes-version") + 1] == "1.36.6"
-        assert call["stdin"] == MANIFEST, "kubeconform reads the rendered YAML"
+        args = call["args"]
+        assert "-strict" in args
+        assert flag_value(args, "-kubernetes-version") == "1.36.6"
+        # Kubernetes' own schemas, then the CRD schemas (ExternalSecret, ClusterSecretStore) at a pinned commit.
+        locations = [args[i + 1] for i, a in enumerate(args) if a == "-schema-location"]
+        assert locations[0] == "default" and len(locations) == 2 and catalog.fullmatch(locations[1])
+    assert [v["stdin"] for v in validations[:2]] == [MANIFEST, MANIFEST], "kubeconform reads the rendered YAML"
+    store = (ESO_DIR / "clustersecretstore.yaml").read_text()
+    assert ESO_MANIFEST in validations[2]["stdin"] and store in validations[2]["stdin"], "chart and store"
+    # No schema exists for the CustomResourceDefinition kind, so only the ESO run skips it, and nothing else.
+    assert all("-skip" not in v["args"] for v in validations[:2])
+    eso = validations[2]["args"]
+    assert eso.count("-skip") == 1 and flag_value(eso, "-skip") == "CustomResourceDefinition"
 
 
 def test_policypal_secrets_local_targets_the_k3d_cluster(fakes: Fakes) -> None:
@@ -524,6 +579,7 @@ def test_policypal_local_deploys_the_local_overlay_and_smoke_tests_it(fakes: Fak
 
 
 def test_cloud_deploy_uses_the_aws_kubeconfig_and_the_nodes_ip(fakes: Fakes) -> None:
+    fakes.eso_synced()
     result = fakes.make("cloud-deploy")
     assert result.returncode == 0, output(result)
     aws_kubeconfig = str(fakes.home / ".kube" / "devops-aws.yaml")
@@ -532,7 +588,7 @@ def test_cloud_deploy_uses_the_aws_kubeconfig_and_the_nodes_ip(fakes: Fakes) -> 
     assert renders and renders[-1].endswith("/overlays/aws")
     urls = {a for c in fakes.calls("curl") for a in c["args"] if a.startswith("http")}
     assert f"{UI_URL}/_stcore/health" in urls
-    assert fakes.created_secret("policypal-db"), "temporary Secrets are created on a new cluster"
+    assert not fakes.kubectl("create"), "External Secrets Operator makes the Secrets on AWS, not the deploy"
     assert not fakes.calls("k3d"), "never touches the local cluster"
     assert all(c["profile"] == "devops" for c in fakes.calls("terraform"))
 
@@ -573,6 +629,8 @@ NAMESPACE_FREE = (["get", "namespace"], ["create", "namespace"], ["apply", "-f",
 def test_every_namespaced_kubectl_call_targets_policypal(fakes: Fakes, target: str) -> None:
     # Without -n, kubectl uses the context's namespace (default): Secrets, rollouts and the port-forward
     # would all look in the wrong place.
+    if target == "cloud-deploy":
+        fakes.eso_synced()
     result = fakes.make(target)
     assert result.returncode == 0, output(result)
     namespaced = [c for c in fakes.calls("kubectl")
@@ -584,11 +642,82 @@ def test_every_namespaced_kubectl_call_targets_policypal(fakes: Fakes, target: s
 
 @pytest.mark.parametrize("target", ["cloud-deploy", "cloud-smoke"])
 def test_deploy_targets_never_change_aws(fakes: Fakes, target: str) -> None:
+    fakes.eso_synced()
     result = fakes.make(target)
     assert result.returncode == 0, output(result)
     for call in fakes.calls("terraform"):
         assert call["args"][0] in ("init", "output"), call["args"]
     assert not fakes.calls("aws")
+
+
+def test_both_overlays_build_the_database_url_the_same_way(fakes: Fakes, rendered: dict) -> None:
+    # policypal-db comes from the script on k3d and from an ExternalSecret on AWS: the API must get the same URL.
+    fakes.script("policypal-secrets.sh")
+    db = fakes.created_secret("policypal-db")
+    [es] = [d for d in rendered["aws"] if d["kind"] == "ExternalSecret" and d["metadata"]["name"] == "policypal-db"]
+    variable = "{{ ." + es["spec"]["data"][0]["secretKey"] + " }}"
+    expected = db["DATABASE_URL"].replace(db["POSTGRES_PASSWORD"], variable)
+    assert es["spec"]["target"]["template"]["data"]["DATABASE_URL"] == expected
+
+
+# --- External Secrets Operator: scripts/install-eso.sh, scripts/render-eso.sh, make cloud-addons ----------
+
+def eso_chart() -> dict[str, str]:
+    """KEY=value lines of chart.env: the one place the chart and its version are written down."""
+    return dict(re.findall(r"^([A-Z_]+)=(\S+)$", (ESO_DIR / "chart.env").read_text(), re.M))
+
+
+def test_install_eso_installs_the_pinned_chart_with_our_values_then_the_store(fakes: Fakes) -> None:
+    result = fakes.script("install-eso.sh")
+    assert result.returncode == 0, output(result)
+    pinned = eso_chart()
+    [helm] = fakes.calls("helm")
+    args = helm["args"]
+    assert args[:4] == ["upgrade", "--install", "external-secrets", pinned["ESO_CHART"]]
+    assert flag_value(args, "--repo") == pinned["ESO_CHART_REPO"]
+    assert flag_value(args, "--version") == pinned["ESO_CHART_VERSION"]
+    assert flag_value(args, "--namespace") == "external-secrets"
+    assert flag_value(args, "--values") == str(ESO_DIR / "values.yaml")
+    assert "--create-namespace" in args and "--wait" in args, "returns when the pods are ready"
+    calls = fakes.calls()
+    helm_at = next(i for i, c in enumerate(calls) if c["tool"] == "helm")
+    store = ["apply", "-f", str(ESO_DIR / "clustersecretstore.yaml")]
+    store_at = [i for i, c in enumerate(calls) if c["tool"] == "kubectl" and c["args"] == store]
+    assert store_at and store_at[0] > helm_at, "the store's CRD and its webhook come from the chart"
+
+
+def test_install_eso_stops_when_helm_fails(fakes: Fakes) -> None:
+    fakes.flag("fail-helm")
+    result = fakes.script("install-eso.sh")
+    assert result.returncode != 0
+    assert fakes.calls("helm"), "helm must have run"
+    assert not fakes.kubectl("apply")
+
+
+def test_render_eso_renders_the_same_pinned_chart_and_values(fakes: Fakes) -> None:
+    result = fakes.script("render-eso.sh")
+    assert result.returncode == 0, output(result)
+    assert result.stdout == ESO_MANIFEST
+    pinned = eso_chart()
+    [call] = fakes.calls("docker")
+    args = call["args"]
+    image = next(a for a in args if a.startswith("alpine/helm:"))
+    assert re.fullmatch(r"alpine/helm:\d+\.\d+\.\d+", image), "a pinned Helm image"
+    helm = args[args.index(image) + 1:]
+    assert helm[:3] == ["template", "external-secrets", pinned["ESO_CHART"]]
+    assert flag_value(helm, "--repo") == pinned["ESO_CHART_REPO"]
+    assert flag_value(helm, "--version") == pinned["ESO_CHART_VERSION"]
+    assert flag_value(helm, "--namespace") == "external-secrets"
+    assert flag_value(args, "-v") == f"{ESO_DIR}:/eso:ro" and flag_value(helm, "--values") == "/eso/values.yaml"
+
+
+def test_cloud_addons_installs_eso_on_the_aws_node_only(fakes: Fakes) -> None:
+    result = fakes.make("cloud-addons")
+    assert result.returncode == 0, output(result)
+    aws_kubeconfig = str(fakes.home / ".kube" / "devops-aws.yaml")
+    assert fakes.calls("helm") and fakes.kubectl("apply")
+    assert all(c["kubeconfig"] == aws_kubeconfig for c in fakes.calls("helm") + fakes.calls("kubectl"))
+    assert not fakes.calls("k3d") and not fakes.calls("terraform") and not fakes.calls("aws")
 
 
 # --- scripts/check-state-secrets.sh, make check-state-secrets -------------------------------------------

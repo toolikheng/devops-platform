@@ -7,13 +7,15 @@
 # Applies exactly the YAML that the checks validated (render-k8s.sh, pinned kustomize). Before applying it
 # records each Deployment's revision; on failure, every Deployment whose revision changed goes back to the
 # one it had. Postgres is never rolled back (its data volume stays as it is). A first deploy has nothing to
-# roll back to. The Secrets must exist first (policypal-secrets.sh). ROLLOUT_TIMEOUT allows for the first
-# pull of the ~2.8 GB image; the Deployments' progressDeadlineSeconds must be at least as long, or Kubernetes
-# gives up first (a test checks).
+# roll back to. After the apply it waits up to 2 minutes for the Secrets the pods read: on AWS, External
+# Secrets Operator makes them from the ExternalSecrets in this apply; on k3d, policypal-secrets.sh made them
+# before. ROLLOUT_TIMEOUT allows for the first pull of the ~2.8 GB image; the Deployments'
+# progressDeadlineSeconds must be at least as long, or Kubernetes gives up first (a test checks).
 set -euo pipefail
 
 NAMESPACE="policypal"
 DEPLOYMENTS=(policypal-api policypal-ui)
+SECRETS=(policypal-db policypal-admin) # every Secret the manifests reference (a test checks)
 ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-15m}"
 here="$(dirname "$0")"
 
@@ -25,14 +27,17 @@ if ! [[ "$overlay" =~ ^(local|aws)$ && "$ui" =~ ^https?://[^/]+ ]]; then
 fi
 
 k() { kubectl -n "$NAMESPACE" "$@"; }
+# One kubectl call per Secret: --for=create only waits when it is given a single resource; given several,
+# it fails at once if any is missing. Stops at the first Secret that doesn't appear, so 2 minutes at most.
+secrets_created() {
+  local s
+  for s in "${SECRETS[@]}"; do
+    k wait --for=create "secret/$s" --timeout=2m || return 1
+  done
+}
 revision() {
   k get deployment "$1" -o jsonpath='{.metadata.annotations.deployment\.kubernetes\.io/revision}' 2>/dev/null || true
 }
-
-if ! k get secret policypal-db policypal-admin >/dev/null 2>&1; then
-  echo "deploy-policypal: Secrets policypal-db and policypal-admin are missing; run scripts/policypal-secrets.sh first." >&2
-  exit 1
-fi
 
 declare -A before
 for d in "${DEPLOYMENTS[@]}"; do before[$d]="$(revision "$d")"; done
@@ -54,6 +59,10 @@ manifests="$(bash "$here/render-k8s.sh" "$overlay")"
 failed=""
 if ! kubectl apply -f - <<<"$manifests"; then
   failed="kubectl apply"
+elif ! secrets_created; then
+  failed="waiting for the Secrets ${SECRETS[*]}"
+  echo "deploy-policypal: on AWS see kubectl -n $NAMESPACE describe externalsecret (External Secrets Operator);" \
+    "on k3d run scripts/policypal-secrets.sh" >&2
 else
   for target in statefulset/postgres deployment/policypal-api deployment/policypal-ui; do
     if ! k rollout status "$target" --timeout="$ROLLOUT_TIMEOUT"; then

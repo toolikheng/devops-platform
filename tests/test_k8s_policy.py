@@ -3,7 +3,9 @@
 kubeconform (ci/k8s-checks.sh) proves the YAML is valid Kubernetes. These tests pin what kubeconform can't
 know: every container is sized and probed, images are pinned, no Secret is committed, the API is a single
 writer that is never exposed, PolicyPal runs without an LLM, and the local overlay deploys the same objects
-as the AWS one, so testing on k3d first means something.
+as the AWS one, so testing on k3d first means something. The one difference: on AWS, External Secrets
+Operator makes the Secrets from SSM Parameter Store (ExternalSecrets in overlays/aws); on k3d, which has no
+AWS identity, scripts/policypal-secrets.sh does.
 """
 
 import re
@@ -19,6 +21,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 K3S_DEFAULTS = REPO_ROOT / "ansible" / "roles" / "k3s" / "defaults" / "main.yml"
 K8S_CHECKS = REPO_ROOT / "ci" / "k8s-checks.sh"
 DEPLOY_SCRIPT = REPO_ROOT / "scripts" / "deploy-policypal.sh"
+SECRET_STORE = REPO_ROOT / "k8s" / "platform" / "external-secrets" / "clustersecretstore.yaml"
+TF_SECRETS = REPO_ROOT / "terraform" / "persistent" / "policypal_secrets.tf"
 
 NAMESPACE = "policypal"
 POLICYPAL_IMAGE = re.compile(r"^ghcr\.io/toolikheng/policypal(:[0-9a-f]{40}|@sha256:[0-9a-f]{64})$")
@@ -32,6 +36,8 @@ EXPECTED = WORKLOADS | {
     ("PersistentVolumeClaim", "policypal-uploads"),
     ("Ingress", "policypal"),
 }
+EXTERNAL_SECRETS = {("ExternalSecret", "policypal-db"), ("ExternalSecret", "policypal-admin")}
+EXPECTED_BY_OVERLAY = {"local": EXPECTED, "aws": EXPECTED | EXTERNAL_SECRETS}
 overlay_param = pytest.mark.parametrize("overlay", OVERLAYS)
 
 
@@ -78,12 +84,23 @@ def api(docs: list[dict[str, Any]]) -> dict[str, Any]:
     return get(docs, "Deployment", "policypal-api")
 
 
+def secret_refs(docs: list[dict[str, Any]]) -> set[tuple[str, str]]:
+    """(Secret, key) for every secretKeyRef in the workloads: what the cluster must hold."""
+    return {(e["valueFrom"]["secretKeyRef"]["name"], e["valueFrom"]["secretKeyRef"]["key"])
+            for w in workloads(docs) for c in containers(w) for e in c.get("env", [])
+            if "secretKeyRef" in e.get("valueFrom", {})}
+
+
+def external_secrets(docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [d for d in docs if d["kind"] == "ExternalSecret"]
+
+
 # --- what is deployed -----------------------------------------------------------------------------------
 
 @overlay_param
 def test_overlay_renders_exactly_the_policypal_objects(rendered: dict, overlay: str) -> None:
     found = {(d["kind"], d["metadata"]["name"]) for d in rendered[overlay]}
-    assert found == EXPECTED
+    assert found == EXPECTED_BY_OVERLAY[overlay]
 
 
 @overlay_param
@@ -94,9 +111,10 @@ def test_everything_lives_in_the_policypal_namespace(rendered: dict, overlay: st
 
 
 def test_local_overlay_deploys_the_same_objects_as_aws(rendered: dict) -> None:
+    # Apart from the ExternalSecrets: k3d has no AWS identity, so there the Secrets come from a script.
     def shape(docs: list[dict[str, Any]]) -> set[tuple[str, str]]:
         return {(d["kind"], d["metadata"]["name"]) for d in docs}
-    assert shape(rendered["local"]) == shape(rendered["aws"])
+    assert shape(rendered["local"]) == shape(rendered["aws"]) - EXTERNAL_SECRETS
 
 
 @overlay_param
@@ -273,6 +291,50 @@ def test_secrets_come_only_from_the_expected_secret_keys(rendered: dict, overlay
     assert found == expected
 
 
+# --- secrets on AWS: External Secrets Operator, from SSM Parameter Store --------------------------------
+
+def test_aws_secrets_are_made_by_external_secrets_with_exactly_the_keys_the_pods_use(rendered: dict) -> None:
+    docs = rendered["aws"]
+    made = {(es["spec"]["target"]["name"], key)
+            for es in external_secrets(docs) for key in es["spec"]["target"]["template"]["data"]}
+    assert made == secret_refs(docs)
+
+
+def test_external_secrets_read_only_the_parameters_terraform_creates(rendered: dict) -> None:
+    # Terraform (terraform/persistent/policypal_secrets.tf) creates the parameters and lets the node read
+    # /policypal/aws/* only. Every parameter is named: dataFrom would read whatever matches a pattern.
+    created = set(re.findall(r'^\s*name\s*=\s*"(/policypal/aws/[^"]+)"', TF_SECRETS.read_text(), re.M))
+    read = set()
+    for es in external_secrets(rendered["aws"]):
+        assert "dataFrom" not in es["spec"], es["metadata"]["name"]
+        read |= {d["remoteRef"]["key"] for d in es["spec"]["data"]}
+    assert created and read == created
+
+
+def test_external_secrets_use_the_cluster_store_and_refresh_hourly(rendered: dict) -> None:
+    store = yaml.safe_load(SECRET_STORE.read_text())
+    found = external_secrets(rendered["aws"])
+    assert found
+    for es in found:
+        name = es["metadata"]["name"]
+        assert es["apiVersion"] == "external-secrets.io/v1", name
+        assert es["spec"]["secretStoreRef"] == {"kind": "ClusterSecretStore", "name": store["metadata"]["name"]}, name
+        assert es["spec"]["refreshInterval"] == "1h", name
+        # Owner: ESO owns the Secret, so deleting the ExternalSecret removes it (and a deleted Secret comes back).
+        assert es["spec"]["target"].get("creationPolicy", "Owner") == "Owner", name
+
+
+def test_database_password_and_url_come_from_one_parameter(rendered: dict) -> None:
+    # Postgres is started with POSTGRES_PASSWORD and the API connects with DATABASE_URL: they must agree.
+    es = get(rendered["aws"], "ExternalSecret", "policypal-db")
+    data = es["spec"]["data"]
+    assert len(data) == 1
+    variable = "{{ ." + data[0]["secretKey"] + " }}"
+    template = es["spec"]["target"]["template"]["data"]
+    assert template["POSTGRES_PASSWORD"] == variable
+    assert f":{variable}@" in template["DATABASE_URL"]
+
+
 # --- exposure: only the UI, through Traefik -------------------------------------------------------------
 
 @overlay_param
@@ -338,7 +400,9 @@ def test_containers_run_unprivileged(rendered: dict, overlay: str) -> None:
 
 # --- drift ----------------------------------------------------------------------------------------------
 
-def test_kubeconform_checks_against_the_nodes_kubernetes_version() -> None:
+@pytest.mark.parametrize("script", [K8S_CHECKS, REPO_ROOT / "scripts" / "render-eso.sh"], ids=lambda p: p.name)
+def test_checks_use_the_nodes_kubernetes_version(script: Path) -> None:
+    # kubeconform validates against this version, and Helm renders the ESO chart for it.
     k3s = yaml.safe_load(K3S_DEFAULTS.read_text())["k3s_version"]  # e.g. v1.36.6+k3s1
-    checked = re.search(r'^KUBERNETES_VERSION="([^"]+)"', K8S_CHECKS.read_text(), re.M)
+    checked = re.search(r'^KUBERNETES_VERSION="([^"]+)"', script.read_text(), re.M)
     assert checked and k3s == f"v{checked[1]}+k3s1"

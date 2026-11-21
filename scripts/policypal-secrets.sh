@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # policypal-secrets.sh - create PolicyPal's two Secrets in the current cluster, with random values, once.
 #
-# Temporary until Phase C5, where External Secrets Operator creates them from SSM Parameter Store. Runs
-# against kubectl's current cluster: make policypal-secrets-local switches to k3d first, make cloud-deploy
-# sets KUBECONFIG to the AWS cluster's file. Values exist only in the cluster: they are never printed and
-# never passed as command-line arguments (visible to other users in ps); printf is a shell builtin.
+# For the local k3d cluster (make policypal-secrets-local switches to it first). On AWS, External Secrets
+# Operator makes these Secrets from SSM Parameter Store instead; k3d has no AWS identity, and giving it AWS
+# keys would put long-lived credentials in Kubernetes. Values exist only in the cluster: they are never
+# printed and never passed as command-line arguments (visible to other users in ps); printf is a builtin.
 # Secrets that already exist are left alone: Postgres keeps the password it was first started with.
 set -euo pipefail
 

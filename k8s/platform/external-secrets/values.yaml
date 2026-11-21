@@ -1,0 +1,31 @@
+# External Secrets Operator on the k3s node (chart and version: chart.env).
+#
+# The controller runs on the host network. The node's IMDSv2 hop limit is 1, so only processes on the host
+# can get the instance role's credentials, and the controller needs them to read Parameter Store. Pods in
+# the pod network (PolicyPal, Postgres) cannot. The webhook and cert-controller need no AWS access and stay
+# in the pod network: the webhook listens on 10250, which is the kubelet's port on the host.
+hostNetwork: true
+
+# Requests and limits for all three pods (the chart sets none).
+resources:
+  requests:
+    cpu: 25m
+    memory: 64Mi
+  limits:
+    memory: 128Mi
+
+webhook:
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      memory: 128Mi
+
+certController:
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      memory: 128Mi

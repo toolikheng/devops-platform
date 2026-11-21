@@ -7,7 +7,7 @@
         test-infra cost-check tf-check ansible-check owner-ip cloud-up cloud-down \
         cloud-config cloud-tunnel cloud-rebuild \
         k8s-check policypal-secrets-local policypal-local cloud-deploy cloud-smoke \
-        check-state-secrets \
+        cloud-addons check-state-secrets \
         destroy all clean
 
 SHELL := /bin/bash
@@ -107,13 +107,14 @@ help:
 	@$(ECHO) "  $(GREEN)make cost-check$(NC)    Read-only scan for billable AWS leftovers (all regions)"
 	@$(ECHO) "  $(GREEN)make tf-check$(NC)      Offline Terraform checks: fmt, validate, test, tflint, trivy"
 	@$(ECHO) "  $(GREEN)make ansible-check$(NC) Offline Ansible checks: ansible-lint, syntax-check (both playbooks)"
-	@$(ECHO) "  $(GREEN)make k8s-check$(NC)     Offline Kubernetes checks: render both PolicyPal overlays, kubeconform -strict"
+	@$(ECHO) "  $(GREEN)make k8s-check$(NC)     Offline Kubernetes checks: render PolicyPal (both overlays) and External Secrets Operator, kubeconform -strict"
 	@$(ECHO) "  $(GREEN)make owner-ip$(NC)      Store your public IP (/32) for the node's firewall (AWS write)"
 	@$(ECHO) "  $(GREEN)make cloud-up$(NC)      Store your IP, then create the ephemeral stack (asks before applying; billed hourly)"
 	@$(ECHO) "  $(GREEN)make cloud-down$(NC)    Destroy the ephemeral stack (asks first), then run cost-check"
 	@$(ECHO) "  $(GREEN)make cloud-config$(NC)  Configure the running node with Ansible over Session Manager (common, node_exporter, k3s)"
 	@$(ECHO) "  $(GREEN)make cloud-tunnel$(NC)  Forward the node's Kubernetes API to localhost:16443 (foreground; Ctrl-C stops it)"
 	@$(ECHO) "  $(GREEN)make cloud-rebuild$(NC) cloud-up, then cloud-config: from nothing to a Ready k3s node"
+	@$(ECHO) "  $(GREEN)make cloud-addons$(NC)  Install External Secrets Operator on the node (needs make cloud-tunnel running)"
 	@$(ECHO) "  $(GREEN)make cloud-deploy$(NC)  Deploy PolicyPal to the node and smoke-test it (needs make cloud-tunnel running)"
 	@$(ECHO) "  $(GREEN)make cloud-smoke$(NC)   Smoke-test PolicyPal on the node only (needs make cloud-tunnel running)"
 	@$(ECHO) "  $(GREEN)make check-state-secrets$(NC) Read-only: show that no secret value is in the persistent Terraform state"
@@ -332,11 +333,15 @@ cloud-rebuild:
 	@$(MAKE) --no-print-directory cloud-up
 	@$(MAKE) --no-print-directory cloud-config
 
-# PolicyPal on the AWS node. No AWS changes: kubectl goes through make cloud-tunnel (run it in another
-# terminal), and the UI is checked at the node's public IP, which only your IP can reach.
+# On the AWS node. No AWS changes: kubectl and helm go through make cloud-tunnel (run it in another
+# terminal), and the UI is checked at the node's public IP, which only your IP can reach. cloud-addons
+# installs External Secrets Operator, which makes PolicyPal's Secrets from SSM Parameter Store, so it runs
+# once per new node, before cloud-deploy.
+cloud-addons:
+	@KUBECONFIG="$(AWS_KUBECONFIG)" bash "$(REPO_ROOT)/scripts/install-eso.sh"
+
 cloud-deploy:
 	@ip="$$(AWS_PROFILE="$(AWS_PROFILE)" bash "$(REPO_ROOT)/scripts/node-ip.sh")"; \
-		KUBECONFIG="$(AWS_KUBECONFIG)" bash "$(REPO_ROOT)/scripts/policypal-secrets.sh"; \
 		KUBECONFIG="$(AWS_KUBECONFIG)" bash "$(REPO_ROOT)/scripts/deploy-policypal.sh" aws "http://$$ip"
 
 cloud-smoke:
