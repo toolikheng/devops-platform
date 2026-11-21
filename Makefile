@@ -6,6 +6,7 @@
         backup restore-test \
         test-infra cost-check tf-check ansible-check owner-ip cloud-up cloud-down \
         cloud-config cloud-tunnel cloud-rebuild \
+        k8s-check policypal-secrets-local policypal-local cloud-deploy cloud-smoke \
         destroy all clean
 
 SHELL := /bin/bash
@@ -40,6 +41,10 @@ CLOUD_ARGS ?=
 AWS_INVENTORY ?= $(ANSIBLE_DIR)/inventory/aws.yml
 # Extra ansible-playbook arguments for cloud-config, e.g. ANSIBLE_ARGS='--check --diff'.
 ANSIBLE_ARGS ?=
+# The AWS cluster's kubeconfig, written by make cloud-config (kubeconfig_path in ansible/inventory/group_vars/aws.yml).
+AWS_KUBECONFIG ?= $(HOME)/.kube/devops-aws.yaml
+# PolicyPal's UI on the local k3d cluster (k3d maps localhost:8080 to Traefik).
+POLICYPAL_LOCAL_URL := http://policypal.localhost:8080
 
 # Color output (if tty)
 ifeq ($(shell [ -t 1 ] && echo 1),1)
@@ -83,6 +88,8 @@ help:
 	@$(ECHO) "  $(GREEN)make cluster-up$(NC)    Create k3d cluster"
 	@$(ECHO) "  $(GREEN)make cluster-down$(NC)  Destroy k3d cluster"
 	@$(ECHO) "  $(GREEN)make deploy$(NC)        Deploy app to cluster"
+	@$(ECHO) "  $(GREEN)make policypal-local$(NC) Deploy PolicyPal to k3d and smoke-test it (http://policypal.localhost:8080)"
+	@$(ECHO) "  $(GREEN)make policypal-secrets-local$(NC) Create PolicyPal's random Secrets in k3d (once; never printed)"
 	@$(ECHO) ""
 	@$(ECHO) "$(BLUE)Phase 5 - CI/CD:$(NC)"
 	@$(ECHO) "  (Managed via GitHub Actions)"
@@ -99,12 +106,15 @@ help:
 	@$(ECHO) "  $(GREEN)make cost-check$(NC)    Read-only scan for billable AWS leftovers (all regions)"
 	@$(ECHO) "  $(GREEN)make tf-check$(NC)      Offline Terraform checks: fmt, validate, test, tflint, trivy"
 	@$(ECHO) "  $(GREEN)make ansible-check$(NC) Offline Ansible checks: ansible-lint, syntax-check (both playbooks)"
+	@$(ECHO) "  $(GREEN)make k8s-check$(NC)     Offline Kubernetes checks: render both PolicyPal overlays, kubeconform -strict"
 	@$(ECHO) "  $(GREEN)make owner-ip$(NC)      Store your public IP (/32) for the node's firewall (AWS write)"
 	@$(ECHO) "  $(GREEN)make cloud-up$(NC)      Store your IP, then create the ephemeral stack (asks before applying; billed hourly)"
 	@$(ECHO) "  $(GREEN)make cloud-down$(NC)    Destroy the ephemeral stack (asks first), then run cost-check"
 	@$(ECHO) "  $(GREEN)make cloud-config$(NC)  Configure the running node with Ansible over Session Manager (common, node_exporter, k3s)"
 	@$(ECHO) "  $(GREEN)make cloud-tunnel$(NC)  Forward the node's Kubernetes API to localhost:16443 (foreground; Ctrl-C stops it)"
 	@$(ECHO) "  $(GREEN)make cloud-rebuild$(NC) cloud-up, then cloud-config: from nothing to a Ready k3s node"
+	@$(ECHO) "  $(GREEN)make cloud-deploy$(NC)  Deploy PolicyPal to the node and smoke-test it (needs make cloud-tunnel running)"
+	@$(ECHO) "  $(GREEN)make cloud-smoke$(NC)   Smoke-test PolicyPal on the node only (needs make cloud-tunnel running)"
 	@$(ECHO) ""
 	@$(ECHO) "$(BLUE)Utilities:$(NC)"
 	@$(ECHO) "  $(GREEN)make all$(NC)           Run all phases (check → infra → deploy)"
@@ -275,6 +285,16 @@ tf-check:
 ansible-check:
 	@bash "$(CI_DIR)/ansible-checks.sh"
 
+k8s-check:
+	@bash "$(CI_DIR)/k8s-checks.sh"
+
+# PolicyPal on the local k3d cluster: cluster-up makes k3d-devops kubectl's current context first.
+policypal-secrets-local: cluster-up
+	@bash "$(REPO_ROOT)/scripts/policypal-secrets.sh"
+
+policypal-local: policypal-secrets-local
+	@bash "$(REPO_ROOT)/scripts/deploy-policypal.sh" local "$(POLICYPAL_LOCAL_URL)"
+
 # Read-only: describe/list/get calls only, never the Cost Explorer API. Exit 1 if anything billable is left.
 cost-check:
 	@AWS_PROFILE="$(AWS_PROFILE)" AWS_REGION="$(AWS_REGION)" bash "$(REPO_ROOT)/scripts/cost-check.sh"
@@ -305,6 +325,17 @@ cloud-tunnel:
 cloud-rebuild:
 	@$(MAKE) --no-print-directory cloud-up
 	@$(MAKE) --no-print-directory cloud-config
+
+# PolicyPal on the AWS node. No AWS changes: kubectl goes through make cloud-tunnel (run it in another
+# terminal), and the UI is checked at the node's public IP, which only your IP can reach.
+cloud-deploy:
+	@ip="$$(AWS_PROFILE="$(AWS_PROFILE)" bash "$(REPO_ROOT)/scripts/node-ip.sh")"; \
+		KUBECONFIG="$(AWS_KUBECONFIG)" bash "$(REPO_ROOT)/scripts/policypal-secrets.sh"; \
+		KUBECONFIG="$(AWS_KUBECONFIG)" bash "$(REPO_ROOT)/scripts/deploy-policypal.sh" aws "http://$$ip"
+
+cloud-smoke:
+	@ip="$$(AWS_PROFILE="$(AWS_PROFILE)" bash "$(REPO_ROOT)/scripts/node-ip.sh")"; \
+		KUBECONFIG="$(AWS_KUBECONFIG)" bash "$(REPO_ROOT)/scripts/smoke-test.sh" "http://$$ip"
 
 # Utilities
 all: check infra-up provision test build cluster-up deploy monitoring-up

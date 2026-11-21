@@ -75,14 +75,16 @@ run "owner_ip_that_is_a_range_fails_the_plan" {
   expect_failures = [data.aws_ssm_parameter.owner_cidr]
 }
 
-# From Phase C3 a session runs k3s, which needs 2 GiB, and runs on Spot unless asked otherwise (ADR 009):
+# From Phase C4 a session runs k3s plus PolicyPal: about 1.2 GiB at peak measured on k3d, on top of the
+# ~1.1 GiB k3s and Ubuntu used on a t3.small in C3, so the smallest allowlisted amd64 type with room is
+# c7i-flex.large (4 GiB). It runs on Spot unless asked otherwise (ADR 009):
 # `make cloud-up CLOUD_ARGS='-var use_spot=false'` for on-demand.
-run "default_node_is_a_small_spot_instance" {
+run "default_node_fits_policypal_on_spot" {
   command = plan
 
   assert {
-    condition     = var.instance_type == "t3.small"
-    error_message = "The default node must be t3.small (k3s needs 2 GiB)."
+    condition     = var.instance_type == "c7i-flex.large"
+    error_message = "The default node must be c7i-flex.large (k3s + PolicyPal need more than t3.small's 2 GiB)."
   }
 
   assert {

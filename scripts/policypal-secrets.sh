@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# policypal-secrets.sh - create PolicyPal's two Secrets in the current cluster, with random values, once.
+#
+# Temporary until Phase C5, where External Secrets Operator creates them from SSM Parameter Store. Runs
+# against kubectl's current cluster: make policypal-secrets-local switches to k3d first, make cloud-deploy
+# sets KUBECONFIG to the AWS cluster's file. Values exist only in the cluster: they are never printed and
+# never passed as command-line arguments (visible to other users in ps); printf is a shell builtin.
+# Secrets that already exist are left alone: Postgres keeps the password it was first started with.
+set -euo pipefail
+
+NAMESPACE="policypal"
+
+# Only when missing: the manifests own the namespace (and its labels) once they are applied. --save-config
+# records it the way kubectl apply expects, so the first deploy doesn't warn about a missing annotation.
+kubectl get namespace "$NAMESPACE" >/dev/null 2>&1 || kubectl create namespace "$NAMESPACE" --save-config >/dev/null
+
+# The KEY=value lines of each Secret, generated only when it is created.
+db_values() {
+  local password
+  password="$(openssl rand -hex 24)" # hex only: no escaping needed inside the database URL
+  printf 'POSTGRES_PASSWORD=%s\nDATABASE_URL=postgresql+psycopg://policypal:%s@postgres:5432/policypal\n' \
+    "$password" "$password"
+}
+admin_values() {
+  printf 'ADMIN_TOKEN=%s\n' "$(openssl rand -hex 24)"
+}
+
+# ensure_secret <name> <values function>
+ensure_secret() {
+  if kubectl -n "$NAMESPACE" get secret "$1" >/dev/null 2>&1; then
+    echo "policypal-secrets: $1 exists, left unchanged"
+  else
+    "$2" | kubectl -n "$NAMESPACE" create secret generic "$1" --from-env-file=/dev/stdin >/dev/null
+    echo "policypal-secrets: $1 created"
+  fi
+}
+
+ensure_secret policypal-db db_values
+ensure_secret policypal-admin admin_values

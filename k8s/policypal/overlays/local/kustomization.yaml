@@ -1,0 +1,22 @@
+# The local k3d cluster (make cluster-up): the same objects as aws, tested here first. k3d's load balancer
+# maps localhost:8080 to Traefik, which also serves the v1 app, so PolicyPal gets its own host name:
+# http://policypal.localhost:8080
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+- ../../base
+
+# Quoted: a commit hash made only of digits would otherwise be a YAML number.
+images:
+- name: ghcr.io/toolikheng/policypal
+  newTag: "16d4edb48b0508a75680831c186d435ae565bccf"
+
+patches:
+- target:
+    kind: Ingress
+    name: policypal
+  patch: |-
+    - op: add
+      path: /spec/rules/0/host
+      value: policypal.localhost

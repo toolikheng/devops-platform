@@ -1,0 +1,18 @@
+# PolicyPal on k3s: Postgres + pgvector, the API and the Streamlit UI, with only the UI behind Traefik.
+# The overlays add the image tag (local = k3d, aws = the EC2 node). The Secrets policypal-db and
+# policypal-admin are not here: scripts/policypal-secrets.sh creates them in the cluster.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: policypal
+
+labels:
+- pairs:
+    app.kubernetes.io/part-of: policypal
+
+resources:
+- namespace.yaml
+- postgres.yaml
+- api.yaml
+- ui.yaml
+- ingress.yaml

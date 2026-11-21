@@ -48,6 +48,11 @@ make destroy        # delete the cluster and the nodes
 | kubectl works only through a tunnel | Live: `make cloud-tunnel` forwards the node's 6443 to `localhost:16443` through Session Manager, and `kubectl get nodes` showed the node Ready with TLS verified. The kubeconfig Ansible writes is mode 600 and outside the repo. |
 | One command from nothing to a Ready cluster | Live: after a destroy, the stack was applied and configured straight away with no manual step; the node was Ready 175 s after the apply started, and a second run reported `changed=0`. Destroy and a clean `make cost-check` followed. |
 | The rules for the AWS node's Ansible code hold | 13 pytest rules (Session Manager only, `ubuntu` with sudo, root login off on AWS but unchanged for the homelab, k3s pinned and its installer checksum-checked, Secrets encryption, the k3s role touching only the node, the kubeconfig copied without logging into a 600 file pointing at the tunnel, pipelining, check mode) and 18 tests of the Make targets against fake `terraform`, `aws` and `ansible-playbook`. A mutation check broke 45 rules one at a time; every one was caught. The laptop-side kubeconfig steps were also run on their own against a temporary home directory: a missing `~/.kube` is created 700, an existing one is left alone, and a second run changes nothing. ansible-lint passes on its strictest profile. |
+| PolicyPal runs on AWS and answers correctly | Live, on a c7i-flex.large Spot node: `make cloud-deploy` applied the manifests, waited for every rollout and passed the smoke test 6/6 (`/health` ok in extractive mode with every policy loaded, golden question g04 answered from Leave Policy 6.3, g41 refused). In my browser, g04 cited "sibling or grandparent: 1 day" from Leave Policy 6.3 and g41 was refused. Measured on the node: 1748 of 3812 MiB used, the API peaking at 827 MiB. |
+| Only the UI is reachable | Live, from my laptop: `/docs`, `/openapi.json` and `/health` on port 80 return Streamlit's page, never the API's Swagger page or schema (the smoke test checks the content, because Streamlit answers 200 for any path). 22, 443, 5432, 6443, 8000, 8501, 9100, 10250 and 30080 got no connection. |
+| A rebuilt node fills itself | Live: after a destroy, apply → `make cloud-config` → `make cloud-deploy` on a new node with new random Secrets; the API ingested all 8 policies (119 chunks) by itself and the smoke test passed 4 min 1 s after the apply started. |
+| A failed deploy rolls back | On k3d: a deploy with an image tag that doesn't exist timed out, both Deployments went back to their previous revision, and the smoke test passed again. 49 tests run the deploy, smoke-test and Secrets scripts against fake `kubectl`, `curl` and `docker`: every failing check fails the smoke test, the smoke test stops if its own port-forward doesn't start (so it can never test some other cluster), only Deployments this deploy changed are rolled back, every namespaced `kubectl` call targets `policypal`, the Secrets created hold exactly the keys the manifests reference, and Secret values never appear in arguments or output. |
+| The PolicyPal manifests follow the project rules | Both overlays are rendered with a pinned kustomize and validated with kubeconform `-strict` against Kubernetes 1.36. 51 pytest rules on the rendered YAML: requests and a memory limit everywhere, probes (API health for readiness only), a rollout deadline no shorter than the deploy script's timeout, pinned and quoted image tags, no Secret objects, one API replica with `Recreate`, extractive mode, persistent uploads, Secrets referenced key by key, ClusterIP Services only, an ingress that reaches only the UI, non-root pods with no capabilities and no service account token. A mutation check broke 91 rules one at a time across the manifests, scripts and Make targets; every one was caught. |
 | The budget action blocks new spend, never clean-up | IAM policy simulator with the deny policy added to the admin user: starting instances, NAT gateways or RDS is explicitly denied. Terminating, deleting, detaching the policy and reading or writing the state file stay allowed. The action's role can only attach that one policy to that one user. |
 | Rolling restarts drop no requests | Continuous requests through the ingress during a rolling restart: 1,549 and 1,520 requests in two runs, 0 failures. Before the `preStop` delay was added, the same test failed 24 of 1,533 requests (502s and a timeout). |
 
@@ -121,8 +126,8 @@ Cost while the stack exists (ap-southeast-1, before tax). Nothing is billed once
 | Node | On-demand | Spot (typical) |
 |---|---|---|
 | t3.micro + public IPv4 + 20 GB gp3 | USD 0.021/h | USD 0.012/h |
-| t3.small + public IPv4 + 20 GB gp3 (default) | USD 0.034/h | USD 0.019/h |
-| c7i-flex.large + public IPv4 + 20 GB gp3 | USD 0.105/h | USD 0.061/h |
+| t3.small + public IPv4 + 20 GB gp3 | USD 0.034/h | USD 0.019/h |
+| c7i-flex.large + public IPv4 + 20 GB gp3 (default) | USD 0.105/h | USD 0.061/h |
 
 See [ADR 008](docs/decisions/008-k3s-on-ec2-over-eks.md) (k3s on EC2, not EKS), [ADR 009](docs/decisions/009-spot-and-on-demand.md) (Spot and on-demand), [ADR 010](docs/decisions/010-public-subnet-without-nat.md) (network and access) and the live results in [docs/aws-test-log.md](docs/aws-test-log.md).
 
@@ -134,8 +139,20 @@ See [ADR 008](docs/decisions/008-k3s-on-ec2-over-eks.md) (k3s on EC2, not EKS), 
 - **Same roles as the homelab:** `PermitRootLogin` and the login banner became variables. The homelab keeps root login with keys; the AWS node turns root login off.
 - **One command:** `make cloud-rebuild` (cloud-up, then cloud-config) goes from nothing to a Ready node in about three minutes.
 
+#### PolicyPal on the node
+[PolicyPal](https://github.com/toolikheng/policypal-hr-rag), my HR-policy question-answering app, runs on the k3s node from its public GHCR image, with no changes to its repository.
+- **Manifests** (`k8s/policypal/`): one kustomize base and two overlays, `local` (k3d, tested first) and `aws`, which deploy the same objects and pin the same image commit.
+  - **Postgres + pgvector** as a one-replica StatefulSet with a 5Gi volume, not RDS ([ADR 014](docs/decisions/014-postgres-in-the-cluster.md)).
+  - **The API**: one replica, replaced with `Recreate` (one process owns the upload lock and the uploads volume). `LLM_PROVIDER=extractive`: no LLM on AWS, answers quote the policy text. A startup probe allows six minutes for migrations, ingestion and the embedding model; `/health` is used for readiness only, because it returns 503 whenever the database is down.
+  - **The UI** (Streamlit) is the only thing behind Traefik. The API is ClusterIP, so its Swagger page and admin endpoints can't be reached from outside ([ADR 015](docs/decisions/015-only-the-ui-is-exposed.md)).
+  - Pods run as non-root with no capabilities and no service account token. Requests and limits come from measurements (API 1016 MiB peak on k3d, 827 MiB on AWS).
+- **Secrets**: `policypal-db` and `policypal-admin` are created in the cluster with random values by `scripts/policypal-secrets.sh`, once; the manifests only reference them.
+- **Deploy** (`make policypal-local`, `make cloud-deploy`): render with the pinned kustomize the checks use, apply, wait for every rollout, then the smoke test. If anything fails, each Deployment this deploy changed goes back to its previous revision.
+- **Smoke test** (`scripts/smoke-test.sh`): `/health`, one answered and cited question and one refusal from PolicyPal's golden set, through `kubectl port-forward` to the API; then the UI through the ingress, and that the API's pages are not reachable there.
+- **Sizing**: with PolicyPal running, the node uses about 1.75 GiB, more than a t3.small has, so the default node is a c7i-flex.large (4 GiB).
+
 ### CI/CD (GitHub Actions)
-- On every push and pull request: lint, tests, alert-rule tests, hadolint, repo-level tests, ShellCheck, the Ansible checks and the offline Terraform checks, then build and Trivy scan.
+- On every push and pull request: lint, tests, alert-rule tests, hadolint, repo-level tests, ShellCheck, the Kubernetes checks (kustomize + kubeconform), the Ansible checks and the offline Terraform checks, then build and Trivy scan.
 - On master: the image is pushed to GHCR as `master` and `sha-<commit>`. Actions are pinned to current major versions; trivy-action is pinned to a commit SHA.
 - Manual CD with an ephemeral k3d cluster and a smoke test.
 
@@ -192,9 +209,13 @@ make cloud-config          # AWS: configure the node with Ansible over Session M
 make cloud-tunnel          # AWS: forward the node's Kubernetes API to localhost:16443 (leave it open; Ctrl-C closes it)
 make cloud-rebuild         # AWS: cloud-up, then cloud-config
 make ansible-check         # ansible-lint and syntax checks on both playbooks (offline)
+make k8s-check             # render both PolicyPal overlays (pinned kustomize) and validate them with kubeconform -strict
+make policypal-local       # PolicyPal on k3d: random Secrets (once), deploy, smoke test -> http://policypal.localhost:8080
+make cloud-deploy          # AWS: the same on the node (needs make cloud-tunnel running); rolls back if the smoke test fails
+make cloud-smoke           # AWS: only the smoke test
 ```
 
-The node is a t3.small on Spot by default; `make cloud-up CLOUD_ARGS='-var use_spot=false'` starts it on-demand. With the tunnel open: `KUBECONFIG=~/.kube/devops-aws.yaml kubectl get nodes`. A shell on the node: `aws ssm start-session --target "$(cd terraform/envs/aws && terraform output -raw instance_id)"`.
+The node is a c7i-flex.large on Spot by default (k3s plus PolicyPal need more than a t3.small's 2 GiB); `make cloud-up CLOUD_ARGS='-var use_spot=false'` starts it on-demand. With the tunnel open: `KUBECONFIG=~/.kube/devops-aws.yaml kubectl get nodes`. A shell on the node: `aws ssm start-session --target "$(cd terraform/envs/aws && terraform output -raw instance_id)"`.
 
 Grafana and Prometheus are reached with a port-forward:
 
@@ -208,7 +229,7 @@ kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:909
 
 - WSL2 Ubuntu 24.04 with Docker Desktop (WSL integration on). Developed and tested on a machine with 8 CPUs and 11 GB RAM.
 - `git`, `make`, `curl`, `jq`, `openssl`, `ansible`, `python3` with the venv module, `docker`, `kubectl`, `k3d`, `helm`, and an SSH key at `~/.ssh/id_ed25519`. `make check` lists what's missing; `make install` apt-installs the packages it can (with sudo), creates the SSH key, and links to installers for the rest.
-- hadolint, Trivy, promtool, yq, ShellCheck, gitleaks and tflint don't need installing: they run as pinned Docker images.
+- hadolint, Trivy, promtool, yq, ShellCheck, gitleaks, tflint, kustomize and kubeconform don't need installing: they run as pinned Docker images.
 - For the AWS work (in progress): AWS CLI v2.32 or newer (for `aws login`), the Session Manager plugin, and Terraform 1.11 or newer. `make ansible-check` needs ansible-lint (`pipx install ansible-lint`).
 - Host port 8080 free (the k3d load balancer).
 
@@ -218,12 +239,12 @@ kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:909
 - `ansible/` — inventories (`docker-nodes.yml`; `aws.yml` is generated per session), playbooks (`site.yml` for the homelab, `aws-node.yml` for EC2), roles `common`, `node_exporter` and `k3s`, and `requirements.yml` for the one collection used
 - `infra/nodes/` — node image, startup script, Docker Compose file
 - `app/` — FastAPI service, tests, Dockerfile
-- `k8s/` — kustomize base and `dev` / `prod` overlays
+- `k8s/` — the v1 app's kustomize base and `dev` / `prod` overlays; `k8s/policypal/` — PolicyPal's base (Postgres, API, UI, ingress) and `local` / `aws` overlays
 - `monitoring/` — Helm values, ServiceMonitor, alert rules and their tests, dashboard
 - `backup/` — backup CronJob, restore Job, restore test
-- `ci/` — scripts shared by the Makefile and GitHub Actions (lint, test, rule tests, build, scan, ShellCheck, gitleaks, Terraform and Ansible checks)
-- `scripts/` — toolchain check (`bootstrap.sh`), the read-only AWS cost check (`cost-check.sh`), `owner-ip.sh`, `ephemeral-tf.sh` (the Terraform run behind `make cloud-up` / `cloud-down`), `node-id.sh` and `aws-inventory.sh` (behind `make cloud-config`) and `cloud-tunnel.sh`
-- `tests/` — repo-level tests: the cost check (against a fake `aws` CLI), the AWS session Make targets (against fake `terraform`, `aws`, `curl` and `ansible-playbook`), the rules for the AWS node's Ansible code, the scripts' copies of shared Terraform names, and the `.gitignore` rules
+- `ci/` — scripts shared by the Makefile and GitHub Actions (lint, test, rule tests, build, scan, ShellCheck, gitleaks, Terraform, Kubernetes and Ansible checks)
+- `scripts/` — toolchain check (`bootstrap.sh`), the read-only AWS cost check (`cost-check.sh`), `owner-ip.sh`, `ephemeral-tf.sh` (the Terraform run behind `make cloud-up` / `cloud-down`), `node-id.sh` and `aws-inventory.sh` (behind `make cloud-config`), `cloud-tunnel.sh`, and for PolicyPal `render-k8s.sh`, `policypal-secrets.sh`, `deploy-policypal.sh`, `smoke-test.sh` and `node-ip.sh`
+- `tests/` — repo-level tests: the cost check (against a fake `aws` CLI), the AWS session Make targets (against fake `terraform`, `aws`, `curl` and `ansible-playbook`), the rules for the AWS node's Ansible code, the rules for the rendered PolicyPal manifests, the PolicyPal scripts and Make targets (against fake `kubectl`, `curl`, `docker`, `k3d` and `terraform`), the scripts' copies of shared Terraform names, and the `.gitignore` rules
 - `.github/workflows/` — CI on every push, manual CD
 - `docs/` — architecture, decisions, runbook, fresh-clone test log
 
@@ -234,7 +255,10 @@ kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:909
 - **One snapshot per day.** Retention keeps the newest snapshot of each day, so a manual backup (or `make restore-test`) replaces that day's scheduled one.
 - **SQLite means one replica.** The dev overlay runs a single pod; scaling out needs a different database.
 - **`make restore-test` changes the dev database.** It wipes and restores `/data/app.db`, and leaves its test items behind. Run it only against a dev cluster.
-- **The AWS node runs an empty k3s so far.** The app comes in a later phase. It is a single instance with no high availability, and a Spot interruption takes it away until `make cloud-rebuild` (about three minutes).
+- **The AWS node is one instance, and its data lasts one session.** There is no high availability; a Spot interruption takes it away until `make cloud-rebuild` and `make cloud-deploy` (about four minutes). PolicyPal's Postgres and uploads live on the node's disk, so anything uploaded is lost at `make cloud-down` until backups arrive ([ADR 014](docs/decisions/014-postgres-in-the-cluster.md)).
+- **PolicyPal's Secrets are temporary.** `scripts/policypal-secrets.sh` creates random values in the cluster with `kubectl`; they move to SSM Parameter Store and External Secrets Operator in the next phase.
+- **A PolicyPal deploy stops the API first.** It is one process with one uploads volume (`Recreate`), so the API is briefly down on every change, and stays down until the rollback if the new version fails. The UI keeps running.
+- **The chat widget doesn't work on AWS.** It calls the API from the browser, and only the UI is published ([ADR 015](docs/decisions/015-only-the-ui-is-exposed.md)).
 - **`--check` can't preview a fresh AWS node.** Check mode stops at the first task that needs an earlier change (it only pretends to create directories). On a configured node it works and shows drift.
 - **The prod overlay is a template.** It renders and points at an image CI really pushes, but it isn't deployed anywhere, and neither is anything outside this one machine.
 
@@ -256,11 +280,12 @@ More in [docs/runbook.md](docs/runbook.md).
 - In Prometheus, the shape of a query matters as much as the metric. A ratio without `sum()` divides each series by itself, and an alert on `up == 0` stays silent when the target disappears entirely.
 - A backup only counts once a restore has been shown to bring the data back, and shown to fail when it doesn't.
 - "Zero-downtime rolling updates" needs measuring, not assuming. Kubernetes sends SIGTERM at the same moment it starts removing the pod from the Service, and the ingress takes a moment to notice; a short `preStop` sleep closes that gap.
+- A test path needs testing too. My first PolicyPal smoke test called the API through the Kubernetes API server with `kubectl create --raw`, which looked neat and failed on the first real run: kubectl sends no `Content-Type`, so FastAPI rejected every question. `kubectl -v=9` showed it in a minute; running on k3d first meant it cost nothing.
 
 ## Next steps
 
 - Off-site backups: copy the restic repository to object storage.
-- Finish the AWS environment: PolicyPal on the k3s node, secrets from SSM Parameter Store, and CI/CD that authenticates to AWS with OIDC.
+- Finish the AWS environment: PolicyPal's secrets from SSM Parameter Store, CI/CD that authenticates to AWS with OIDC, and monitoring and backups on the node.
 - Loki for logs; cert-manager and TLS.
 - Pull-based CD into a long-lived cluster.
 

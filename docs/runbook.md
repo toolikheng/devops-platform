@@ -201,7 +201,7 @@ At USD 15 actual spend in a month, AWS Budgets attaches `devops-platform-deny-ne
 
 ## AWS working session (ephemeral stack)
 
-Everything billed by the hour lives in `terraform/envs/aws` and exists only during a session. The default node is a t3.small on Spot: about USD 0.019/h, or USD 0.034/h on-demand (instance, public IPv4 and volume together).
+Everything billed by the hour lives in `terraform/envs/aws` and exists only during a session. The default node is a c7i-flex.large on Spot: about USD 0.061/h, or USD 0.105/h on-demand (instance, public IPv4 and volume together).
 
 ```bash
 aws login --profile devops
@@ -211,8 +211,10 @@ make cloud-up                                    # stores your current IP, shows
 make cloud-config                                # Ansible over Session Manager: common, node_exporter, k3s (about 2 min)
 make cloud-tunnel                                # in a second terminal: localhost:16443 -> the node's 6443; Ctrl-C closes it
 KUBECONFIG=~/.kube/devops-aws.yaml kubectl get nodes
+make cloud-deploy                                # PolicyPal: Secrets, deploy, smoke test (see "PolicyPal" below)
 aws ssm start-session --target "$(cd terraform/envs/aws && terraform output -raw instance_id)"   # a shell, if needed
 # ... work ...
+# Ctrl-C in the tunnel's terminal first (see "Closing the tunnel")
 make cloud-down                                  # shows the destroy plan, asks, then runs cost-check
 ```
 
@@ -256,9 +258,13 @@ The `AWS-StartNonInteractiveCommand` document runs the command without a shell, 
 
 The tunnel isn't running. Start `make cloud-tunnel` in another terminal and leave it open. If it says the target is not connected, see the SSM agent section above.
 
+### The tunnel stops by itself after 20 minutes
+
+`Your session timed out due to inactivity and has been terminated.` Session Manager ends a session after 20 minutes with no traffic (the account's default idle timeout), and kubectl then gets "connection refused" on `127.0.0.1:16443`. Run `make cloud-tunnel` again. Nothing on the node is affected; the app keeps running.
+
 ### Closing the tunnel
 
-Press Ctrl-C in the tunnel's terminal: that ends the session on the AWS side too. Killing the plugin another way (closing the terminal, `kill`) can leave the session listed as active. It costs nothing, but to tidy up:
+Press Ctrl-C in the tunnel's terminal **before** `make cloud-down`: that ends the session on the AWS side too. If the node is destroyed first, the close never reaches AWS and the session stays listed as connected to the terminated instance (seen in C4). Killing the plugin another way (closing the terminal, `kill`) can do the same. It costs nothing, but to tidy up:
 
 ```bash
 aws ssm describe-sessions --state Active --query 'Sessions[].[SessionId,Target]' --output text
@@ -298,8 +304,62 @@ cd ansible && ansible-galaxy collection install /tmp/community-general.tar.gz -p
 
 ### A Spot apply fails
 
-- `InsufficientInstanceCapacity`: no Spot capacity for that type in the AZ. Use on-demand (`make cloud-up` without `CLOUD_ARGS`) or try again later.
+- `InsufficientInstanceCapacity`: no Spot capacity for that type in the AZ. Use on-demand (`make cloud-up CLOUD_ARGS='-var use_spot=false'`) or try again later.
 - A failed apply can leave a launched instance behind, marked *tainted* in the state. It is still billed, but Terraform knows about it: run `make cloud-down`, then `make cost-check`. If cost-check finds something Terraform does not know about, delete it in the console.
+
+## PolicyPal
+
+PolicyPal's manifests are in `k8s/policypal/` (base plus `local` and `aws` overlays). Always try a change on k3d first; it costs nothing.
+
+```bash
+make k8s-check                 # offline: render both overlays, kubeconform -strict
+make policypal-local           # k3d: cluster-up, Secrets (once), deploy, smoke test
+#   UI: http://policypal.localhost:8080
+make cloud-deploy              # AWS, with make cloud-tunnel running: Secrets (once), deploy, smoke test
+make cloud-smoke               # AWS: smoke test only
+#   UI: http://<public_ip from terraform output>/  (only your IP can reach it)
+```
+
+The deploy (`scripts/deploy-policypal.sh`) renders the overlay with the same pinned kustomize as the checks, applies it, waits for Postgres, the API and the UI (`ROLLOUT_TIMEOUT`, default 15m, covers the first image pull), then runs the smoke test. If the apply, a rollout or the smoke test fails, every Deployment whose revision this deploy changed is rolled back to the revision it had, and the script exits 1. Postgres is never rolled back. A first deploy has nothing to roll back to.
+
+To deploy another PolicyPal commit, change `newTag` in the overlay (keep the quotes: a hash of only digits would be a YAML number), run `make k8s-check`, then deploy on k3d first.
+
+Reach the API directly (it has no ingress on purpose):
+
+```bash
+kubectl -n policypal port-forward svc/policypal-api 18000:8000    # http://127.0.0.1:18000/docs
+kubectl -n policypal get secret policypal-admin -o jsonpath='{.data.ADMIN_TOKEN}' | base64 -d; echo   # for the UI's admin page
+```
+
+Measure memory: `kubectl top pods -n policypal --containers`, and the peak since start for one container: `kubectl -n policypal exec deploy/policypal-api -- cat /sys/fs/cgroup/memory.peak`.
+
+### `deploy-policypal: Secrets policypal-db and policypal-admin are missing`
+
+Run `scripts/policypal-secrets.sh` against the same cluster (`make policypal-local` and `make cloud-deploy` do it for you). It never replaces an existing Secret: Postgres keeps the password it was first started with, so a new one would lock the API out. To start over on k3d, `kubectl delete namespace policypal` removes the data and the Secrets together.
+
+### The smoke test fails
+
+It prints one `PASS` or `FAIL` line per check and runs them all:
+
+- `/health did not answer 200`: the database is unreachable or not migrated. `kubectl -n policypal logs deploy/policypal-api` and `kubectl -n policypal logs statefulset/postgres`.
+- `/health` not ok, or policies not loaded: the API's JSON log lines `ingest.document` / `ingest.completed` say which file failed.
+- g04 not cited from Leave Policy 6.3, or g41 not refused: the image or `MIN_SIMILARITY` changed. Check the tag in the overlay.
+- `UI not healthy through the ingress`: on AWS, your IP may have changed (`make cloud-up` again); locally, the ingress needs the host `policypal.localhost`.
+- `kubectl port-forward to the API did not start`: kubectl can't reach the cluster (on AWS: is `make cloud-tunnel` running?) or the `policypal-api` Service is missing; kubectl's own error follows. The smoke test then stops, because without its own forward it can't be sure which API it would be talking to. It lets kubectl pick a free local port each time, so a forward you left open (like the one below) never gets in its way.
+
+### The first deploy on a new cluster is slow, or stops with `exceeded its progress deadline`
+
+A new cluster pulls the PolicyPal image (641 MB compressed) on every node that runs a PolicyPal pod. On k3d the first pull took between 2 minutes and 11 minutes in different runs, depending on the network and on other pulls on the same node. The local-path provisioner's helper pod can queue behind that pull and fail with `create process timeout after 120 seconds`; it retries on its own, so the Postgres volume is just late.
+
+The Deployments allow 15 minutes without progress (`progressDeadlineSeconds: 900`, the same as the deploy script's `ROLLOUT_TIMEOUT`); with the default of 10 minutes a slow pull stopped the deploy. If it still runs out, Kubernetes keeps pulling anyway: wait for the pods (`kubectl -n policypal get pods -w`), then run the deploy again. It has nothing to change and goes straight to the smoke test. For a known-slow network, `ROLLOUT_TIMEOUT=30m` gives the script more time (raise `progressDeadlineSeconds` with it).
+
+### A deploy rolled back
+
+`kubectl -n policypal get pods` and `kubectl -n policypal describe pod <name>` show why (often `ImagePullBackOff`: the tag doesn't exist on GHCR). kubectl warns that `rollout undo` doesn't update the last-applied annotation; the next deploy with a good tag sets it again. While a bad API version was being tried the API was down (`Recreate`); the UI kept serving.
+
+### `statefulset.apps/postgres configured` on every deploy
+
+Harmless. `kubectl apply` replaces `volumeClaimTemplates` as a whole, and the server adds default fields to it, so apply always sends a patch. The StatefulSet's generation doesn't change and Postgres isn't restarted; `kubectl diff -f <(bash scripts/render-k8s.sh aws)` shows nothing.
 
 ## Secret scanning
 
