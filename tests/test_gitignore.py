@@ -34,6 +34,8 @@ MUST_IGNORE = [
     "deploy-key.pem",
     "id_ed25519",
     "id_rsa",
+    # ansible-lint's cache of the collections in ansible/requirements.yml.
+    "ansible/.ansible/collections/ansible_collections/community/general/MANIFEST.json",
 ]
 
 MUST_KEEP = [

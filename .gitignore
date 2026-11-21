@@ -67,6 +67,8 @@ terraform.rc
 # Ansible
 *.retry
 .ansible-vault
+# ansible-lint's cache of the collections in ansible/requirements.yml
+.ansible/
 
 # SSH and private keys
 .ssh/

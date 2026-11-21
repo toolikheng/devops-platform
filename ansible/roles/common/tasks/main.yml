@@ -1,11 +1,11 @@
 ---
 - name: Update package cache
-  apt:
-    update_cache: yes
+  ansible.builtin.apt:
+    update_cache: true
     cache_valid_time: 3600
 
 - name: Install base packages
-  apt:
+  ansible.builtin.apt:
     name:
       - curl
       - wget
@@ -20,11 +20,11 @@
     state: present
 
 - name: Set timezone to UTC
-  timezone:
+  community.general.timezone:
     name: Etc/UTC  # canonical name; Debian's tzdata rewrites plain "UTC" to this, which the module sees as drift
 
 - name: Configure SSH hardening
-  lineinfile:
+  ansible.builtin.lineinfile:
     path: /etc/ssh/sshd_config
     regexp: "{{ item.regexp }}"
     line: "{{ item.line }}"
@@ -36,11 +36,12 @@
       line: "PubkeyAuthentication yes"
     - regexp: "^PasswordAuthentication"
       line: "PasswordAuthentication no"
-  notify: reload sshd
+  notify: Reload sshd
 
 - name: Create motd
-  copy:
+  ansible.builtin.copy:
     dest: /etc/motd
+    mode: "0644"
     content: |
       ╔═══════════════════════════════════════╗
       ║   DevOps Platform - Homelab Node      ║
@@ -48,7 +49,7 @@
       ╚═══════════════════════════════════════╝
 
 - name: Ensure sshd is running
-  service:
+  ansible.builtin.service:
     name: ssh
     state: started
-    enabled: yes
+    enabled: true

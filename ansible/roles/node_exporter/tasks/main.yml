@@ -1,20 +1,20 @@
 ---
 - name: Create node_exporter user
-  user:
+  ansible.builtin.user:
     name: "{{ node_exporter_user }}"
     shell: /usr/sbin/nologin
-    system: yes
-    create_home: no
+    system: true
+    create_home: false
 
 - name: Create install directory
-  file:
+  ansible.builtin.file:
     path: "{{ node_exporter_install_dir }}"
     state: directory
     mode: "0755"
 
 # Kept on disk (not in /tmp) so re-runs don't re-download; the checksum is verified against the release's sha256sums.
 - name: Download node_exporter
-  get_url:
+  ansible.builtin.get_url:
     url: "{{ node_exporter_base_url }}/{{ node_exporter_release }}.tar.gz"
     dest: "{{ node_exporter_install_dir }}/{{ node_exporter_release }}.tar.gz"
     checksum: "sha256:{{ node_exporter_base_url }}/sha256sums.txt"
@@ -22,21 +22,21 @@
     timeout: 30
 
 - name: Unpack node_exporter
-  unarchive:
+  ansible.builtin.unarchive:
     src: "{{ node_exporter_install_dir }}/{{ node_exporter_release }}.tar.gz"
     dest: "{{ node_exporter_install_dir }}"
-    remote_src: yes
+    remote_src: true
     creates: "{{ node_exporter_install_dir }}/{{ node_exporter_release }}/node_exporter"
 
 # Versioned directory + symlink: bumping node_exporter_version swaps the link and restarts the service.
 - name: Link node_exporter binary
-  file:
+  ansible.builtin.file:
     src: "{{ node_exporter_install_dir }}/{{ node_exporter_release }}/node_exporter"
     dest: /usr/local/bin/node_exporter
     state: link
-  notify: restart node_exporter
+  notify: Restart node_exporter
 
 # Real VMs use systemd; the Docker nodes have no systemd (sshd is PID 1), so they get a SysV init script.
 - name: Run node_exporter under the host's service manager
-  include_tasks:
+  ansible.builtin.include_tasks:
     file: "service-{{ 'systemd' if ansible_service_mgr == 'systemd' else 'sysvinit' }}.yml"
