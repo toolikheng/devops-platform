@@ -104,4 +104,66 @@ On the node, through `ansible -i ansible/inventory/aws.yml aws -m shell -a '...'
 
 Total for these runs: about USD 0.013 before tax.
 
+## PolicyPal on the node (Phase C4)
+
+### Local first (k3d, free)
+
+Everything below ran on the local k3d cluster before any AWS time: `make policypal-local` from a new cluster pulled the image (2 min 45 s for 641 MB), started the API (44 s from container start to Ready) and passed the smoke test. On the way it found three things, each fixed test-first:
+
+- **The first smoke test design failed.** `kubectl create --raw` through the API server's service proxy sends no `Content-Type`, so FastAPI rejected the JSON body with a 422 (`kubectl -v=9` showed the missing header). The smoke test now uses `kubectl port-forward` to the API Service and `curl` with the header.
+- **A test tag of forty zeros was read as a YAML number** and kustomize refused the file, so the deploy stopped before applying anything. Image tags are now quoted.
+- **The secrets script re-applied a bare Namespace** and stripped the label the manifests give it, so every deploy reported the namespace as changed. It now creates the namespace only if it's missing (with `--save-config`).
+
+The rollback was shown on k3d too: a tag that doesn't exist left the new pods in ImagePullBackOff, the rollout timed out, both Deployments went back to their previous revision and the smoke test passed again. The UI kept serving during the bad deploy; the API (`Recreate`) was down until the rollback.
+
+Memory on k3d (steady, then peak from the container's cgroup `memory.peak`): API 910 / 1016 MiB, UI 81 / 90 MiB, Postgres 71 / 101 MiB. With k3s and Ubuntu already using about 1.1 GiB of a t3.small's 2 GiB (C3), the default node became c7i-flex.large (4 GiB).
+
+### Steps
+
+```bash
+aws login --profile devops
+make cost-check
+make cloud-up                     # c7i-flex.large Spot by default
+make cloud-config
+make cloud-tunnel                 # second terminal; leave it open
+make cloud-deploy                 # Secrets, apply, wait, smoke test (rolls back on failure)
+# browser: http://<node-ip>/ -> ask g04 and g41
+# Ctrl-C in the tunnel terminal, then:
+make cloud-down
+make cloud-rebuild                # from nothing: cloud-up, then cloud-config
+make cloud-tunnel                 # second terminal again
+make cloud-deploy                 # the policies are ingested again by themselves
+make cloud-down
+```
+
+On the node: `kubectl top`, each container's cgroup `memory.peak`, and `free -m` / `df -h` through Ansible. From the laptop: `curl` on 80 for `/`, `/docs`, `/openapi.json`, `/health`, and connection attempts on 22, 443, 5432, 6443, 8000, 8501, 9100, 10250 and 30080.
+
+### Expected results
+
+| Check | Expected |
+|---|---|
+| `make cloud-deploy` | all rollouts finish; smoke test 6/6: `/health` ok in extractive mode with every policy loaded, g04 answered from Leave Policy 6.3, g41 refused, UI healthy through the ingress, no Swagger or API schema through it |
+| Browser (owner) | g04 cited from Leave Policy 6.3; g41 refused; `/docs` shows Streamlit, not Swagger |
+| Memory | fits a c7i-flex.large with room for monitoring in C7 |
+| Ports | only 80 answers |
+| Rebuild | a new node ingests the policies by itself and passes the smoke test with no manual step |
+| End | destroy, `make cost-check` exit 0, no active Session Manager sessions |
+
+### Result log
+
+| Date (MYT) | Run | Result | Notes |
+|---|---|---|---|
+| 2026-11-21 21:52 | Apply, c7i-flex.large Spot | Pass | 9 added in 26 s. Spot price USD 0.0528/h in ap-southeast-1a. |
+| 2026-11-21 21:53 | `make cloud-config` | Pass | 62 s, `changed=20`, `failed=0` (147 s on the t3.small in C3). |
+| 2026-11-21 21:54 | `make cloud-deploy` | Pass | 2 min 5 s including the image pulls (API image 35 s, the UI's copy 1 min 13 s in parallel, pgvector 8 s). Wait for Postgres 13 s, then 34 s from API start to Ready. Smoke test 6/6. kubectl warned that the namespace had no last-applied annotation; fixed afterwards with `--save-config` (`bab6a35`). |
+| 2026-11-21 21:57 | Memory and disk | Pass | Node: 3812 MiB, 1748 used, 2063 available. API 700 MiB steady, 827 MiB peak; UI 57 / 74 MiB; Postgres 39 / 95 MiB. Requests 1420 MiB (37%), limits 3242 MiB (85%). Disk 6.7 of 19 GB. A t3.small would not fit; c7i-flex.large leaves about 2 GiB. |
+| 2026-11-21 21:57 | Exposure | Pass | Port 80: `/`, `/docs`, `/openapi.json`, `/health` all returned Streamlit's page (200), never Swagger; `/_stcore/health` "ok". 22, 443, 5432, 6443, 8000, 8501, 9100, 10250, 30080: no connection. |
+| 2026-11-21 22:18 | Tunnel | Note | The tunnel closed itself: "Your session timed out due to inactivity" after 20 minutes without kubectl traffic (Session Manager's default idle timeout). Run `make cloud-tunnel` again. |
+| 2026-11-21 22:21 | Browser check | Pass | g04: answer cited from Leave Policy 6.3 ("sibling or grandparent: 1 day", score 0.80). g41: refused. `/docs`: Streamlit's "Page not found". |
+| 2026-11-21 22:23 | Destroy | Pass | 9 destroyed; cost-check clean. About USD 0.031. |
+| 2026-11-21 22:28 | Rebuild from nothing | Pass | Apply 26 s, `make cloud-config` 62 s, `make cloud-deploy` 2 min 2 s with new random Secrets: the API ingested all 8 policies (`ingest.completed`, 8 created), `/health` 8 documents and 119 chunks, nothing left unloaded; smoke test 6/6. **4 min 1 s from apply to a tested app.** |
+| 2026-11-21 22:39 | Destroy | Pass | 9 destroyed; cost-check clean. The tunnel was stopped only after the node was gone, so its session stayed listed as connected; terminated with `aws ssm terminate-session`. Close the tunnel before `make cloud-down`. About USD 0.011. |
+
+Total for these runs: about USD 0.042 before tax.
+
 Record each run here, including failures and what was changed.
