@@ -1,0 +1,7 @@
+# /etc/rancher/k3s/config.yaml, read by k3s when it starts. Each key is a k3s server flag.
+
+# Encrypt Secrets at rest in the cluster datastore (the key stays on the node).
+secrets-encryption: true
+# The admin kubeconfig holds cluster-admin credentials: readable by root only. Ansible copies it to the
+# laptop through the SSH session; the API port is never opened.
+write-kubeconfig-mode: "0600"

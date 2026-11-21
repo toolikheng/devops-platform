@@ -1,0 +1,16 @@
+---
+# How Ansible reaches the AWS node. scripts/aws-inventory.sh names the host by its instance ID, and SSH
+# runs inside a Session Manager session to that ID (AWS-StartSSHSession), so the security group has no
+# port 22. Two checks: IAM allows the session, then the key from the C2 key pair logs in as ubuntu.
+ansible_user: ubuntu
+ansible_become: true
+# A new node and host key every session. The SSM session already goes to this exact instance ID, checked
+# by AWS, so host keys are not recorded (as for the throwaway Docker nodes).
+ansible_ssh_common_args: >-
+  -o ProxyCommand="aws ssm start-session --region ap-southeast-1 --target %h
+  --document-name AWS-StartSSHSession --parameters portNumber=%p"
+  -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no
+ansible_python_interpreter: /usr/bin/python3
+
+common_permit_root_login: "no"
+common_motd_title: DevOps Platform - AWS Node

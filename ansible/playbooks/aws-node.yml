@@ -1,0 +1,34 @@
+---
+# Configures the AWS node (make cloud-config): the homelab's common and node_exporter roles, then k3s.
+# Ansible connects through Session Manager (inventory/group_vars/aws.yml).
+- name: Configure the AWS node
+  hosts: aws
+  gather_facts: false  # facts need a connection, which may not be ready yet
+
+  pre_tasks:
+    # The SSM agent registers about a minute after boot; until then the ProxyCommand fails.
+    - name: Wait for SSH over Session Manager
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+
+    # cloud-init may still be configuring the node (and holding the apt lock) on a fresh boot.
+    # Exit 2 means finished with recoverable warnings; only 1 is a failure.
+    - name: Wait for cloud-init to finish
+      ansible.builtin.command: cloud-init status --wait
+      register: cloud_init_status
+      changed_when: false
+      failed_when: cloud_init_status.rc not in [0, 2]
+
+    - name: Gather facts
+      ansible.builtin.setup:
+
+  roles:
+    - role: common
+      tags:
+        - common
+    - role: node_exporter
+      tags:
+        - monitoring
+    - role: k3s
+      tags:
+        - k3s

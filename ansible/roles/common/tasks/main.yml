@@ -31,7 +31,7 @@
     state: present
   with_items:
     - regexp: "^PermitRootLogin"
-      line: "PermitRootLogin without-password"
+      line: "PermitRootLogin {{ common_permit_root_login }}"
     - regexp: "^PubkeyAuthentication"
       line: "PubkeyAuthentication yes"
     - regexp: "^PasswordAuthentication"
@@ -44,7 +44,7 @@
     mode: "0644"
     content: |
       ╔═══════════════════════════════════════╗
-      ║   DevOps Platform - Homelab Node      ║
+      ║   {{ '%-36s' | format(common_motd_title) }}║
       ║   Managed by Ansible                  ║
       ╚═══════════════════════════════════════╝
 

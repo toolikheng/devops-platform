@@ -4,7 +4,7 @@
         cluster-up cluster-down deploy \
         monitoring-up monitoring-down \
         backup restore-test \
-        test-infra cost-check tf-check owner-ip cloud-up cloud-down \
+        test-infra cost-check tf-check ansible-check owner-ip cloud-up cloud-down \
         cloud-config cloud-tunnel cloud-rebuild \
         destroy all clean
 
@@ -98,6 +98,7 @@ help:
 	@$(ECHO) "$(BLUE)AWS (v2):$(NC)"
 	@$(ECHO) "  $(GREEN)make cost-check$(NC)    Read-only scan for billable AWS leftovers (all regions)"
 	@$(ECHO) "  $(GREEN)make tf-check$(NC)      Offline Terraform checks: fmt, validate, test, tflint, trivy"
+	@$(ECHO) "  $(GREEN)make ansible-check$(NC) Offline Ansible checks: ansible-lint, syntax-check (both playbooks)"
 	@$(ECHO) "  $(GREEN)make owner-ip$(NC)      Store your public IP (/32) for the node's firewall (AWS write)"
 	@$(ECHO) "  $(GREEN)make cloud-up$(NC)      Store your IP, then create the ephemeral stack (asks before applying; billed hourly)"
 	@$(ECHO) "  $(GREEN)make cloud-down$(NC)    Destroy the ephemeral stack (asks first), then run cost-check"
@@ -270,6 +271,9 @@ restore-test:
 # Offline: no AWS credentials needed (backends skipped, tests use mock providers).
 tf-check:
 	@bash "$(CI_DIR)/terraform-checks.sh"
+
+ansible-check:
+	@bash "$(CI_DIR)/ansible-checks.sh"
 
 # Read-only: describe/list/get calls only, never the Cost Explorer API. Exit 1 if anything billable is left.
 cost-check:

@@ -1,0 +1,91 @@
+---
+# Single-server k3s with its bundled Traefik, ServiceLB, local-path storage and metrics-server, then a
+# copy of the admin kubeconfig on the laptop that points at the SSM tunnel (make cloud-tunnel).
+
+- name: Create the k3s config directory
+  ansible.builtin.file:
+    path: /etc/rancher/k3s
+    state: directory
+    mode: "0755"
+
+- name: Write the k3s config
+  ansible.builtin.copy:
+    src: config.yaml
+    dest: /etc/rancher/k3s/config.yaml
+    mode: "0600"
+  notify: Restart k3s
+
+# Pinned to the release tag and checked against a recorded sha256, so a changed script never runs.
+- name: Download the k3s install script for the pinned release
+  ansible.builtin.get_url:
+    url: "https://raw.githubusercontent.com/k3s-io/k3s/{{ k3s_version }}/install.sh"
+    dest: /usr/local/lib/k3s-install.sh
+    checksum: "sha256:{{ k3s_install_script_sha256 }}"
+    mode: "0755"
+
+# Read-only, so it also runs in check mode; rc != 0 means k3s is not installed yet.
+- name: Read the installed k3s version
+  ansible.builtin.command: /usr/local/bin/k3s --version
+  register: k3s_installed
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+# Runs only when the pinned version is not the one installed (first run, or after a version bump).
+- name: Install k3s {{ k3s_version }}
+  ansible.builtin.command: /usr/local/lib/k3s-install.sh
+  environment:
+    INSTALL_K3S_VERSION: "{{ k3s_version }}"
+  when: k3s_version not in k3s_installed.stdout | default('')
+  changed_when: true
+
+- name: Restart k3s now if its config changed
+  ansible.builtin.meta: flush_handlers
+
+# Retried because just after a (re)start the node object may not exist yet, and `kubectl wait` fails at
+# once with "no matching resources" instead of waiting.
+- name: Wait for the node to be Ready
+  ansible.builtin.command: /usr/local/bin/k3s kubectl wait --for=condition=Ready node --all --timeout=30s
+  register: k3s_node_ready
+  until: k3s_node_ready.rc == 0
+  retries: 10
+  delay: 5
+  changed_when: false
+
+# slurp + copy rather than fetch: the laptop copy is edited (tunnel port), so fetch would see a
+# difference and download it again on every run, and the playbook would never reach changed=0.
+- name: Read the admin kubeconfig
+  ansible.builtin.slurp:
+    src: /etc/rancher/k3s/k3s.yaml
+  register: k3s_admin_kubeconfig
+  no_log: true  # cluster-admin client key
+  when: not ansible_check_mode or k3s_installed.rc | default(1) == 0
+
+- name: Check for ~/.kube on this machine
+  ansible.builtin.stat:
+    path: "{{ k3s_kubeconfig_path | dirname }}"
+  register: k3s_kube_dir
+  delegate_to: localhost
+  become: false
+
+# Created only if missing, so an existing ~/.kube (used by k3d) keeps its permissions.
+- name: Create ~/.kube on this machine
+  ansible.builtin.file:
+    path: "{{ k3s_kubeconfig_path | dirname }}"
+    state: directory
+    mode: "0700"
+  delegate_to: localhost
+  become: false
+  when: not k3s_kube_dir.stat.exists
+
+- name: Save the kubeconfig on this machine, pointing at the tunnel
+  ansible.builtin.copy:
+    content: >-
+      {{ k3s_admin_kubeconfig.content | b64decode
+         | replace('https://127.0.0.1:6443', 'https://127.0.0.1:' ~ k3s_kubeconfig_local_port) }}
+    dest: "{{ k3s_kubeconfig_path }}"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  no_log: true  # cluster-admin client key
+  when: k3s_admin_kubeconfig is not skipped
