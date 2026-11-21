@@ -36,7 +36,8 @@ ANSWER_G41 = {"mode": "refused", "refused": True, "answer": "I couldn't find thi
               "citations": []}
 UI_URL = "http://203.0.113.20"
 MANIFEST = "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: policypal\n"
-API = "http://127.0.0.1:18000"  # smoke-test.sh's end of the port-forward
+FORWARD_PORT = "41234"  # the local port the fake `kubectl port-forward` says it picked
+API = f"http://127.0.0.1:{FORWARD_PORT}"
 
 FAKE = r'''#!/usr/bin/env python3
 import json, os, sys
@@ -76,8 +77,12 @@ if tool == "kubectl":
     if a[:2] == ["get", "deployment"] and any("revision" in x for x in a):
         when = "after" if (d / "applied").exists() else "before"
         answer(f"rev-{a[2]}-{when}", 1)
-    if a[:2] == ["create", "namespace"]:
-        print("apiVersion: v1\nkind: Namespace\nmetadata:\n  name: policypal")
+    if a[:1] == ["port-forward"]:
+        if (d / "fail-port-forward").exists():
+            print('error: services "policypal-api" not found', file=sys.stderr)
+            sys.exit(1)
+        port = (d / "forward-port").read_text()
+        print(f"Forwarding from 127.0.0.1:{port} -> 8000\nForwarding from [::1]:{port} -> 8000")
     sys.exit(0)
 if tool == "curl":
     url = [x for x in args if x.startswith("http")][0]
@@ -113,6 +118,7 @@ class Fakes:
             path.write_text(FAKE)
             path.chmod(0o755)
         self.write("manifest", MANIFEST)
+        self.write("forward-port", FORWARD_PORT)
         self.write("tf-public_ip", "203.0.113.20")
         self.api(health=HEALTH_OK, g04=ANSWER_G04, g41=ANSWER_G41)
         self.ui(health="ok", docs="<html>Streamlit</html>", openapi="<html>Streamlit</html>")
@@ -266,7 +272,7 @@ def test_smoke_test_passes_on_a_healthy_deployment(fakes: Fakes) -> None:
 def test_smoke_test_calls_the_api_through_a_port_forward_to_its_service(fakes: Fakes) -> None:
     # The API has no ingress and no open port: kubectl forwards a local port to its ClusterIP Service.
     fakes.script("smoke-test.sh", UI_URL)
-    assert fakes.kubectl("port-forward", "svc/policypal-api", "18000:8000")
+    assert fakes.kubectl("port-forward", "svc/policypal-api", ":8000"), "kubectl picks a free local port"
     curls = [c["args"] for c in fakes.calls("curl")]
     assert any(f"{API}/health" in a for a in curls)
     asks = [a for a in curls if f"{API}/ask" in a]
@@ -275,6 +281,24 @@ def test_smoke_test_calls_the_api_through_a_port_forward_to_its_service(fakes: F
         assert "Content-Type: application/json" in a, "FastAPI reads the body as JSON only with this header"
     bodies = [json.loads(a[a.index("-d") + 1]) for a in asks]
     assert sorted(b["question"] for b in bodies) == sorted([G04, G41])
+
+
+def test_smoke_test_uses_the_port_kubectl_picked(fakes: Fakes) -> None:
+    fakes.write("forward-port", "45678")
+    result = fakes.script("smoke-test.sh", UI_URL)
+    assert result.returncode == 0, output(result)
+    api_urls = {a for c in fakes.calls("curl") for a in c["args"] if a.startswith("http://127.0.0.1")}
+    assert api_urls == {"http://127.0.0.1:45678/health", "http://127.0.0.1:45678/ask"}
+
+
+def test_smoke_test_fails_when_the_port_forward_does_not_start(fakes: Fakes) -> None:
+    # Then nothing must be asked on localhost: whatever else listens there (another forward, maybe to another
+    # cluster) would answer, and the checks would pass for the wrong cluster.
+    fakes.flag("fail-port-forward")
+    result = fakes.script("smoke-test.sh", UI_URL)
+    assert result.returncode != 0
+    assert "port-forward" in output(result)
+    assert not [c for c in fakes.calls("curl") if any(a.startswith("http://127.0.0.1") for a in c["args"])]
 
 
 def test_smoke_test_checks_the_ui_through_the_ingress(fakes: Fakes) -> None:

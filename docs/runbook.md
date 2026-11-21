@@ -345,7 +345,7 @@ It prints one `PASS` or `FAIL` line per check and runs them all:
 - `/health` not ok, or policies not loaded: the API's JSON log lines `ingest.document` / `ingest.completed` say which file failed.
 - g04 not cited from Leave Policy 6.3, or g41 not refused: the image or `MIN_SIMILARITY` changed. Check the tag in the overlay.
 - `UI not healthy through the ingress`: on AWS, your IP may have changed (`make cloud-up` again); locally, the ingress needs the host `policypal.localhost`.
-- `/ask failed` right after a deploy that worked before: is something else using local port 18000? Set `SMOKE_API_PORT`.
+- `kubectl port-forward to the API did not start`: kubectl can't reach the cluster (on AWS: is `make cloud-tunnel` running?) or the `policypal-api` Service is missing; kubectl's own error follows. The smoke test then stops, because without its own forward it can't be sure which API it would be talking to. It lets kubectl pick a free local port each time, so a forward you left open (like the one below) never gets in its way.
 
 ### A deploy rolled back
 
