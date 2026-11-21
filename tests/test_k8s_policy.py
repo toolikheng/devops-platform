@@ -128,7 +128,7 @@ def test_every_container_has_readiness_and_liveness_probes(rendered: dict, overl
 
 @overlay_param
 def test_api_start_up_has_a_long_startup_probe(rendered: dict, overlay: str) -> None:
-    # Migrations, ingesting every policy and loading the embedding model take ~80 s on a laptop; allow 5 min+.
+    # Migrations, ingesting every policy and loading the embedding model: measured 34-44 s; allow 5 min+.
     probe = container(api(rendered[overlay]), "api")["startupProbe"]
     assert probe["periodSeconds"] * probe["failureThreshold"] >= 300
 

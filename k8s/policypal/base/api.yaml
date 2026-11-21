@@ -92,8 +92,8 @@ spec:
             secretKeyRef:
               name: policypal-admin
               key: ADMIN_TOKEN
-        # Migrations, ingestion and loading the embedding model take about 80 s on a laptop. Up to 6 minutes
-        # here; liveness and readiness only start once the port is open.
+        # Migrations, ingestion and loading the embedding model: measured 44 s on k3d and 34 s on AWS. Up to
+        # 6 minutes here for a slow first start; liveness and readiness only start once the port is open.
         startupProbe:
           tcpSocket:
             port: 8000

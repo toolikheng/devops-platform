@@ -11,7 +11,7 @@ echo "=== Running Kubernetes checks ==="
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 KUBECONFORM_IMAGE="ghcr.io/yannh/kubeconform:v0.8.0"
-KUBERNETES_VERSION="1.36.6" # same minor as k3s on the AWS node (ansible/roles/k3s/defaults/main.yml)
+KUBERNETES_VERSION="1.36.6" # same version as k3s on the AWS node (ansible/roles/k3s/defaults/main.yml; a test checks)
 
 for overlay in local aws; do
   echo "--- k8s/policypal/overlays/$overlay: kustomize build | kubeconform"
