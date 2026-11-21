@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ephemeral-tf.sh - run one Terraform command in the ephemeral stack (terraform/envs/aws).
 #
-# Used by `make cloud-up` (apply) and `make cloud-down` (destroy). Extra arguments go straight to
-# Terraform, e.g. `apply -var use_spot=false`. Terraform shows its plan and waits for "yes": never pass
+# Used by `make cloud-up` (apply), `make cloud-down` (destroy) and node-id.sh (`output`, read-only).
+# Extra arguments go straight to Terraform, e.g. `apply -var use_spot=false`. Terraform shows its plan and waits for "yes": never pass
 # -auto-approve. The SSH public key reaches Terraform as TF_VAR_ssh_public_key; Ansible uses it through
 # Session Manager from Phase C3.
 set -euo pipefail
