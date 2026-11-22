@@ -524,7 +524,7 @@ No running instance carries `Project=devops-platform` and `Stack=ephemeral`: cre
 
 ### The nightly destroy didn't run
 
-GitHub can start scheduled runs late or skip them under load, and disables schedules after 60 days without repository activity (`gh workflow enable nightly-destroy.yml`). The budget alerts and `make cost-check` are the backup; `gh workflow run nightly-destroy.yml` or `make cloud-down` destroys now.
+GitHub can start scheduled runs late or skip them under load, and disables schedules after 60 days without repository activity (`gh workflow enable nightly-destroy.yml`). It happened on the first night (2026-11-23): no run at all. Check with `gh run list --workflow nightly-destroy.yml --event schedule` (an empty list after 02:00 MYT means it never started). The budget alerts and `make cost-check` are the backup; `gh workflow run nightly-destroy.yml` or `make cloud-down` destroys now.
 
 ## Secret scanning
 
