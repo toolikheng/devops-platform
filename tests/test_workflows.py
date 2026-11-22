@@ -276,7 +276,18 @@ def test_deploy_takes_a_full_policypal_commit_and_checks_it_before_any_aws_acces
     assert role_of(deploy) == "gha-deploy"
     assert deploy["concurrency"] == {"group": "aws-deploy", "cancel-in-progress": False}
     assert any(line.startswith("bash ci/deploy-over-ssm.sh") for line in runs(deploy))
-    assert "needs.render.outputs.manifests" in str(deploy.get("env", {})), "exactly the YAML the render job checked"
+
+
+def test_the_manifests_are_only_in_the_step_that_sends_them() -> None:
+    # GitHub prints a job's env in every step's header: as job env, the encoded YAML filled the log 4 times
+    # (live run 45039639528). Not secret (the public repo's manifests), but noise.
+    deploy = jobs_of(DEPLOY)["deploy"]
+    assert "MANIFESTS" not in deploy.get("env", {})
+    holders = [s for s in steps(deploy) if "MANIFESTS" in s.get("env", {})]
+    assert len(holders) == 1, "exactly one step gets the manifests"
+    [step] = holders
+    assert step["env"]["MANIFESTS"] == "${{ needs.render.outputs.manifests }}", "exactly the YAML the render job checked"
+    assert "bash ci/deploy-over-ssm.sh policypal.yaml" in step["run"]
 
 
 def test_nightly_destroy_runs_at_two_in_the_morning_malaysia_time_and_on_demand() -> None:
@@ -303,3 +314,24 @@ def test_nightly_destroy_applies_a_saved_destroy_plan_then_runs_the_cost_check()
     apply = next(i for i, line in enumerate(lines) if re.search(r"\bterraform apply -input=false tfplan\b", line))
     cost = next(i for i, line in enumerate(lines) if "scripts/cost-check.sh" in line)
     assert plan < apply < cost
+
+
+def test_the_plan_summary_and_its_hash_are_in_the_log() -> None:
+    # GitHub's API has no job summaries: with the changes only in the summary page, `gh run view --log` could
+    # not show what an apply would do (C6 live #2). So whatever the plan and nightly jobs put in the job
+    # summary goes to the log too (tee -a, never >>). Addresses, actions and the hash are safe in a public log:
+    # the PR comment shows the same.
+    for job in (jobs_of(TERRAFORM)["plan"], jobs_of(NIGHTLY)["destroy"]):
+        text = "\n".join(s.get("run", "") for s in steps(job))
+        assert ">> \"$GITHUB_STEP_SUMMARY\"" not in text and '>>"$GITHUB_STEP_SUMMARY"' not in text
+        assert re.search(r'^\s*\} \| tee -a "\$GITHUB_STEP_SUMMARY"$', text, re.M), "one block to summary and log"
+        block = text[:re.search(r'^\s*\} \| tee -a', text, re.M).start()]
+        assert "plan-summary.sh" in block.rsplit("{", 1)[-1] or "summary.txt" in block.rsplit("{", 1)[-1], "the changes are in it"
+    plan_block = "\n".join(s.get("run", "") for s in steps(jobs_of(TERRAFORM)["plan"]))
+    assert "$hash" in plan_block.rsplit("{", 1)[-1], "and the plan job's hash"
+
+
+def test_the_apply_job_shows_what_it_applies() -> None:
+    lines = runs(jobs_of(TERRAFORM)["apply"])
+    [check] = [line for line in lines if "plan-summary.sh" in line]
+    assert "--check" in check and ">" not in check, "the --check output (the changes) goes to the log"

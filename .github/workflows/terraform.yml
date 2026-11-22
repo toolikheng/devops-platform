@@ -111,13 +111,14 @@ jobs:
           hash="$(bash "$GITHUB_WORKSPACE/ci/plan-summary.sh" --hash tfplan)"
           echo "hash=$hash" >> "$GITHUB_OUTPUT"
           { echo "summary<<SUMMARY_END"; cat summary.txt; echo "SUMMARY_END"; } >> "$GITHUB_OUTPUT"
+          # To the run's summary page and to the log (GitHub's API can't read job summaries).
           {
             echo "### Terraform plan: ephemeral stack"
             echo
             if [ -s summary.txt ]; then echo '```'; cat summary.txt; echo '```'; else echo "No changes."; fi
             echo
             echo "Hash of these changes: \`$hash\`"
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
   comment:
     name: Plan comment on the pull request

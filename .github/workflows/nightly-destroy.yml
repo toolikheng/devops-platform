@@ -69,7 +69,7 @@ jobs:
             echo '```'
             bash "$GITHUB_WORKSPACE/ci/plan-summary.sh" tfplan
             echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
           terraform apply -input=false tfplan > /dev/null
 
       - name: Cost check (fails if anything billable is left)
