@@ -1,0 +1,82 @@
+# Deploys one PolicyPal commit to the AWS node (Actions > Deploy PolicyPal > Run workflow).
+#
+# render: renders the aws overlay with that commit as the image tag and validates it (kubeconform), with no
+#   AWS access at all.
+# deploy: in environment aws-deploy (master only), with the deploy role's short-lived OIDC credentials,
+#   sends that exact YAML to the node through SSM Run Command. On the node, scripts/node-deploy.sh applies
+#   it with k3s's own kubeconfig, waits for the rollout, runs the smoke test, and rolls the API and UI back
+#   if anything fails; the job then fails red. Nothing connects to the node (its SSM agent polls AWS) and no
+#   cluster credential ever enters GitHub.
+# The node must exist and run k3s and External Secrets Operator first: terraform.yml or make cloud-rebuild,
+# then make cloud-addons.
+name: Deploy PolicyPal
+
+on:
+  workflow_dispatch:
+    inputs:
+      policypal_tag:
+        description: PolicyPal commit to deploy (full 40-character hash; its image tag on GHCR)
+        type: string
+        required: true
+
+permissions: {}
+
+jobs:
+  render:
+    name: Render and validate (no AWS access)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      POLICYPAL_TAG: ${{ inputs.policypal_tag }}
+    outputs:
+      manifests: ${{ steps.render.outputs.manifests }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # deploy-render.sh refuses anything but a full commit hash before it renders.
+      - name: Render the aws overlay for this commit and validate it
+        id: render
+        run: |
+          bash ci/deploy-render.sh "$POLICYPAL_TAG" policypal.yaml
+          echo "manifests=$(gzip -9n < policypal.yaml | base64 -w0)" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    name: Deploy on the node (SSM Run Command)
+    needs: render
+    runs-on: ubuntu-latest
+    environment: aws-deploy
+    concurrency:
+      group: aws-deploy
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      MANIFESTS: ${{ needs.render.outputs.manifests }}
+      POLICYPAL_TAG: ${{ inputs.policypal_tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/gha-deploy
+          role-session-name: deploy-${{ github.run_id }}
+          aws-region: ap-southeast-1
+          mask-aws-account-id: true
+
+      - name: Deploy, smoke-test, roll back on failure
+        run: |
+          printf '%s' "$MANIFESTS" | base64 -d | gunzip > policypal.yaml
+          bash ci/deploy-over-ssm.sh policypal.yaml
+
+      - name: Summary
+        if: always()
+        env:
+          RESULT: ${{ job.status }}
+        run: |
+          echo "PolicyPal \`$POLICYPAL_TAG\` on the AWS node: $RESULT" >> "$GITHUB_STEP_SUMMARY"
