@@ -4,8 +4,11 @@
   External Secrets Operator makes them from SSM Parameter Store).
 - scripts/smoke-test.sh: /health, one answered and cited question, one refusal (the API through a kubectl
   port-forward to its Service), the UI through the ingress, and the API not reachable through it.
-- scripts/deploy-policypal.sh: render, apply, wait for the Secrets and the rollout, smoke test, and roll back
-  what it changed on failure.
+- scripts/deploy-policypal.sh: render (or take the file CI rendered), apply, wait for the Secrets and the
+  rollout, smoke test, and roll back what it changed on failure.
+- scripts/render-k8s.sh with a PolicyPal commit: the overlay with that image tag, the repo left as it is.
+- scripts/node-deploy.sh: on the AWS node (sent by CI through SSM Run Command), the deploy with the node's own
+  kubeconfig and address.
 - make k8s-check, policypal-secrets-local, policypal-local, cloud-deploy, cloud-smoke.
 The External Secrets Operator scripts are tested in test_eso_scripts.py, the state check in
 test_check_state_secrets.py.
@@ -16,11 +19,12 @@ touched; every call is logged, and the fakes answer what each test sets up.
 
 import json
 import re
+import subprocess
 
 import pytest
 import yaml
 
-from conftest import REPO_ROOT, secret_refs, versions
+from conftest import RENDER, REPO_ROOT, secret_refs, versions
 from fakecli import ESO_MANIFEST, FORWARD_PORT, MANIFEST, NODE_IP, Fakes, flag_value, output
 
 AWS_GROUP_VARS = REPO_ROOT / "ansible" / "inventory" / "group_vars" / "aws.yml"
@@ -338,6 +342,116 @@ def test_deploy_stops_when_apply_fails(fakes: Fakes) -> None:
     assert result.returncode != 0
     assert fakes.kubectl("apply", "-f", "-"), "the apply must have been attempted"
     assert not fakes.kubectl("rollout", "status")
+
+
+def test_deploy_applies_the_file_ci_rendered_instead_of_rendering(fakes: Fakes, tmp_path) -> None:
+    # On the node there is no Docker for the pinned kustomize: CI renders and checks, the node applies that.
+    fakes.eso_synced()
+    sent = tmp_path / "policypal.yaml"
+    sent.write_text("apiVersion: v1\nkind: Namespace\nmetadata:\n  name: policypal\n# from CI\n")
+    result = fakes.script("deploy-policypal.sh", "aws", UI_URL, env={"DEPLOY_MANIFESTS": str(sent)})
+    assert result.returncode == 0, output(result)
+    [apply] = [c for c in fakes.calls("kubectl") if c["args"][:2] == ["apply", "-f"]]
+    assert apply["stdin"] == sent.read_text()
+    assert not fakes.calls("docker"), "nothing is rendered on the node"
+
+
+def test_deploy_stops_when_the_given_file_is_missing(fakes: Fakes, tmp_path) -> None:
+    result = fakes.script("deploy-policypal.sh", "aws", UI_URL, env={"DEPLOY_MANIFESTS": str(tmp_path / "none")})
+    assert result.returncode == 2
+    assert not fakes.kubectl("apply")
+
+
+# --- scripts/render-k8s.sh with a PolicyPal commit ------------------------------------------------------
+
+OTHER_TAG = "0" * 40  # the rollback demo's tag: a valid commit hash with no image behind it
+
+
+@pytest.mark.parametrize("tag", ["latest", OTHER_TAG.replace("0", "A"), OTHER_TAG[:39], "0;id"])
+def test_render_takes_only_a_full_lowercase_commit_as_the_tag(fakes: Fakes, tag: str) -> None:
+    result = fakes.script("render-k8s.sh", "aws", tag)
+    assert result.returncode == 2
+    assert not fakes.calls("docker")
+
+
+def test_render_with_a_tag_leaves_the_repo_as_it_is(fakes: Fakes) -> None:
+    overlay = REPO_ROOT / "k8s" / "policypal" / "overlays" / "aws" / "kustomization.yaml"
+    before = overlay.read_text()
+    result = fakes.script("render-k8s.sh", "aws", OTHER_TAG)
+    assert result.returncode == 0, output(result)
+    assert overlay.read_text() == before
+    [render] = [c for c in fakes.calls("docker") if any("kustomize" in a for a in c["args"])]
+    mount = flag_value(render["args"], "-v").split(":", 1)[0]
+    assert mount != str(REPO_ROOT / "k8s"), "a temporary copy carries the tag"
+
+
+def test_render_with_a_tag_changes_only_the_policypal_image_tag(rendered: dict) -> None:
+    # Real render (pinned kustomize image), compared with the overlay's own render.
+    result = subprocess.run(["bash", str(RENDER), "aws", OTHER_TAG], capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, result.stderr
+    docs = [d for d in yaml.safe_load_all(result.stdout) if d]
+    pinned = next(c["image"] for d in rendered["aws"] if d["kind"] == "Deployment"
+                  for c in d["spec"]["template"]["spec"]["containers"] if "policypal" in c["image"])
+    images = [c["image"] for d in docs if d["kind"] in ("Deployment", "StatefulSet")
+              for c in d["spec"]["template"]["spec"]["containers"] + d["spec"]["template"]["spec"].get("initContainers", [])]
+    assert sorted({i for i in images if i.startswith("ghcr.io/toolikheng/policypal")}) == [f"ghcr.io/toolikheng/policypal:{OTHER_TAG}"]
+    assert yaml.safe_dump_all(docs).replace(OTHER_TAG, pinned.rsplit(":", 1)[1]) == yaml.safe_dump_all(rendered["aws"])
+
+
+# --- scripts/node-deploy.sh (on the AWS node) -----------------------------------------------------------
+
+NODE_PRIVATE_IP = "10.20.1.17"
+IMDS = "http://169.254.169.254/latest"
+
+
+@pytest.fixture
+def on_node(fakes: Fakes, tmp_path):
+    """The node: instance metadata (IMDSv2), ESO-made Secrets, and the manifest file CI sent."""
+    fakes.http(f"{IMDS}/api/token", "TOKEN-from-imds", when="PUT")
+    fakes.http(f"{IMDS}/meta-data/local-ipv4", NODE_PRIVATE_IP)
+    fakes.eso_synced()
+    sent = tmp_path / "policypal.yaml"
+    sent.write_text(MANIFEST)
+    return sent
+
+
+def test_node_deploy_applies_the_sent_file_and_checks_the_ui_on_the_nodes_own_address(fakes: Fakes, on_node) -> None:
+    # The security group lets only the owner's IP in on port 80; the node reaches its own ingress through
+    # its private address, which never leaves the machine.
+    result = fakes.script("node-deploy.sh", str(on_node))
+    assert result.returncode == 0, output(result)
+    [apply] = [c for c in fakes.calls("kubectl") if c["args"][:2] == ["apply", "-f"]]
+    assert apply["stdin"] == MANIFEST and not fakes.calls("docker")
+    ui = [c for c in fakes.calls("curl") if any(a.startswith(f"http://{NODE_PRIVATE_IP}/") for a in c["args"])]
+    assert ui, "the smoke test reaches the UI through the ingress on the node's address"
+
+
+def test_node_deploy_asks_imds_v2_for_the_address(fakes: Fakes, on_node) -> None:
+    fakes.script("node-deploy.sh", str(on_node))
+    [token] = [c["args"] for c in fakes.calls("curl") if f"{IMDS}/api/token" in c["args"]]
+    assert "PUT" in token and any(a.startswith("X-aws-ec2-metadata-token-ttl-seconds:") for a in token)
+    [address] = [c["args"] for c in fakes.calls("curl") if f"{IMDS}/meta-data/local-ipv4" in c["args"]]
+    assert "X-aws-ec2-metadata-token: TOKEN-from-imds" in address
+
+
+def test_node_deploy_uses_the_k3s_admin_kubeconfig(fakes: Fakes, on_node) -> None:
+    fakes.script("node-deploy.sh", str(on_node))
+    assert {c["kubeconfig"] for c in fakes.calls("kubectl")} == {"/etc/rancher/k3s/k3s.yaml"}
+
+
+def test_node_deploy_stops_without_instance_metadata(fakes: Fakes, on_node) -> None:
+    fakes.http(f"{IMDS}/api/token", None, when="PUT")
+    result = fakes.script("node-deploy.sh", str(on_node))
+    assert result.returncode == 1
+    assert "metadata" in output(result)
+    assert not fakes.kubectl("apply")
+
+
+@pytest.mark.parametrize("args", [[], ["/no/such/file.yaml"]])
+def test_node_deploy_needs_the_manifest_file(fakes: Fakes, args: list[str]) -> None:
+    result = fakes.script("node-deploy.sh", *args)
+    assert result.returncode == 2
+    assert not fakes.calls("kubectl") and not fakes.calls("curl")
 
 
 # --- make targets ---------------------------------------------------------------------------------------
