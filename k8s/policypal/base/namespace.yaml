@@ -1,4 +1,10 @@
+# Pod Security "baseline": Kubernetes rejects pods in this namespace that use the host network (or host
+# PID/IPC, hostPath, hostPort, privileged mode). On the AWS node, a pod on the host network can get the node
+# role's credentials from IMDSv2 (hop limit 1 only stops pods in the pod network), so nothing here may use it.
+# External Secrets Operator, which needs those credentials, runs in its own namespace.
 apiVersion: v1
 kind: Namespace
 metadata:
   name: policypal
+  labels:
+    pod-security.kubernetes.io/enforce: baseline

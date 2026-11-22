@@ -385,6 +385,28 @@ def test_ui_reaches_the_api_through_its_service(rendered: dict, overlay: str) ->
 # --- pod security ---------------------------------------------------------------------------------------
 
 @overlay_param
+def test_policypal_namespace_enforces_pod_security_baseline(rendered: dict, overlay: str) -> None:
+    # The node's IMDSv2 hop limit keeps pods in the pod network away from the node role's credentials, but a
+    # pod on the host network gets them (shown on the node in C5). The baseline Pod Security level rejects
+    # host-network pods (and privileged ones, hostPath, hostPort, host PID/IPC) in this namespace.
+    labels = get(rendered[overlay], "Namespace", NAMESPACE)["metadata"].get("labels", {})
+    assert labels.get("pod-security.kubernetes.io/enforce") == "baseline"
+
+
+@overlay_param
+def test_every_workload_meets_pod_security_baseline(rendered: dict, overlay: str) -> None:
+    # Otherwise the namespace label would reject PolicyPal's own pods.
+    for w in workloads(rendered[overlay]):
+        name, spec = w["metadata"]["name"], pod_spec(w)
+        for field in ("hostNetwork", "hostPID", "hostIPC"):
+            assert not spec.get(field), f"{name}: {field}"
+        assert not [v for v in spec.get("volumes", []) if "hostPath" in v], f"{name}: hostPath volume"
+        for c in containers(w):
+            assert not c.get("securityContext", {}).get("privileged"), f"{name}/{c['name']}: privileged"
+            assert not [p for p in c.get("ports", []) if p.get("hostPort")], f"{name}/{c['name']}: hostPort"
+
+
+@overlay_param
 def test_containers_run_unprivileged(rendered: dict, overlay: str) -> None:
     for workload in workloads(rendered[overlay]):
         spec = pod_spec(workload)
