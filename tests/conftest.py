@@ -8,6 +8,8 @@ from typing import Any
 import pytest
 import yaml
 
+from fakecli import Fakes
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 NAMES_MODULE = REPO_ROOT / "terraform" / "modules" / "names" / "outputs.tf"
 RENDER = REPO_ROOT / "scripts" / "render-k8s.sh"
@@ -34,6 +36,12 @@ def chart_env() -> dict[str, str]:
     """KEY=value lines of chart.env: the External Secrets Operator chart that install-eso.sh installs and
     render-eso.sh renders for the checks."""
     return dict(re.findall(r"^([A-Z_]+)=(\S+)$", ESO_CHART_ENV.read_text(), re.M))
+
+
+@pytest.fixture
+def fakes(tmp_path: Path) -> Fakes:
+    """Fake CLIs first on PATH, in this test's own folder (tests/fakecli.py)."""
+    return Fakes(tmp_path)
 
 
 @pytest.fixture(scope="session")

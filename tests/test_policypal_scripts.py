@@ -11,28 +11,22 @@
 - make k8s-check, policypal-secrets-local, policypal-local, cloud-deploy, cloud-smoke, cloud-addons,
   check-state-secrets.
 
-They run with fake `kubectl`, `curl`, `docker`, `k3d`, `terraform`, `aws` and `helm` first on PATH, so no
-cluster, container or AWS account is touched. Each fake appends one JSON line per call (tool, args,
-KUBECONFIG, AWS_PROFILE, working directory; for kubectl also the namespace, taken out of the args) to a log,
-and answers from files the test writes (secrets that exist, revisions, API replies, state, parameters).
+They run with the fake CLIs of tests/fakecli.py first on PATH, so no cluster, container or AWS account is
+touched; every call is logged, and the fakes answer what each test sets up.
 """
 
 import json
-import os
 import re
 import secrets
-import shutil
 import subprocess
-from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
 
-from conftest import chart_env, secret_refs
+from conftest import REPO_ROOT, chart_env, secret_refs
+from fakecli import ESO_MANIFEST, FORWARD_PORT, MANIFEST, NODE_IP, Fakes, flag_value
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-SCRIPTS = REPO_ROOT / "scripts"
 AWS_GROUP_VARS = REPO_ROOT / "ansible" / "inventory" / "group_vars" / "aws.yml"
 ESO_DIR = REPO_ROOT / "k8s" / "platform" / "external-secrets"
 
@@ -45,211 +39,34 @@ ANSWER_G04 = {"mode": "extractive", "refused": False, "answer": "**[1] Leave Pol
                              "section": "6.3 Compassionate Leave", "text": "...", "similarity": 0.81}]}
 ANSWER_G41 = {"mode": "refused", "refused": True, "answer": "I couldn't find this in the policies.",
               "citations": []}
-UI_URL = "http://203.0.113.20"
-MANIFEST = "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: policypal\n"
-ESO_MANIFEST = "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: external-secrets\n"
-FORWARD_PORT = "41234"  # the local port the fake `kubectl port-forward` says it picked
+UI_URL = f"http://{NODE_IP}"  # cloud-deploy builds it from the node's public IP
 API = f"http://127.0.0.1:{FORWARD_PORT}"
 
-FAKE = r'''#!/usr/bin/env python3
-import json, os, sys
-from pathlib import Path
 
-tool, args = Path(sys.argv[0]).name, sys.argv[1:]
-d = Path(os.environ["FAKE_DIR"])
-# kubectl: the namespace is logged on its own; args keep everything else, in order.
-ns = ""
-if tool == "kubectl":
-    rest, it = [], iter(args)
-    for x in it:
-        if x in ("-n", "--namespace"):
-            ns = next(it)
-        elif x.startswith("--namespace="):
-            ns = x.split("=", 1)[1]
-        else:
-            rest.append(x)
-    args = rest
-stdin = sys.stdin.read() if "-" in args or any(a.endswith("/dev/stdin") for a in args) or tool == "docker" and "-i" in args else ""
-with open(os.environ["FAKE_LOG"], "a") as log:
-    log.write(json.dumps({"tool": tool, "args": args, "ns": ns, "kubeconfig": os.environ.get("KUBECONFIG", ""),
-                          "profile": os.environ.get("AWS_PROFILE", ""), "cwd": os.getcwd(), "stdin": stdin}) + "\n")
-
-def answer(name, default_rc=0):
-    f = d / name
-    if f.exists():
-        sys.stdout.write(f.read_text())
-        rc = d / (name + ".rc")
-        # Like curl: an HTTP error status is an error exit only with -f (--fail).
-        failing = tool != "curl" or any(a.startswith("-f") for a in args)
-        sys.exit(int(rc.read_text()) if rc.exists() and failing else 0)
-    sys.exit(default_rc)
-
-if tool == "kubectl":
-    a = args
-    if a[:2] == ["get", "namespace"]:
-        sys.exit(0 if (d / "namespace-exists").exists() else 1)
-    if a[:2] == ["get", "secret"]:
-        sys.exit(0 if all((d / f"secret-{n}").exists() for n in a[2:] if not n.startswith("-")) else 1)
-    if a[:3] == ["create", "secret", "generic"]:
-        (d / f"secret-{a[3]}").write_text(stdin)
-        sys.exit(0)
-    if a[:2] == ["wait", "--for=create"]:
-        # Like kubectl 1.37: --for=create waits for one resource; given several, it fails at once on the
-        # first missing one (seen on k3d).
-        names = [x.split("/", 1)[1] for x in a[2:] if x.startswith("secret/")]
-        missing = [n for n in names if not (d / f"secret-{n}").exists()]
-        if missing:
-            print(f'Error from server (NotFound): secrets "{missing[0]}" not found' if len(names) > 1
-                  else "error: timed out waiting for the condition", file=sys.stderr)
-        sys.exit(1 if missing or not names else 0)
-    if a[:1] == ["apply"]:
-        (d / "applied").write_text(stdin)
-        sys.exit(1 if (d / "fail-apply").exists() else 0)
-    if a[:2] == ["rollout", "status"]:
-        sys.exit(1 if (d / f"fail-rollout-{a[2].split('/')[-1]}").exists() else 0)
-    if a[:2] == ["rollout", "undo"]:
-        sys.exit(1 if (d / f"fail-undo-{a[2].split('/')[-1]}").exists() else 0)
-    if a[:2] == ["get", "deployment"] and any("revision" in x for x in a):
-        when = "after" if (d / "applied").exists() else "before"
-        answer(f"rev-{a[2]}-{when}", 1)
-    if a[:1] == ["port-forward"]:
-        if (d / "fail-port-forward").exists():
-            print('error: services "policypal-api" not found', file=sys.stderr)
-            sys.exit(1)
-        port = (d / "forward-port").read_text()
-        print(f"Forwarding from 127.0.0.1:{port} -> 8000\nForwarding from [::1]:{port} -> 8000")
-    sys.exit(0)
-if tool == "curl":
-    url = [x for x in args if x.startswith("http")][0]
-    if url.endswith("/ask"):
-        sent = " ".join(args)
-        answer("ask-g04" if "compassionate" in sent else "ask-g41" if "bonus" in sent else "none", 22)
-    answer("curl" + url.split("//", 1)[1].split("/", 1)[-1].replace("/", "_") if url.count("/") > 2 else "curl_root", 7)
-if tool == "docker":
-    if any("kustomize" in x for x in args):
-        answer("manifest")
-    if any(x.startswith("alpine/helm:") for x in args):
-        answer("eso-manifest")
-    sys.exit(0)
-if tool == "terraform" and args[:2] == ["output", "-raw"]:
-    answer(f"tf-{args[2]}", 1)
-if tool == "terraform" and args[:2] == ["state", "pull"]:
-    answer("tf-state", 1)
-if tool == "aws" and args[:2] == ["ssm", "get-parameter"]:
-    answer("ssm" + args[args.index("--name") + 1].replace("/", "_"), 254)
-if tool == "helm":
-    sys.exit(1 if (d / "fail-helm").exists() else 0)
-if tool == "k3d" and args[:2] == ["cluster", "get"]:
-    sys.exit(0)
-sys.exit(0)
-'''
+def serve_api(fakes: Fakes, health: dict | None = None, g04: dict | None = None, g41: dict | None = None,
+        health_rc: int | None = None) -> None:
+    """How the API answers the smoke test, through the port-forward (any host)."""
+    if health is not None:
+        fakes.http("/health", json.dumps(health), rc=health_rc)
+    if g04 is not None:
+        fakes.http("/ask", json.dumps(g04), when="compassionate")
+    if g41 is not None:
+        fakes.http("/ask", json.dumps(g41), when="bonus")
 
 
-class Fakes:
-    def __init__(self, root: Path) -> None:
-        self.dir = root
-        self.bin = root / "bin"
-        self.log = root / "calls.log"
-        self.home = root / "home"
-        self.bin.mkdir()
-        self.log.touch()
-        # ephemeral-tf.sh (behind the node's IP lookup) needs a public key even for `terraform output`.
-        (self.home / ".ssh").mkdir(parents=True)
-        (self.home / ".ssh" / "id_ed25519.pub").write_text("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample test\n")
-        for tool in ("kubectl", "curl", "docker", "k3d", "terraform", "aws", "helm"):
-            path = self.bin / tool
-            path.write_text(FAKE)
-            path.chmod(0o755)
-        self.write("manifest", MANIFEST)
-        self.write("eso-manifest", ESO_MANIFEST)
-        self.write("forward-port", FORWARD_PORT)
-        self.write("tf-public_ip", "203.0.113.20")
-        self.api(health=HEALTH_OK, g04=ANSWER_G04, g41=ANSWER_G41)
-        self.ui(health="ok", docs="<html>Streamlit</html>", openapi="<html>Streamlit</html>")
-
-    # --- fixtures -------------------------------------------------------------------------------------
-    def write(self, name: str, text: str, rc: int | None = None) -> None:
-        (self.dir / name).write_text(text)
-        if rc is not None:
-            (self.dir / f"{name}.rc").write_text(str(rc))
-
-    def api(self, health: dict | None = None, g04: dict | None = None, g41: dict | None = None,
-            health_rc: int | None = None) -> None:
-        if health is not None:
-            self.write("curlhealth", json.dumps(health), health_rc)
-        if g04 is not None:
-            self.write("ask-g04", json.dumps(g04))
-        if g41 is not None:
-            self.write("ask-g41", json.dumps(g41))
-
-    def ui(self, health: str | None = None, docs: str | None = None, openapi: str | None = None) -> None:
-        for name, text in (("_stcore_health", health), ("docs", docs), ("openapi.json", openapi)):
-            if text is not None:
-                self.write(f"curl{name}", text)
-
-    def secret_exists(self, name: str) -> None:
-        self.write(f"secret-{name}", "existing")
-
-    def eso_synced(self) -> None:
-        """What External Secrets Operator does on AWS: both Secrets exist once the ExternalSecrets are applied."""
-        self.secret_exists("policypal-db")
-        self.secret_exists("policypal-admin")
-
-    def parameter(self, name: str, value: str) -> None:
-        self.write("ssm" + name.replace("/", "_"), value)
-
-    def log_grep(self) -> None:
-        """Put a grep first on PATH that records its arguments, then runs the real grep."""
-        real = shutil.which("grep")
-        path = self.bin / "grep"
-        path.write_text(f'#!/bin/bash\nprintf "%s\\n" "$@" >> "$FAKE_DIR/grep-args"\nexec {real} "$@"\n')
-        path.chmod(0o755)
-
-    def revisions(self, name: str, before: str | None, after: str | None) -> None:
-        if before is not None:
-            self.write(f"rev-{name}-before", before)
-        if after is not None:
-            self.write(f"rev-{name}-after", after)
-
-    def flag(self, name: str) -> None:
-        (self.dir / name).touch()
-
-    # --- inspection -----------------------------------------------------------------------------------
-    def calls(self, tool: str | None = None) -> list[dict[str, Any]]:
-        rows = [json.loads(line) for line in self.log.read_text().splitlines()]
-        return [r for r in rows if tool is None or r["tool"] == tool]
-
-    def kubectl(self, *prefix: str) -> list[list[str]]:
-        """The args of kubectl calls that start with these words (the namespace is in each call's "ns")."""
-        return [c["args"] for c in self.calls("kubectl") if c["args"][:len(prefix)] == list(prefix)]
-
-    def created_secret(self, name: str) -> dict[str, str]:
-        text = (self.dir / f"secret-{name}").read_text()
-        return dict(line.split("=", 1) for line in text.splitlines() if line)
-
-    def created_secrets(self) -> set[tuple[str, str]]:
-        """(Secret, key) for every Secret the scripts created."""
-        return {(p.name.removeprefix("secret-"), key)
-                for p in self.dir.glob("secret-*") for key in self.created_secret(p.name.removeprefix("secret-"))}
-
-    # --- running --------------------------------------------------------------------------------------
-    def env(self) -> dict[str, str]:
-        return {"PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}", "HOME": str(self.home),
-                "FAKE_LOG": str(self.log), "FAKE_DIR": str(self.dir)}
-
-    def script(self, name: str, *args: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(["bash", str(SCRIPTS / name), *args], cwd=REPO_ROOT, env=self.env(),
-                              stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
-
-    def make(self, target: str, *overrides: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(["make", "--no-print-directory", target, *overrides], cwd=REPO_ROOT,
-                              env=self.env(), stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                              timeout=120)
+def serve_ui(fakes: Fakes, health: str | None = None, docs: str | None = None, openapi: str | None = None) -> None:
+    """How the UI's host answers through the ingress."""
+    for path, body in (("/_stcore/health", health), ("/docs", docs), ("/openapi.json", openapi)):
+        if body is not None:
+            fakes.http(path, body)
 
 
 @pytest.fixture
-def fakes(tmp_path: Path) -> Fakes:
-    return Fakes(tmp_path)
+def fakes(fakes: Fakes) -> Fakes:
+    """The fake CLIs (tests/fakecli.py), with a healthy PolicyPal behind the port-forward and the ingress."""
+    serve_api(fakes, health=HEALTH_OK, g04=ANSWER_G04, g41=ANSWER_G41)
+    serve_ui(fakes, health="ok", docs="<html>Streamlit</html>", openapi="<html>Streamlit</html>")
+    return fakes
 
 
 def output(result: subprocess.CompletedProcess[str]) -> str:
@@ -279,7 +96,7 @@ def test_a_new_namespace_is_ready_for_kubectl_apply(fakes: Fakes) -> None:
 def test_an_existing_namespace_is_left_to_the_manifests(fakes: Fakes) -> None:
     # Re-applying a bare Namespace would strip the labels the deploy gives it, and the next deploy would put
     # them back: "configured" on every run although nothing really changed.
-    fakes.flag("namespace-exists")
+    fakes.namespace_exists()
     result = fakes.script("policypal-secrets.sh")
     assert result.returncode == 0, output(result)
     assert fakes.created_secret("policypal-db"), "the script must still run"
@@ -343,7 +160,7 @@ def test_smoke_test_calls_the_api_through_a_port_forward_to_its_service(fakes: F
 
 
 def test_smoke_test_uses_the_port_kubectl_picked(fakes: Fakes) -> None:
-    fakes.write("forward-port", "45678")
+    fakes.forward_port("45678")
     result = fakes.script("smoke-test.sh", UI_URL)
     assert result.returncode == 0, output(result)
     api_urls = {a for c in fakes.calls("curl") for a in c["args"] if a.startswith("http://127.0.0.1")}
@@ -353,7 +170,7 @@ def test_smoke_test_uses_the_port_kubectl_picked(fakes: Fakes) -> None:
 def test_smoke_test_fails_when_the_port_forward_does_not_start(fakes: Fakes) -> None:
     # Then nothing must be asked on localhost: whatever else listens there (another forward, maybe to another
     # cluster) would answer, and the checks would pass for the wrong cluster.
-    fakes.flag("fail-port-forward")
+    fakes.fail("kubectl", "port-forward")
     result = fakes.script("smoke-test.sh", UI_URL)
     assert result.returncode != 0
     assert "port-forward" in output(result)
@@ -381,7 +198,7 @@ def test_smoke_test_checks_the_ui_through_the_ingress(fakes: Fakes) -> None:
     ({"g41": ANSWER_G04}, "g41 answered"),
 ])
 def test_smoke_test_fails_when_the_app_misbehaves(fakes: Fakes, change: dict, why: str) -> None:
-    fakes.api(**change)
+    serve_api(fakes, **change)
     result = fakes.script("smoke-test.sh", UI_URL)
     assert result.returncode != 0, why
     assert fakes.kubectl("port-forward"), "the check must actually run"
@@ -393,14 +210,14 @@ def test_smoke_test_fails_when_the_app_misbehaves(fakes: Fakes, change: dict, wh
     ({"openapi": '{"openapi": "3.1.0", "info": {"title": "PolicyPal"}}'}, "API schema reachable from outside"),
 ])
 def test_smoke_test_fails_when_the_ingress_is_wrong(fakes: Fakes, ui: dict, why: str) -> None:
-    fakes.ui(**ui)
+    serve_ui(fakes, **ui)
     result = fakes.script("smoke-test.sh", UI_URL)
     assert result.returncode != 0, why
     assert "FAIL" in output(result), "the smoke test must report the failed check"
 
 
 def test_smoke_test_fails_when_the_ui_is_unreachable(fakes: Fakes) -> None:
-    (fakes.dir / "curl_stcore_health").unlink()  # the fake curl then exits 7: could not connect
+    fakes.http("/_stcore/health", None)  # the fake curl then exits 7: could not connect
     result = fakes.script("smoke-test.sh", UI_URL)
     assert result.returncode != 0
     assert "FAIL" in output(result) and fakes.calls("curl")
@@ -437,7 +254,8 @@ def test_deploy_applies_the_rendered_overlay_then_waits_and_smoke_tests(fakes: F
 
     renders = [c for c in fakes.calls("docker") if any("kustomize" in a for a in c["args"])]
     assert len(renders) == 1 and renders[0]["args"][-1].endswith("/policypal/overlays/aws")
-    assert (fakes.dir / "applied").read_text() == MANIFEST, "exactly the rendered YAML is applied"
+    [apply] = [c for c in calls if c["args"][:2] == ["apply", "-f"]]
+    assert apply["stdin"] == MANIFEST, "exactly the rendered YAML is applied"
     waited = [a[2] for a in fakes.kubectl("rollout", "status")]
     assert waited == ["statefulset/postgres", "deployment/policypal-api", "deployment/policypal-ui"]
     assert fakes.kubectl("port-forward"), "smoke test after the rollout"
@@ -474,7 +292,7 @@ def test_failed_rollout_rolls_back_what_this_deploy_changed(fakes: Fakes) -> Non
     fakes.eso_synced()
     fakes.revisions("policypal-api", before="3", after="4")
     fakes.revisions("policypal-ui", before="2", after="2")
-    fakes.flag("fail-rollout-policypal-api")
+    fakes.fail("kubectl", "rollout", "status", "deployment/policypal-api")
     result = fakes.script("deploy-policypal.sh", "aws", UI_URL)
     assert result.returncode != 0
     undos = fakes.kubectl("rollout", "undo")
@@ -485,7 +303,7 @@ def test_failed_smoke_test_rolls_back_too(fakes: Fakes) -> None:
     fakes.eso_synced()
     fakes.revisions("policypal-api", before="3", after="4")
     fakes.revisions("policypal-ui", before="2", after="3")
-    fakes.api(g41=ANSWER_G04)
+    serve_api(fakes, g41=ANSWER_G04)
     result = fakes.script("deploy-policypal.sh", "aws", UI_URL)
     assert result.returncode != 0
     assert sorted(fakes.kubectl("rollout", "undo")) == [
@@ -500,8 +318,8 @@ def test_a_failed_undo_does_not_stop_the_other_rollbacks(fakes: Fakes) -> None:
     fakes.eso_synced()
     fakes.revisions("policypal-api", before="3", after="4")
     fakes.revisions("policypal-ui", before="2", after="3")
-    fakes.api(g41=ANSWER_G04)
-    fakes.flag("fail-undo-policypal-api")
+    serve_api(fakes, g41=ANSWER_G04)
+    fakes.fail("kubectl", "rollout", "undo", "deployment/policypal-api")
     result = fakes.script("deploy-policypal.sh", "aws", UI_URL)
     assert result.returncode != 0
     assert sorted(fakes.kubectl("rollout", "undo")) == [
@@ -514,7 +332,7 @@ def test_a_failed_undo_does_not_stop_the_other_rollbacks(fakes: Fakes) -> None:
 def test_first_deploy_has_nothing_to_roll_back(fakes: Fakes) -> None:
     fakes.eso_synced()
     fakes.revisions("policypal-api", before=None, after="1")
-    fakes.flag("fail-rollout-policypal-api")
+    fakes.fail("kubectl", "rollout", "status", "deployment/policypal-api")
     result = fakes.script("deploy-policypal.sh", "aws", UI_URL)
     assert result.returncode != 0
     assert ["rollout", "status", "deployment/policypal-api"] in [a[:3] for a in fakes.kubectl("rollout", "status")]
@@ -523,7 +341,7 @@ def test_first_deploy_has_nothing_to_roll_back(fakes: Fakes) -> None:
 
 def test_deploy_stops_when_apply_fails(fakes: Fakes) -> None:
     fakes.eso_synced()
-    fakes.flag("fail-apply")
+    fakes.fail("kubectl", "apply")
     result = fakes.script("deploy-policypal.sh", "aws", UI_URL)
     assert result.returncode != 0
     assert fakes.kubectl("apply", "-f", "-"), "the apply must have been attempted"
@@ -531,10 +349,6 @@ def test_deploy_stops_when_apply_fails(fakes: Fakes) -> None:
 
 
 # --- make targets ---------------------------------------------------------------------------------------
-
-def flag_value(args: list[str], flag: str) -> str:
-    return args[args.index(flag) + 1]
-
 
 def test_k8s_check_validates_policypal_and_eso_strictly_against_the_nodes_version(fakes: Fakes) -> None:
     result = fakes.make("k8s-check")
@@ -608,7 +422,7 @@ def test_cloud_deploy_kubeconfig_is_the_one_ansible_writes(fakes: Fakes) -> None
 
 @pytest.mark.parametrize("ip", ["", "not-an-ip", "203.0.113.300"])
 def test_cloud_deploy_stops_without_a_running_node(fakes: Fakes, ip: str) -> None:
-    fakes.write("tf-public_ip", ip, rc=0 if ip else 1)
+    fakes.tf_output("public_ip", ip or None)
     result = fakes.make("cloud-deploy")
     assert result.returncode != 0
     assert fakes.calls("terraform"), "the target must run and read the IP"
@@ -677,7 +491,7 @@ def test_install_eso_installs_the_pinned_chart_with_our_values_then_the_store(fa
 
 
 def test_install_eso_stops_when_helm_fails(fakes: Fakes) -> None:
-    fakes.flag("fail-helm")
+    fakes.fail("helm")
     result = fakes.script("install-eso.sh")
     assert result.returncode != 0
     assert fakes.calls("helm"), "helm must have run"
@@ -735,20 +549,20 @@ def live_values(fakes: Fakes) -> dict[str, str]:
     values = {DB_PARAM: secrets.token_hex(16), ADMIN_PARAM: secrets.token_hex(16)}
     for name, value in values.items():
         fakes.parameter(name, value)
-    fakes.log_grep()
+    fakes.spy("grep")
     return values
 
 
 def assert_never_shown(fakes: Fakes, result: subprocess.CompletedProcess[str], values: dict[str, str]) -> None:
-    grep_args = (fakes.dir / "grep-args").read_text() if (fakes.dir / "grep-args").exists() else ""
+    # grep runs through the spy, so its arguments are in the log too (they would be visible in ps).
+    assert fakes.calls("grep"), "the values must have been compared with grep"
     for value in values.values():
         assert value not in output(result), "a value was printed"
         assert all(value not in " ".join(c["args"]) for c in fakes.calls()), "a value was a command argument"
-        assert value not in grep_args, "a value was a grep argument (visible in ps)"
 
 
 def test_state_check_reports_zero_for_each_secret_without_showing_it(fakes: Fakes, live_values: dict) -> None:
-    fakes.write("tf-state", persistent_state())
+    fakes.tf_state(persistent_state())
     result = fakes.script("check-state-secrets.sh")
     assert result.returncode == 0, output(result)
     for name in live_values:
@@ -765,7 +579,7 @@ def test_state_check_reports_zero_for_each_secret_without_showing_it(fakes: Fake
 def test_state_check_fails_when_a_value_is_in_the_state(fakes: Fakes, live_values: dict) -> None:
     leak = {"mode": "managed", "type": "random_password", "name": "token",
             "instances": [{"attributes": {"result": live_values[ADMIN_PARAM]}}]}
-    fakes.write("tf-state", persistent_state(extra=[leak]))
+    fakes.tf_state(persistent_state(extra=[leak]))
     result = fakes.script("check-state-secrets.sh")
     assert result.returncode == 1
     assert re.search(rf"^{re.escape(ADMIN_PARAM)}: 1$", result.stdout, re.M), result.stdout
@@ -774,7 +588,7 @@ def test_state_check_fails_when_a_value_is_in_the_state(fakes: Fakes, live_value
 
 
 def test_state_check_fails_when_it_has_nothing_to_check(fakes: Fakes, live_values: dict) -> None:
-    fakes.write("tf-state", persistent_state(secure=False))
+    fakes.tf_state(persistent_state(secure=False))
     result = fakes.script("check-state-secrets.sh")
     assert result.returncode != 0
     assert "SecureString" in output(result)
@@ -782,7 +596,7 @@ def test_state_check_fails_when_it_has_nothing_to_check(fakes: Fakes, live_value
 
 
 def test_make_check_state_secrets_reads_the_persistent_stack_as_devops(fakes: Fakes, live_values: dict) -> None:
-    fakes.write("tf-state", persistent_state())
+    fakes.tf_state(persistent_state())
     result = fakes.make("check-state-secrets")
     assert result.returncode == 0, output(result)
     [pull] = fakes.calls("terraform")
