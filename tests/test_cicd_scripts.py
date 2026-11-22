@@ -5,8 +5,9 @@
 - ci/nightly-skip.sh: whether tonight's destroy is skipped (repo variable NIGHTLY_DESTROY_SKIP_UNTIL); anything
   unclear means destroy.
 - scripts/skip-nightly-destroy.sh (make skip-nightly-destroy): sets that variable, for at most 7 days.
-- ci/deploy-render.sh: the aws overlay for one PolicyPal commit, validated with kubeconform: the exact YAML
-  the deploy sends.
+- ci/deploy-render.sh: checks that PolicyPal's image for that commit exists on GHCR (a missing tag fails here,
+  before the node is touched and the API goes down), then renders the aws overlay for it and validates it with
+  kubeconform: the exact YAML the deploy sends.
 - ci/deploy-over-ssm.sh: finds the tagged node, sends it the deploy through SSM Run Command, waits and reports.
 The node side (scripts/node-deploy.sh) is in test_policypal_scripts.py with the other deploy scripts.
 
@@ -240,21 +241,103 @@ def test_the_workflow_reads_the_variable_the_script_sets() -> None:
 
 # --- ci/deploy-render.sh --------------------------------------------------------------------------------
 
+GHCR_TOKEN_URL = "https://ghcr.io/token?scope=repository:toolikheng/policypal:pull"
+GHCR_TOKEN = "registry-token-for-this-test"
+AWS_OVERLAY = REPO_ROOT / "k8s" / "policypal" / "overlays" / "aws" / "kustomization.yaml"
+
+
+def manifest_url(tag: str) -> str:
+    return f"https://ghcr.io/v2/toolikheng/policypal/manifests/{tag}"
+
+
+def ghcr(fakes: Fakes, tag: str = TAG, status: int = 200) -> None:
+    """GHCR as an anonymous client sees it: a pull token, then the tag's manifest (200) or not (404)."""
+    fakes.http(GHCR_TOKEN_URL, json.dumps({"token": GHCR_TOKEN}))
+    fakes.http(manifest_url(tag), "", status=status)
+
+
+def render(fakes: Fakes, out: Path, tag: str = TAG) -> subprocess.CompletedProcess[str]:
+    return ci(fakes, "deploy-render.sh", tag, str(out))
+
+
 @pytest.mark.parametrize("tag", ["", "latest", TAG[:39], TAG.upper(), TAG + "0", "16d4edb4;rm -rf /"])
 def test_render_takes_only_a_full_lowercase_commit(fakes: Fakes, tmp_path: Path, tag: str) -> None:
     result = ci(fakes, "deploy-render.sh", tag, str(tmp_path / "policypal.yaml"))
     assert result.returncode == 2
+    assert not fakes.calls("docker") and not fakes.calls("curl")
+
+
+def test_render_checks_the_image_exists_on_ghcr_before_anything_else(fakes: Fakes, tmp_path: Path) -> None:
+    ghcr(fakes)
+    result = render(fakes, tmp_path / "policypal.yaml")
+    assert result.returncode == 0, output(result)
+    calls = fakes.calls()
+    token = next(i for i, c in enumerate(calls) if c["tool"] == "curl" and GHCR_TOKEN_URL in c["args"])
+    head = next(i for i, c in enumerate(calls) if c["tool"] == "curl" and manifest_url(TAG) in c["args"])
+    first_docker = next(i for i, c in enumerate(calls) if c["tool"] == "docker")
+    assert token < head < first_docker, "check first, render after"
+    args = calls[head]["args"]
+    assert "-I" in args, "a HEAD request: no image is downloaded"
+    headers = [args[i + 1] for i, a in enumerate(args) if a == "-H"]
+    assert f"Authorization: Bearer {GHCR_TOKEN}" in headers
+    accept = next(h for h in headers if h.startswith("Accept:"))
+    for media_type in ("application/vnd.oci.image.index.v1+json", "application/vnd.docker.distribution.manifest.list.v2+json",
+                       "application/vnd.oci.image.manifest.v1+json", "application/vnd.docker.distribution.manifest.v2+json"):
+        assert media_type in accept, f"PolicyPal's CI could publish either format: {media_type}"
+
+
+def test_a_tag_missing_on_ghcr_stops_before_anything_is_rendered(fakes: Fakes, tmp_path: Path) -> None:
+    # The broken-commit deploy (live run 45040160686) took the API down for 15 minutes before the rollback.
+    # A tag that doesn't exist now fails here, in seconds, and nothing reaches the node.
+    zeros = "0" * 40
+    ghcr(fakes, zeros, status=404)
+    out = tmp_path / "policypal.yaml"
+    result = render(fakes, out, zeros)
+    assert result.returncode == 1
+    assert "not on GHCR" in output(result) and zeros in output(result)
+    assert not fakes.calls("docker") and not out.exists()
+
+
+@pytest.mark.parametrize("trouble", ["token", "registry error", "unreachable"])
+def test_render_stops_when_ghcr_cannot_be_asked(fakes: Fakes, tmp_path: Path, trouble: str) -> None:
+    # Fail closed: an unknown answer is not a yes.
+    ghcr(fakes)
+    if trouble == "token":
+        fakes.http(GHCR_TOKEN_URL, "", rc=22)
+    elif trouble == "registry error":
+        fakes.http(manifest_url(TAG), "", status=503)
+    else:
+        fakes.http(manifest_url(TAG), None)
+    result = render(fakes, tmp_path / "policypal.yaml")
+    assert result.returncode == 1
+    assert "could not check" in output(result)
     assert not fakes.calls("docker")
 
 
+def test_the_registry_token_is_never_printed(fakes: Fakes, tmp_path: Path) -> None:
+    ghcr(fakes)
+    result = render(fakes, tmp_path / "policypal.yaml")
+    assert result.returncode == 0 and fakes.calls("curl"), "the token was fetched and used"
+    assert GHCR_TOKEN not in output(result)
+
+
+def test_render_checks_the_image_the_overlay_deploys() -> None:
+    # deploy-render.sh asks GHCR about one image; the overlay names the image whose tag it sets.
+    [image] = [i["name"] for i in yaml.safe_load(AWS_OVERLAY.read_text())["images"]]
+    script = (REPO_ROOT / "ci" / "deploy-render.sh").read_text()
+    match = re.search(r'^IMAGE="([^"]+)"$', script, re.M)
+    assert match and match.group(1) == image
+
+
 def test_render_writes_the_aws_overlay_and_validates_that_exact_file(fakes: Fakes, tmp_path: Path) -> None:
+    ghcr(fakes)
     out = tmp_path / "policypal.yaml"
-    result = ci(fakes, "deploy-render.sh", TAG, str(out))
+    result = render(fakes, out)
     assert result.returncode == 0, output(result)
     assert out.read_text() == MANIFEST
     docker = fakes.calls("docker")
-    [render] = [c for c in docker if any("kustomize" in a for a in c["args"])]
-    assert render["args"][-1].endswith("/policypal/overlays/aws")
+    [render_call] = [c for c in docker if any("kustomize" in a for a in c["args"])]
+    assert render_call["args"][-1].endswith("/policypal/overlays/aws")
     [validation] = [c for c in docker if any("kubeconform" in a for a in c["args"])]
     assert "-strict" in validation["args"]
     assert flag_value(validation["args"], "-kubernetes-version") == versions()["KUBERNETES_VERSION"]
@@ -262,8 +345,9 @@ def test_render_writes_the_aws_overlay_and_validates_that_exact_file(fakes: Fake
 
 
 def test_render_fails_when_kubeconform_does(fakes: Fakes, tmp_path: Path) -> None:
+    ghcr(fakes)
     fakes.fail("docker", "run", "--rm", "-i")
-    assert ci(fakes, "deploy-render.sh", TAG, str(tmp_path / "policypal.yaml")).returncode != 0
+    assert render(fakes, tmp_path / "policypal.yaml").returncode != 0
     assert [c for c in fakes.calls("docker") if any("kubeconform" in a for a in c["args"])], "it validated"
 
 
