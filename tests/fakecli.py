@@ -11,7 +11,8 @@ The fake knows just enough of each real tool for the scripts here:
   `port-forward` prints the local port it picked.
 - curl: answers by URL (or by path, any host); an HTTP error status is an error exit only with -f; with
   `-w '%{http_code}'` it prints the HTTP status the test set (200 by default).
-- terraform: `output -raw NAME`, `state pull` and `show -json PLANFILE`. aws: `ssm get-parameter` by name, other
+- terraform: `output -raw NAME`, `state pull` and `show -json PLANFILE`; `plan` and `apply` print what the test
+  set (as the real ones print the whole plan); `plan -out=FILE` writes FILE. aws: `ssm get-parameter` by name, other
   calls by `service.operation` (identity and region list by default, empty otherwise), or a sequence of answers
   for repeated calls (polling), the last one repeating.
 - docker: a kustomize render prints MANIFEST, a Helm render ESO_MANIFEST. helm, k3d, ansible-playbook, gh: log only.
@@ -138,6 +139,11 @@ if tool == "terraform" and args[:2] == ["state", "pull"]:
     answer("tf-state", 1)
 if tool == "terraform" and args[:2] == ["show", "-json"]:
     answer("tf-show", 1)
+if tool == "terraform" and args[:1] == ["plan"]:
+    for out in [x.split("=", 1)[1] for x in args if x.startswith("-out=")]:
+        Path(out).write_text("saved plan")
+if tool == "terraform" and args[:1] in (["plan"], ["apply"]) and (d / "tf-says").exists():
+    print((d / "tf-says").read_text())
 if tool == "aws" and args[:2] == ["ssm", "get-parameter"]:
     answer("ssm" + args[args.index("--name") + 1].replace("/", "_"), 254)
 if tool == "aws" and len(args) > 1:
@@ -229,6 +235,10 @@ class Fakes:
 
     def tf_state(self, text: str) -> None:
         self._write("tf-state", text)
+
+    def tf_says(self, text: str) -> None:
+        """What `terraform plan` and `terraform apply` print (the real ones print the whole plan, values included)."""
+        self._write("tf-says", text)
 
     def tf_show(self, plan: dict[str, Any]) -> None:
         """What `terraform show -json PLANFILE` prints: the plan as JSON."""

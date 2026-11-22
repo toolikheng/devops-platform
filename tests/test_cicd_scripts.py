@@ -2,6 +2,8 @@
 
 - ci/plan-summary.sh: a Terraform plan as "action address" lines, never attribute values (the repo's logs are
   public), and a hash of those lines; the apply job applies only if the hash matches the approved one.
+- ci/ephemeral-stack.sh: every Terraform run of the workflows (plan, apply after approval, nightly destroy):
+  what is locked, what reaches the log and the job's outputs, and that only a saved plan is applied.
 - ci/nightly-skip.sh: whether tonight's destroy is skipped (repo variable NIGHTLY_DESTROY_SKIP_UNTIL); anything
   unclear means destroy.
 - scripts/skip-nightly-destroy.sh (make skip-nightly-destroy): sets that variable, for at most 7 days.
@@ -137,6 +139,132 @@ def test_a_plan_terraform_cannot_read_is_an_error(fakes: Fakes, plan: Path) -> N
     assert result.returncode != 0
     assert fakes.calls("terraform", "show"), "the plan was read, and the failure was not ignored"
     assert not re.fullmatch(r"[0-9a-f]{64}\n?", result.stdout), "no hash of an empty summary"
+
+
+# --- ci/ephemeral-stack.sh -----------------------------------------------------------------------------
+
+STACK_DIR = str(REPO_ROOT / "terraform" / "envs" / "aws")
+FULL_PLAN = "Terraform will perform the following actions ... cidr_blocks = [\"198.51.100.7/32\"]"
+
+
+@pytest.fixture
+def stack(fakes: Fakes, tmp_path: Path) -> dict[str, str]:
+    """A plan with the PLAN changes; terraform plan/apply print the full plan (values included), as the real
+    ones do. Returns the GitHub Actions files the script may write."""
+    fakes.tf_show(PLAN)
+    fakes.tf_says(FULL_PLAN)
+    files = {"GITHUB_OUTPUT": str(tmp_path / "output"), "GITHUB_STEP_SUMMARY": str(tmp_path / "summary")}
+    for path in files.values():
+        Path(path).write_text("")
+    return files
+
+
+def run_stack(fakes: Fakes, stack: dict[str, str], *args: str, **env: str) -> subprocess.CompletedProcess[str]:
+    return ci(fakes, "ephemeral-stack.sh", *args, env={**stack, **env})
+
+
+def terraform_calls(fakes: Fakes) -> list[list[str]]:
+    return [c["args"] for c in fakes.calls("terraform")]
+
+
+def test_plan_reads_only_and_never_takes_the_lock(fakes: Fakes, stack: dict[str, str]) -> None:
+    result = run_stack(fakes, stack, "plan")
+    assert result.returncode == 0, output(result)
+    calls = fakes.calls("terraform")
+    assert {c["cwd"] for c in calls} == {STACK_DIR}
+    assert [c["args"][0] for c in calls] == ["init", "plan", "show", "show"]
+    plan = calls[1]["args"]
+    assert "-lock=false" in plan and "-destroy" not in plan, "gha-tf-plan can't write the lockfile"
+    [out] = [Path(calls[1]["cwd"]) / a.split("=", 1)[1] for a in plan if a.startswith("-out=")]
+    assert STACK_DIR not in str(out.resolve().parent) and not out.exists(), "a temporary plan file, removed afterwards"
+    assert not [a for a in plan if a == "-var"], "a pull request plans the stack's defaults"
+
+
+def test_plan_shows_the_changes_and_hash_in_the_log_summary_and_outputs(fakes: Fakes, stack: dict[str, str]) -> None:
+    # The log too: GitHub's API can't read job summaries (C6 live #2).
+    result = run_stack(fakes, stack, "plan")
+    digest = hashlib.sha256(SUMMARY.encode()).hexdigest()
+    for text in (result.stdout, Path(stack["GITHUB_STEP_SUMMARY"]).read_text()):
+        assert SUMMARY.strip() in text and digest in text
+    out = Path(stack["GITHUB_OUTPUT"]).read_text()
+    assert f"hash={digest}\n" in out
+    assert re.search(r"summary<<(\w+)\n" + re.escape(SUMMARY.strip()) + r"\n\1\n", out), "for the PR comment"
+
+
+def test_the_full_plan_never_reaches_the_log(fakes: Fakes, stack: dict[str, str]) -> None:
+    # The public log: addresses, actions and the hash only. The real terraform prints values (the owner's IP).
+    for args in (["plan"], ["nightly"]):
+        result = run_stack(fakes, stack, *args)
+        assert result.returncode == 0 and "198.51.100.7" not in output(result), args
+
+
+def test_a_manual_destroy_and_the_inputs_reach_the_plan(fakes: Fakes, stack: dict[str, str]) -> None:
+    result = run_stack(fakes, stack, "plan", ACTION="destroy", INSTANCE_TYPE="t3.micro", USE_SPOT="false")
+    assert result.returncode == 0, output(result)
+    [plan] = [a for a in terraform_calls(fakes) if a[0] == "plan"]
+    assert "-destroy" in plan
+    assert [plan[i + 1] for i, a in enumerate(plan) if a == "-var"] == ["instance_type=t3.micro", "use_spot=false"]
+
+
+@pytest.mark.parametrize("args, env", [([], {}), (["deploy"], {}), (["plan", "extra"], {}), (["apply"], {}),
+                                       (["apply", "abc"], {}), (["plan"], {"ACTION": "recreate"})])
+def test_the_stack_script_takes_only_its_three_verbs(fakes: Fakes, stack: dict[str, str], args: list[str],
+                                                      env: dict[str, str]) -> None:
+    result = run_stack(fakes, stack, *args, **env)
+    assert result.returncode == 2 and "usage" in output(result)
+    assert not fakes.calls("terraform")
+
+
+def test_apply_plans_again_and_applies_the_saved_plan_when_the_hash_matches(fakes: Fakes, stack: dict[str, str]) -> None:
+    # The hash comes from the plan job, as in terraform.yml.
+    assert run_stack(fakes, stack, "plan").returncode == 0
+    approved = re.search(r"^hash=(\w+)$", Path(stack["GITHUB_OUTPUT"]).read_text(), re.M).group(1)
+    fakes.log.write_text("")
+    result = run_stack(fakes, stack, "apply", approved, ACTION="destroy")
+    assert result.returncode == 0, output(result)
+    calls = terraform_calls(fakes)
+    assert [a[0] for a in calls] == ["init", "plan", "show", "apply"]
+    plan, apply = calls[1], calls[3]
+    assert "-destroy" in plan and "-lock=false" not in plan and any(a.startswith("-lock-timeout=") for a in plan)
+    [out] = [a.split("=", 1)[1] for a in plan if a.startswith("-out=")]
+    assert apply == ["apply", "-input=false", out], "the saved plan, nothing else"
+    assert SUMMARY.strip() in result.stdout, "the log shows what is applied"
+
+
+def test_apply_stops_when_the_changes_are_not_the_approved_ones(fakes: Fakes, stack: dict[str, str]) -> None:
+    result = run_stack(fakes, stack, "apply", "0" * 64)
+    assert result.returncode == 1
+    assert "changed since" in output(result)
+    assert not [a for a in terraform_calls(fakes) if a[0] == "apply"]
+
+
+def test_nightly_plans_the_destroy_and_applies_that_plan(fakes: Fakes, stack: dict[str, str]) -> None:
+    result = run_stack(fakes, stack, "nightly", ACTION="apply", INSTANCE_TYPE="c7i-flex.large")
+    assert result.returncode == 0, output(result)
+    calls = terraform_calls(fakes)
+    assert [a[0] for a in calls] == ["init", "plan", "show", "apply"]
+    plan = calls[1]
+    assert "-destroy" in plan and "-var" not in plan, "always a destroy, whatever the env"
+    assert any(a.startswith("-lock-timeout=") for a in plan), "waits for a laptop run instead of failing"
+    [out] = [a.split("=", 1)[1] for a in plan if a.startswith("-out=")]
+    assert calls[3] == ["apply", "-input=false", out]
+    for text in (result.stdout, Path(stack["GITHUB_STEP_SUMMARY"]).read_text()):
+        assert SUMMARY.strip() in text
+
+
+@pytest.mark.parametrize("verb", ["plan", "nightly"])
+def test_a_failed_plan_stops_everything(fakes: Fakes, stack: dict[str, str], verb: str) -> None:
+    fakes.fail("terraform", "plan")
+    result = run_stack(fakes, stack, verb)
+    assert result.returncode != 0
+    assert [a[0] for a in terraform_calls(fakes)] == ["init", "plan"]
+    assert Path(stack["GITHUB_OUTPUT"]).read_text() == ""
+
+
+def test_nothing_is_ever_auto_approved(fakes: Fakes, stack: dict[str, str]) -> None:
+    run_stack(fakes, stack, "nightly")
+    assert terraform_calls(fakes) and not [a for a in terraform_calls(fakes) if "-auto-approve" in a]
+    assert "-auto-approve" not in (REPO_ROOT / "ci" / "ephemeral-stack.sh").read_text()
 
 
 # --- ci/nightly-skip.sh ---------------------------------------------------------------------------------

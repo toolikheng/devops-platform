@@ -26,10 +26,6 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    defaults:
-      run:
-        shell: bash
-        working-directory: terraform/envs/aws
     env:
       TF_VAR_ssh_public_key: ${{ vars.SSH_PUBLIC_KEY }}
     steps:
@@ -41,7 +37,7 @@ jobs:
         id: skip
         env:
           SKIP_UNTIL: ${{ vars.NIGHTLY_DESTROY_SKIP_UNTIL }}
-        run: bash "$GITHUB_WORKSPACE/ci/nightly-skip.sh"
+        run: bash ci/nightly-skip.sh
 
       - uses: aws-actions/configure-aws-credentials@v6
         if: steps.skip.outputs.skip != 'true'
@@ -57,21 +53,11 @@ jobs:
           terraform_version: 1.17.1
           terraform_wrapper: false
 
-      # A saved destroy plan, applied exactly as planned; nothing is auto-approved. The lock timeout waits
-      # for a laptop run.
+      # A saved destroy plan, applied exactly as planned (ci/ephemeral-stack.sh); the list goes to the log too.
       - name: Destroy
         if: steps.skip.outputs.skip != 'true'
-        run: |
-          terraform init -input=false > /dev/null
-          terraform plan -destroy -lock-timeout=10m -input=false -out=tfplan > /dev/null
-          {
-            echo "### Nightly destroy"
-            echo '```'
-            bash "$GITHUB_WORKSPACE/ci/plan-summary.sh" tfplan
-            echo '```'
-          } | tee -a "$GITHUB_STEP_SUMMARY"
-          terraform apply -input=false tfplan > /dev/null
+        run: bash ci/ephemeral-stack.sh nightly
 
       - name: Cost check (fails if anything billable is left)
         if: steps.skip.outputs.skip != 'true'
-        run: bash "$GITHUB_WORKSPACE/scripts/cost-check.sh"
+        run: bash scripts/cost-check.sh

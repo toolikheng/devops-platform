@@ -181,23 +181,22 @@ def test_nothing_is_applied_without_a_plan_to_approve(path: Path) -> None:
 
 
 @pytest.mark.parametrize("path", [TERRAFORM, NIGHTLY], ids=lambda p: p.name)
-def test_terraform_jobs_use_one_terraform_and_hide_the_full_plan(path: Path) -> None:
+def test_terraform_runs_only_through_the_stack_script(path: Path) -> None:
+    # One shellchecked, tested script holds every Terraform command the workflows run (ci/ephemeral-stack.sh,
+    # tested in test_cicd_scripts.py): what is locked, what is printed, what is applied.
     ci_version = next(s["with"]["terraform_version"] for job in jobs_of(CI).values() for s in steps(job)
                       if s.get("uses", "").startswith("hashicorp/setup-terraform@"))
+    users = 0
     for name, job in jobs_of(path).items():
-        if not any("terraform " in line for line in runs(job)):
+        assert not [line for line in runs(job) if re.match(r"terraform\b", line)], f"{name}: Terraform outside the script"
+        if not any("ci/ephemeral-stack.sh" in line for line in runs(job)):
             continue
+        users += 1
         [setup] = [s for s in steps(job) if s.get("uses", "").startswith("hashicorp/setup-terraform@")]
         assert setup["with"]["terraform_version"] == ci_version, name
         assert setup["with"].get("terraform_wrapper") is False, f"{name}: the wrapper echoes every output"
         assert job.get("env", {}).get("TF_VAR_ssh_public_key") == "${{ vars.SSH_PUBLIC_KEY }}", name
-        assert job.get("defaults", {}).get("run", {}).get("working-directory") == "terraform/envs/aws", name
-        for line in runs(job):
-            if re.search(r"\bterraform (plan|apply)\b", line):
-                # The full plan never reaches the public log: only addresses and actions, from plan-summary.sh.
-                assert "-out=tfplan" in line or line.endswith(" tfplan") or "tfplan " in line, f"{name}: {line}"
-                assert re.search(r">\s*/dev/null", line), f"{name}: {line}"
-            assert not re.search(r"\bterraform show\b", line), f"{name}: use ci/plan-summary.sh"
+    assert users, "the script is used"
 
 
 def test_terraform_workflow_plans_pull_requests_and_applies_on_demand() -> None:
@@ -220,6 +219,7 @@ def test_terraform_workflow_jobs_run_in_order_with_their_own_roles() -> None:
     assert role_of(jobs["apply"]) == "gha-tf-apply" and jobs["apply"]["environment"] == "aws-apply"
     assert aws_step(jobs["comment"]) is None
     assert "pull_request" in jobs["comment"]["if"] and "workflow_dispatch" in jobs["apply"]["if"]
+    assert "bash ci/ephemeral-stack.sh plan" in runs(jobs["plan"])
 
 
 def test_the_static_checks_run_once_in_ci() -> None:
@@ -229,11 +229,6 @@ def test_the_static_checks_run_once_in_ci() -> None:
         assert "terraform-checks.sh" not in path.read_text(), path.name
     assert "pull_request" in load(CI)["on"]
     assert "bash ci/terraform-checks.sh" in runs(jobs_of(CI)["infra-checks"])
-
-
-def test_the_plan_role_never_takes_the_state_lock() -> None:
-    plans = [line for line in runs(jobs_of(TERRAFORM)["plan"]) if re.search(r"\bterraform plan\b", line)]
-    assert plans and all("-lock=false" in line for line in plans), "gha-tf-plan cannot write the lockfile"
 
 
 def test_only_the_comment_job_writes_to_the_pull_request() -> None:
@@ -248,18 +243,16 @@ def test_only_the_comment_job_writes_to_the_pull_request() -> None:
 def test_apply_plans_again_and_applies_only_the_approved_changes() -> None:
     # The plan file cannot travel from the plan job: it holds the owner's IP in plain text, and artifacts
     # of a public repo can be downloaded. So the apply job plans again and compares a hash of the changes
-    # (address + action) with the one the owner saw before approving.
+    # (address + action) with the one the owner saw before approving (ci/ephemeral-stack.sh apply).
     jobs = jobs_of(TERRAFORM)
-    assert "hash" in jobs["plan"]["outputs"]
-    lines = runs(jobs["apply"])
-    plan = next(i for i, line in enumerate(lines) if re.search(r"\bterraform plan\b", line))
-    check = next(i for i, line in enumerate(lines) if re.search(r'ci/plan-summary\.sh"? --check "?\$APPROVED_HASH', line))
-    apply = next(i for i, line in enumerate(lines) if re.search(r"\bterraform apply\b", line))
-    assert plan < check < apply
-    assert re.search(r"\bterraform apply -input=false tfplan\b", lines[apply]), "applies the saved plan only"
-    assert "needs.plan.outputs.hash" in str(jobs["apply"].get("env", {})), "the hash the owner approved"
+    assert jobs["plan"]["outputs"]["hash"] == "${{ steps.plan.outputs.hash }}"
+    assert [s.get("id") for s in steps(jobs["plan"]) if "ci/ephemeral-stack.sh" in s.get("run", "")] == ["plan"]
+    assert jobs["apply"]["env"]["APPROVED_HASH"] == "${{ needs.plan.outputs.hash }}", "the hash the owner approved"
+    assert 'bash ci/ephemeral-stack.sh apply "$APPROVED_HASH"' in runs(jobs["apply"])
     for name in ("plan", "apply"):
-        assert "inputs.action == 'destroy'" in str(jobs[name].get("env", {})), f"{name}: same mode in both plans"
+        env = jobs[name]["env"]
+        assert (env["ACTION"], env["INSTANCE_TYPE"], env["USE_SPOT"]) == (
+            "${{ inputs.action }}", "${{ inputs.instance_type }}", "${{ inputs.use_spot }}"), f"{name}: same inputs"
 
 
 def test_apply_and_the_nightly_destroy_never_run_at_the_same_time() -> None:
@@ -319,28 +312,6 @@ def test_nightly_destroy_checks_the_skip_switch_before_touching_aws() -> None:
 
 def test_nightly_destroy_applies_a_saved_destroy_plan_then_runs_the_cost_check() -> None:
     lines = runs(jobs_of(NIGHTLY)["destroy"])
-    plan = next(i for i, line in enumerate(lines) if re.search(r"\bterraform plan -destroy\b", line))
-    apply = next(i for i, line in enumerate(lines) if re.search(r"\bterraform apply -input=false tfplan\b", line))
-    cost = next(i for i, line in enumerate(lines) if "scripts/cost-check.sh" in line)
-    assert plan < apply < cost
-
-
-def test_the_plan_summary_and_its_hash_are_in_the_log() -> None:
-    # GitHub's API has no job summaries: with the changes only in the summary page, `gh run view --log` could
-    # not show what an apply would do (C6 live #2). So whatever the plan and nightly jobs put in the job
-    # summary goes to the log too (tee -a, never >>). Addresses, actions and the hash are safe in a public log:
-    # the PR comment shows the same.
-    for job in (jobs_of(TERRAFORM)["plan"], jobs_of(NIGHTLY)["destroy"]):
-        text = "\n".join(s.get("run", "") for s in steps(job))
-        assert ">> \"$GITHUB_STEP_SUMMARY\"" not in text and '>>"$GITHUB_STEP_SUMMARY"' not in text
-        assert re.search(r'^\s*\} \| tee -a "\$GITHUB_STEP_SUMMARY"$', text, re.M), "one block to summary and log"
-        block = text[:re.search(r'^\s*\} \| tee -a', text, re.M).start()]
-        assert "plan-summary.sh" in block.rsplit("{", 1)[-1] or "summary.txt" in block.rsplit("{", 1)[-1], "the changes are in it"
-    plan_block = "\n".join(s.get("run", "") for s in steps(jobs_of(TERRAFORM)["plan"]))
-    assert "$hash" in plan_block.rsplit("{", 1)[-1], "and the plan job's hash"
-
-
-def test_the_apply_job_shows_what_it_applies() -> None:
-    lines = runs(jobs_of(TERRAFORM)["apply"])
-    [check] = [line for line in lines if "plan-summary.sh" in line]
-    assert "--check" in check and ">" not in check, "the --check output (the changes) goes to the log"
+    destroy = lines.index("bash ci/ephemeral-stack.sh nightly")
+    cost = lines.index("bash scripts/cost-check.sh")
+    assert destroy < cost

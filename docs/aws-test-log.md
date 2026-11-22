@@ -290,4 +290,6 @@ make cost-check
 
 Total so far: about USD 0.049 (live #1) and about USD 0.033 (live #2, before the overnight stack) before tax.
 
+After the code review (2026-11-23) the workflows' Terraform steps moved into one script, `ci/ephemeral-stack.sh`, and `terraform.yml` lost its duplicate static-checks job (the same checks run in `ci.yml`). The runs above, and the 02:00 MYT scheduled destroy that night, tested the workflows as they were on `master` before that change (`4f12a7b`); the scheduled run counts as the schedule test. The new script is re-proved live after it merges: a t3.micro `terraform.yml` apply and destroy, and a `nightly-destroy.yml` started by hand.
+
 Record each run here, including failures and what was changed.
