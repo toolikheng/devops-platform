@@ -272,3 +272,8 @@ class Fakes:
         return subprocess.run(["make", "--no-print-directory", target, f"AWS_INVENTORY={self.inventory}",
                                *overrides], cwd=REPO_ROOT, env=self.env(), stdin=subprocess.DEVNULL,
                               capture_output=True, text=True, timeout=120)
+
+
+def output(result: subprocess.CompletedProcess[str]) -> str:
+    """Everything a script or target printed."""
+    return result.stdout + result.stderr

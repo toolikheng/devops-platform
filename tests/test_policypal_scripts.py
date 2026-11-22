@@ -6,10 +6,9 @@
   port-forward to its Service), the UI through the ingress, and the API not reachable through it.
 - scripts/deploy-policypal.sh: render, apply, wait for the Secrets and the rollout, smoke test, and roll back
   what it changed on failure.
-- scripts/install-eso.sh and render-eso.sh: External Secrets Operator's pinned chart, installed and rendered.
-- scripts/check-state-secrets.sh: counts each live secret value in the persistent state, never shows it.
-- make k8s-check, policypal-secrets-local, policypal-local, cloud-deploy, cloud-smoke, cloud-addons,
-  check-state-secrets.
+- make k8s-check, policypal-secrets-local, policypal-local, cloud-deploy, cloud-smoke.
+The External Secrets Operator scripts are tested in test_eso_scripts.py, the state check in
+test_check_state_secrets.py.
 
 They run with the fake CLIs of tests/fakecli.py first on PATH, so no cluster, container or AWS account is
 touched; every call is logged, and the fakes answer what each test sets up.
@@ -17,15 +16,12 @@ touched; every call is logged, and the fakes answer what each test sets up.
 
 import json
 import re
-import secrets
-import subprocess
-from typing import Any
 
 import pytest
 import yaml
 
-from conftest import REPO_ROOT, chart_env, secret_refs
-from fakecli import ESO_MANIFEST, FORWARD_PORT, MANIFEST, NODE_IP, Fakes, flag_value
+from conftest import REPO_ROOT, secret_refs
+from fakecli import ESO_MANIFEST, FORWARD_PORT, MANIFEST, NODE_IP, Fakes, flag_value, output
 
 AWS_GROUP_VARS = REPO_ROOT / "ansible" / "inventory" / "group_vars" / "aws.yml"
 ESO_DIR = REPO_ROOT / "k8s" / "platform" / "external-secrets"
@@ -67,10 +63,6 @@ def fakes(fakes: Fakes) -> Fakes:
     serve_api(fakes, health=HEALTH_OK, g04=ANSWER_G04, g41=ANSWER_G41)
     serve_ui(fakes, health="ok", docs="<html>Streamlit</html>", openapi="<html>Streamlit</html>")
     return fakes
-
-
-def output(result: subprocess.CompletedProcess[str]) -> str:
-    return result.stdout + result.stderr
 
 
 # --- scripts/policypal-secrets.sh -----------------------------------------------------------------------
@@ -467,138 +459,3 @@ def test_deploy_targets_never_change_aws(fakes: Fakes, target: str) -> None:
     for call in fakes.calls("terraform"):
         assert call["args"][0] in ("init", "output"), call["args"]
     assert not fakes.calls("aws")
-
-
-# --- External Secrets Operator: scripts/install-eso.sh, scripts/render-eso.sh, make cloud-addons ----------
-
-def test_install_eso_installs_the_pinned_chart_with_our_values_then_the_store(fakes: Fakes) -> None:
-    result = fakes.script("install-eso.sh")
-    assert result.returncode == 0, output(result)
-    pinned = chart_env()
-    [helm] = fakes.calls("helm")
-    args = helm["args"]
-    assert args[:4] == ["upgrade", "--install", "external-secrets", pinned["ESO_CHART"]]
-    assert flag_value(args, "--repo") == pinned["ESO_CHART_REPO"]
-    assert flag_value(args, "--version") == pinned["ESO_CHART_VERSION"]
-    assert flag_value(args, "--namespace") == "external-secrets"
-    assert flag_value(args, "--values") == str(ESO_DIR / "values.yaml")
-    assert "--create-namespace" in args and "--wait" in args, "returns when the pods are ready"
-    calls = fakes.calls()
-    helm_at = next(i for i, c in enumerate(calls) if c["tool"] == "helm")
-    store = ["apply", "-f", str(ESO_DIR / "clustersecretstore.yaml")]
-    store_at = [i for i, c in enumerate(calls) if c["tool"] == "kubectl" and c["args"] == store]
-    assert store_at and store_at[0] > helm_at, "the store's CRD and its webhook come from the chart"
-
-
-def test_install_eso_stops_when_helm_fails(fakes: Fakes) -> None:
-    fakes.fail("helm")
-    result = fakes.script("install-eso.sh")
-    assert result.returncode != 0
-    assert fakes.calls("helm"), "helm must have run"
-    assert not fakes.kubectl("apply")
-
-
-def test_render_eso_renders_the_same_pinned_chart_and_values(fakes: Fakes) -> None:
-    result = fakes.script("render-eso.sh")
-    assert result.returncode == 0, output(result)
-    assert result.stdout == ESO_MANIFEST
-    pinned = chart_env()
-    [call] = fakes.calls("docker")
-    args = call["args"]
-    image = next(a for a in args if a.startswith("alpine/helm:"))
-    assert re.fullmatch(r"alpine/helm:\d+\.\d+\.\d+", image), "a pinned Helm image"
-    helm = args[args.index(image) + 1:]
-    assert helm[:3] == ["template", "external-secrets", pinned["ESO_CHART"]]
-    assert flag_value(helm, "--repo") == pinned["ESO_CHART_REPO"]
-    assert flag_value(helm, "--version") == pinned["ESO_CHART_VERSION"]
-    assert flag_value(helm, "--namespace") == "external-secrets"
-    assert flag_value(args, "-v") == f"{ESO_DIR}:/eso:ro" and flag_value(helm, "--values") == "/eso/values.yaml"
-
-
-def test_cloud_addons_installs_eso_on_the_aws_node_only(fakes: Fakes) -> None:
-    result = fakes.make("cloud-addons")
-    assert result.returncode == 0, output(result)
-    aws_kubeconfig = str(fakes.home / ".kube" / "devops-aws.yaml")
-    assert fakes.calls("helm") and fakes.kubectl("apply")
-    assert all(c["kubeconfig"] == aws_kubeconfig for c in fakes.calls("helm") + fakes.calls("kubectl"))
-    assert not fakes.calls("k3d") and not fakes.calls("terraform") and not fakes.calls("aws")
-
-
-# --- scripts/check-state-secrets.sh, make check-state-secrets -------------------------------------------
-
-DB_PARAM = "/policypal/aws/db-password"
-ADMIN_PARAM = "/policypal/aws/admin-token"
-
-
-def parameter_state(name: str, kind: str, **attributes: Any) -> dict[str, Any]:
-    return {"mode": "managed", "type": "aws_ssm_parameter", "name": name.rsplit("/", 1)[-1],
-            "instances": [{"attributes": {"name": name, "type": kind, **attributes}}]}
-
-
-def persistent_state(*, extra: list[dict[str, Any]] | None = None, secure: bool = True) -> str:
-    resources = [parameter_state("/devops-platform/owner-cidr", "String", value="198.51.100.7/32")]
-    if secure:
-        resources += [parameter_state(n, "SecureString", value=None, value_wo=None, value_wo_version=1)
-                      for n in (DB_PARAM, ADMIN_PARAM)]
-    return json.dumps({"version": 4, "resources": resources + (extra or [])}, indent=2)
-
-
-@pytest.fixture
-def live_values(fakes: Fakes) -> dict[str, str]:
-    """Random values for the two parameters, made at run time, served by the fake aws."""
-    values = {DB_PARAM: secrets.token_hex(16), ADMIN_PARAM: secrets.token_hex(16)}
-    for name, value in values.items():
-        fakes.parameter(name, value)
-    fakes.spy("grep")
-    return values
-
-
-def assert_never_shown(fakes: Fakes, result: subprocess.CompletedProcess[str], values: dict[str, str]) -> None:
-    # grep runs through the spy, so its arguments are in the log too (they would be visible in ps).
-    assert fakes.calls("grep"), "the values must have been compared with grep"
-    for value in values.values():
-        assert value not in output(result), "a value was printed"
-        assert all(value not in " ".join(c["args"]) for c in fakes.calls()), "a value was a command argument"
-
-
-def test_state_check_reports_zero_for_each_secret_without_showing_it(fakes: Fakes, live_values: dict) -> None:
-    fakes.tf_state(persistent_state())
-    result = fakes.script("check-state-secrets.sh")
-    assert result.returncode == 0, output(result)
-    for name in live_values:
-        assert re.search(rf"^{re.escape(name)}: 0$", result.stdout, re.M), result.stdout
-    read = sorted(flag_value(c["args"], "--name") for c in fakes.calls("aws"))
-    assert read == sorted(live_values), "reads exactly the SecureStrings in the state"
-    for call in fakes.calls("aws"):
-        assert call["args"][:2] == ["ssm", "get-parameter"] and "--with-decryption" in call["args"]
-        assert flag_value(call["args"], "--region") == "ap-southeast-1"
-    assert [c["args"] for c in fakes.calls("terraform")] == [["state", "pull"]]
-    assert_never_shown(fakes, result, live_values)
-
-
-def test_state_check_fails_when_a_value_is_in_the_state(fakes: Fakes, live_values: dict) -> None:
-    leak = {"mode": "managed", "type": "random_password", "name": "token",
-            "instances": [{"attributes": {"result": live_values[ADMIN_PARAM]}}]}
-    fakes.tf_state(persistent_state(extra=[leak]))
-    result = fakes.script("check-state-secrets.sh")
-    assert result.returncode == 1
-    assert re.search(rf"^{re.escape(ADMIN_PARAM)}: 1$", result.stdout, re.M), result.stdout
-    assert re.search(rf"^{re.escape(DB_PARAM)}: 0$", result.stdout, re.M), result.stdout
-    assert_never_shown(fakes, result, live_values)
-
-
-def test_state_check_fails_when_it_has_nothing_to_check(fakes: Fakes, live_values: dict) -> None:
-    fakes.tf_state(persistent_state(secure=False))
-    result = fakes.script("check-state-secrets.sh")
-    assert result.returncode != 0
-    assert "SecureString" in output(result)
-    assert fakes.calls("terraform"), "the state must have been read"
-
-
-def test_make_check_state_secrets_reads_the_persistent_stack_as_devops(fakes: Fakes, live_values: dict) -> None:
-    fakes.tf_state(persistent_state())
-    result = fakes.make("check-state-secrets")
-    assert result.returncode == 0, output(result)
-    [pull] = fakes.calls("terraform")
-    assert pull["cwd"] == str(REPO_ROOT / "terraform" / "persistent")
-    assert {c["profile"] for c in fakes.calls("terraform") + fakes.calls("aws")} == {"devops"}
