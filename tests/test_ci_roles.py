@@ -7,7 +7,9 @@ in a second instead. Facts written in more than one place are also kept equal:
 - the instance-type allowlist: the compute module's validation, the apply role's IAM condition and the
   terraform.yml input choices;
 - every call scripts/cost-check.sh makes is allowed to the nightly destroy role, which runs it after the
-  destroy.
+  destroy;
+- the tags the ephemeral stack puts on everything are the ones the roles' delete and deploy conditions and
+  ci/deploy-over-ssm.sh's instance filter look for.
 The Terraform files are read as text, like tests/test_names.py does: the values tested are plain literals.
 """
 
@@ -27,6 +29,8 @@ GITHUB_PERMISSIONS = PERSISTENT / "github_permissions.tf"
 COMPUTE_VARIABLES = REPO_ROOT / "terraform" / "modules" / "compute" / "variables.tf"
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 COST_CHECK = REPO_ROOT / "scripts" / "cost-check.sh"
+DEPLOY_OVER_SSM = REPO_ROOT / "ci" / "deploy-over-ssm.sh"
+STACK_PROVIDERS = {"ephemeral": REPO_ROOT / "terraform" / "envs" / "aws" / "providers.tf", "persistent": PERSISTENT / "providers.tf"}
 ALLOWLIST = ["t3.micro", "t3.small", "t4g.micro", "t4g.small", "c7i-flex.large", "m7i-flex.large"]
 # GitHub's immutable subject for this repo: owner and repo with their numeric IDs (gh api users/toolikheng,
 # gh api repos/toolikheng/devops-platform). Tokens carry it instead of the plain name.
@@ -142,3 +146,25 @@ def test_cost_check_calls_are_found() -> None:
     assert {"ec2:describeinstances", "ec2:describeregions", "kms:describekey", "sagemaker:listendpoints",
             "elasticloadbalancing:describeloadbalancers"} <= actions
     assert len(actions) >= 20
+
+
+def default_tags(stack: str) -> dict[str, str]:
+    """The default_tags local of a stack's providers.tf."""
+    block = re.search(r"default_tags\s*=\s*\{(.*?)\}", STACK_PROVIDERS[stack].read_text(), re.S)
+    assert block, f"default_tags not found for {stack}"
+    return dict(re.findall(r'(\w+)\s*=\s*"([^"]+)"', block.group(1)))
+
+
+def test_ci_looks_for_the_tags_the_ephemeral_stack_sets() -> None:
+    # Renaming a tag in one place only would break deletes (AccessDenied) or the deploy ("no running node"),
+    # and only a live run would show it.
+    tags = default_tags("ephemeral")
+    assert tags["Stack"] == "ephemeral" and tags["Project"] == default_tags("persistent")["Project"]
+    permissions = GITHUB_PERMISSIONS.read_text()
+    stack_conditions = re.findall(r'"(?:ec2|ssm):[rR]esourceTag/Stack"\s*=\s*"([^"]+)"', permissions)
+    project_conditions = re.findall(r'"(?:ec2|ssm):[rR]esourceTag/Project"\s*=\s*(\S+)', permissions)
+    assert len(stack_conditions) == 2 and set(stack_conditions) == {tags["Stack"]}, "deletes and deploy"
+    assert len(project_conditions) == 2 and set(project_conditions) == {"local.default_tags.Project"}
+    script = DEPLOY_OVER_SSM.read_text()
+    for key in ("Project", "Stack"):
+        assert f"Name=tag:{key},Values={tags[key]}" in script, key
