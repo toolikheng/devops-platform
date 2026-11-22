@@ -5,7 +5,9 @@ These text checks cover every stack and module, including parameters added later
 
 - a random value is only ever an `ephemeral` resource: a `resource "random_password"` keeps its result in
   state, even when it only feeds a write-only argument;
-- every SecureString parameter is written with value_wo, never value or insecure_value (both are stored).
+- every SecureString parameter is written with value_wo, never value or insecure_value (both are stored),
+  and value_wo comes from an ephemeral resource: a literal there would put the secret in Git. (A Terraform
+  test can't check this: value_wo always reads as null, whatever the configuration sets.)
 """
 
 import re
@@ -32,7 +34,7 @@ def test_every_securestring_is_written_with_value_wo() -> None:
             if '"SecureString"' not in body:
                 continue
             found += 1
-            assert re.search(r"^\s*value_wo\s*=", body, re.M), path
+            assert re.search(r"^\s*value_wo\s*=\s*ephemeral\.", body, re.M), f"{path}: value_wo from an ephemeral"
             assert re.search(r"^\s*value_wo_version\s*=", body, re.M), path
             assert not re.search(r"^\s*(insecure_)?value\s*=", body, re.M), path
     assert found >= 2, "the PolicyPal parameters must be among them"

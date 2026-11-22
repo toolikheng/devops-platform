@@ -40,10 +40,12 @@ run "parameters_are_securestrings_under_the_policypal_path" {
 run "secret_values_never_reach_terraform_state" {
   command = apply
 
+  # value_wo itself can't be checked here: a write-only attribute always reads as null, whatever the
+  # configuration sets. tests/test_terraform_secrets.py checks that it comes from an ephemeral resource.
   assert {
     condition = alltrue([
       for p in [aws_ssm_parameter.db_password, aws_ssm_parameter.admin_token] :
-      p.value == "NOT-SET-IN-CONFIG" && p.insecure_value == "NOT-SET-IN-CONFIG" && p.value_wo == null
+      p.value == "NOT-SET-IN-CONFIG" && p.insecure_value == "NOT-SET-IN-CONFIG"
     ])
     error_message = "Set secrets with value_wo only: value and insecure_value are stored in state."
   }
