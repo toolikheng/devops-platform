@@ -18,8 +18,6 @@ import yaml
 from conftest import OVERLAYS, secret_refs
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-K3S_DEFAULTS = REPO_ROOT / "ansible" / "roles" / "k3s" / "defaults" / "main.yml"
-K8S_CHECKS = REPO_ROOT / "ci" / "k8s-checks.sh"
 DEPLOY_SCRIPT = REPO_ROOT / "scripts" / "deploy-policypal.sh"
 SECRET_STORE = REPO_ROOT / "k8s" / "platform" / "external-secrets" / "clustersecretstore.yaml"
 TF_SECRETS = REPO_ROOT / "terraform" / "persistent" / "policypal_secrets.tf"
@@ -421,13 +419,3 @@ def test_containers_run_unprivileged(rendered: dict, overlay: str) -> None:
             sc = c.get("securityContext", {})
             assert sc.get("allowPrivilegeEscalation") is False, f"{name}/{c['name']}"
             assert sc.get("capabilities", {}).get("drop") == ["ALL"], f"{name}/{c['name']}"
-
-
-# --- drift ----------------------------------------------------------------------------------------------
-
-@pytest.mark.parametrize("script", [K8S_CHECKS, REPO_ROOT / "scripts" / "render-eso.sh"], ids=lambda p: p.name)
-def test_checks_use_the_nodes_kubernetes_version(script: Path) -> None:
-    # kubeconform validates against this version, and Helm renders the ESO chart for it.
-    k3s = yaml.safe_load(K3S_DEFAULTS.read_text())["k3s_version"]  # e.g. v1.36.6+k3s1
-    checked = re.search(r'^KUBERNETES_VERSION="([^"]+)"', script.read_text(), re.M)
-    assert checked and k3s == f"v{checked[1]}+k3s1"

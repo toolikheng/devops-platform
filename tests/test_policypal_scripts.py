@@ -20,7 +20,7 @@ import re
 import pytest
 import yaml
 
-from conftest import REPO_ROOT, secret_refs
+from conftest import REPO_ROOT, secret_refs, versions
 from fakecli import ESO_MANIFEST, FORWARD_PORT, MANIFEST, NODE_IP, Fakes, flag_value, output
 
 AWS_GROUP_VARS = REPO_ROOT / "ansible" / "inventory" / "group_vars" / "aws.yml"
@@ -356,7 +356,7 @@ def test_k8s_check_validates_policypal_and_eso_strictly_against_the_nodes_versio
     for call in validations:
         args = call["args"]
         assert "-strict" in args
-        assert flag_value(args, "-kubernetes-version") == "1.36.6"
+        assert flag_value(args, "-kubernetes-version") == versions()["KUBERNETES_VERSION"]
         # Kubernetes' own schemas, then the CRD schemas (ExternalSecret, ClusterSecretStore) at a pinned commit.
         locations = [args[i + 1] for i, a in enumerate(args) if a == "-schema-location"]
         assert locations[0] == "default" and len(locations) == 2 and catalog.fullmatch(locations[1])

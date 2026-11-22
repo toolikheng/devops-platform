@@ -11,7 +11,7 @@ for the chart itself (host network, ports, sizes) are checked on the real render
 
 import re
 
-from conftest import REPO_ROOT, chart_env
+from conftest import REPO_ROOT, chart_env, versions
 from fakecli import ESO_MANIFEST, Fakes, flag_value, output
 
 ESO_DIR = REPO_ROOT / "k8s" / "platform" / "external-secrets"
@@ -58,6 +58,7 @@ def test_render_eso_renders_the_same_pinned_chart_and_values(fakes: Fakes) -> No
     assert flag_value(helm, "--repo") == pinned["ESO_CHART_REPO"]
     assert flag_value(helm, "--version") == pinned["ESO_CHART_VERSION"]
     assert flag_value(helm, "--namespace") == "external-secrets"
+    assert flag_value(helm, "--kube-version") == versions()["KUBERNETES_VERSION"], "the node's Kubernetes"
     assert flag_value(args, "-v") == f"{ESO_DIR}:/eso:ro" and flag_value(helm, "--values") == "/eso/values.yaml"
 
 

@@ -10,7 +10,9 @@ echo "=== Running Terraform checks ==="
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TF_ROOT="$REPO_ROOT/terraform"
 TFLINT_IMAGE="ghcr.io/terraform-linters/tflint:v0.66.0"
-TRIVY_IMAGE="aquasec/trivy:0.75.0"
+# shellcheck source=ci/versions.env
+source "$REPO_ROOT/ci/versions.env"
+TRIVY_IMAGE="aquasec/trivy:$TRIVY_VERSION"
 export TF_PLUGIN_CACHE_DIR="${TF_PLUGIN_CACHE_DIR:-$HOME/.terraform.d/plugin-cache}"
 mkdir -p "$TF_PLUGIN_CACHE_DIR"
 # Each stack is checked with its own throwaway data dir. `init -backend=false` reuses whatever backend a

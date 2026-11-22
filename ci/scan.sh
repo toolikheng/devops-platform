@@ -8,7 +8,9 @@ set -euo pipefail
 echo "=== Scanning Docker image ==="
 
 IMAGE_TAG="${1:-devops-app:latest}"
-TRIVY_IMAGE="aquasec/trivy:0.75.0"
+# shellcheck source=ci/versions.env
+source "$(dirname "$0")/versions.env"
+TRIVY_IMAGE="aquasec/trivy:$TRIVY_VERSION"
 
 echo "Scanning $IMAGE_TAG for fixable HIGH/CRITICAL vulnerabilities..."
 docker run --rm \

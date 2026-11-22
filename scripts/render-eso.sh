@@ -7,7 +7,9 @@
 set -euo pipefail
 
 HELM_IMAGE="alpine/helm:3.21.4"
-KUBERNETES_VERSION="1.36.6" # same version as k3s on the AWS node (ansible/roles/k3s/defaults/main.yml; a test checks)
+# KUBERNETES_VERSION: the version of k3s on the AWS node.
+# shellcheck source=ci/versions.env
+source "$(dirname "$0")/../ci/versions.env"
 ESO_DIR="$(cd "$(dirname "$0")/../k8s/platform/external-secrets" && pwd)"
 # shellcheck source=k8s/platform/external-secrets/chart.env
 source "$ESO_DIR/chart.env"
