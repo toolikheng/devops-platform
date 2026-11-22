@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # policypal-secrets.sh - create PolicyPal's two Secrets in the current cluster, with random values, once.
 #
-# Temporary until Phase C5, where External Secrets Operator creates them from SSM Parameter Store. Runs
-# against kubectl's current cluster: make policypal-secrets-local switches to k3d first, make cloud-deploy
-# sets KUBECONFIG to the AWS cluster's file. Values exist only in the cluster: they are never printed and
-# never passed as command-line arguments (visible to other users in ps); printf is a shell builtin.
+# For the local k3d cluster (make policypal-secrets-local switches to it first). On AWS, External Secrets
+# Operator makes these Secrets from SSM Parameter Store instead; k3d has no AWS identity, and giving it AWS
+# keys would put long-lived credentials in Kubernetes. Values exist only in the cluster: they are never
+# printed and never passed as command-line arguments (visible to other users in ps); printf is a builtin.
 # Secrets that already exist are left alone: Postgres keeps the password it was first started with.
 set -euo pipefail
 
@@ -16,10 +16,8 @@ kubectl get namespace "$NAMESPACE" >/dev/null 2>&1 || kubectl create namespace "
 
 # The KEY=value lines of each Secret, generated only when it is created.
 db_values() {
-  local password
-  password="$(openssl rand -hex 24)" # hex only: no escaping needed inside the database URL
-  printf 'POSTGRES_PASSWORD=%s\nDATABASE_URL=postgresql+psycopg://policypal:%s@postgres:5432/policypal\n' \
-    "$password" "$password"
+  # Hex only: the API builds its database URL from this password (base/api.yaml), with no escaping.
+  printf 'POSTGRES_PASSWORD=%s\n' "$(openssl rand -hex 24)"
 }
 admin_values() {
   printf 'ADMIN_TOKEN=%s\n' "$(openssl rand -hex 24)"

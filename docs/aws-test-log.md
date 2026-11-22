@@ -168,4 +168,70 @@ On the node: `kubectl top`, each container's cgroup `memory.peak`, and `free -m`
 
 Total for these runs: about USD 0.042 before tax.
 
+## Secrets from Parameter Store through External Secrets Operator (Phase C5)
+
+### Local first (k3d, free)
+
+k3d has no AWS identity, so ESO can't read Parameter Store there, but everything else ran locally first:
+
+- `scripts/install-eso.sh` installed the chart in 89 s and the ClusterSecretStore was accepted by ESO's webhook. The controller's pod IP was the node's own address (host network); the webhook and cert-controller had pod-network addresses. The store reported "unable to validate store" (no credentials), as expected.
+- A probe ExternalSecret in `default` was refused by the store: "using cluster store "aws-parameter-store" is not allowed from namespace "default": denied by spec.condition". The same probe in `policypal` failed only because the store wasn't ready.
+- **The deploy's new wait for the Secrets failed in 0.4 s instead of waiting**: `kubectl wait --for=create secret/a secret/b` returns NotFound at once when it is given more than one resource; with one it waits. The test's fake kubectl had accepted two names. Fixed test-first: one wait per Secret. With no Secrets the deploy then waited 123 s, said where to look and exited 1; with the k3d script's Secrets it passed the smoke test 6/6.
+- ESO's memory (cgroup, current / peak): controller 54 / 55 MiB, cert-controller 53 / 54 MiB, webhook 38 / 39 MiB.
+- After the AWS session: with `pod-security.kubernetes.io/enforce: baseline` on the namespace, PolicyPal deployed and passed the smoke test, and a host-network pod was refused in `policypal` but admitted in `default`.
+
+### Steps
+
+```bash
+aws login --profile devops
+make cost-check
+cd terraform/persistent && terraform init && terraform plan -out tfplan && terraform apply tfplan && cd -
+make check-state-secrets          # every count must be 0
+make cloud-up && make cloud-config
+make cloud-tunnel                 # second terminal
+make cloud-addons                 # External Secrets Operator + the store
+make cloud-deploy                 # the ExternalSecrets make the Secrets; smoke test
+# checks below, then rotation: admin_token_version 1 -> 2 in variables.tf, plan, apply
+kubectl -n policypal annotate externalsecret policypal-admin force-sync="$(date +%s)" --overwrite
+kubectl -n policypal rollout restart deployment/policypal-api
+make check-state-secrets
+# Ctrl-C in the tunnel terminal, then:
+make cloud-down
+```
+
+Checks: delete `policypal-admin` and time ESO recreating it; an IMDSv2 token request from inside the API pod, and from the same image with `hostNetwork: true`; a probe ExternalSecret on `/devops-platform/owner-cidr`; `aws iam simulate-principal-policy` for the node role; `ss -ltnp` and the containers' `memory.peak` on the node through Ansible; `GET /analytics` with the old token, the new one, none and a random one (tokens on curl's stdin, only status codes printed).
+
+### Expected results
+
+| Check | Expected |
+|---|---|
+| State | `make check-state-secrets` 0 for both parameters, after the first apply and after a rotation; second plan no changes |
+| Store | Ready with the node's role, no credentials of its own |
+| Deploy | the Secrets appear right after the apply; smoke test 6/6 |
+| Deleted Secret | ESO makes it again |
+| IMDS | no token in a pod-network pod while ESO keeps syncing |
+| Scope | AccessDenied for any parameter outside `/policypal/aws/` |
+| Rotation | new token 200, old token 403 after the API restarts |
+| End | destroy, `make cost-check` exit 0, no active Session Manager sessions |
+
+### Result log
+
+| Date (MYT) | Run | Result | Notes |
+|---|---|---|---|
+| 2026-11-22 13:04 | Persistent apply | Pass | 3 added (the two parameters, the node's `policypal-parameters` policy), 1 changed (the role's description). The plan showed `value_wo = (write-only attribute)` and no value. `make check-state-secrets`: 0 and 0. Second plan: no changes. |
+| 2026-11-22 13:11 | Apply, c7i-flex.large Spot | Pass | 9 added in 23 s. Spot price USD 0.0534/h in ap-southeast-1a. |
+| 2026-11-22 13:12 | `make cloud-config` | Pass | 63 s, `changed=20`, `failed=0`. k3s's Traefik install job failed its first try and succeeded on its own retry. |
+| 2026-11-22 13:14 | `make cloud-addons` | Pass | 51 s. Store `Ready`: "store validated", with the node's role through IMDSv2 from the host network. |
+| 2026-11-22 13:16 | `make cloud-deploy` | Pass | 2 min 4 s. Both ExternalSecrets `SecretSynced`; the Secrets were created in the same second as the ExternalSecrets and are owned by them. Smoke test 6/6. |
+| 2026-11-22 ~13:18 | Deleted Secret | Pass | `policypal-admin` back after 0.2 s (new object, same key). |
+| 2026-11-22 ~13:19 | IMDS | Pass | From the API pod: token request timed out. Same image with `hostNetwork: true`: token received. ESO stayed synced. The second result showed that any host-network pod gets the node's credentials, so the `policypal` namespace now enforces Pod Security "baseline" ([ADR 017](decisions/017-imds-hop-limit-and-host-network.md)). |
+| 2026-11-22 ~13:20 | Scope | Pass | Probe ExternalSecret on `/devops-platform/owner-cidr`: `AccessDeniedException` for `assumed-role/devops-platform-node`. Policy simulator: `GetParameter` on both PolicyPal parameters allowed; on owner-cidr, and `GetParameters`, `GetParametersByPath`, `PutParameter`, `DeleteParameter`: implicit deny. |
+| 2026-11-22 ~13:21 | Ports and memory | Pass | Host ports: 22, 53 (loopback), 6443, 6444, 9100, 10010, 10248–10259, and ESO's 8080 (metrics) and 8082 (health). ESO current / peak: controller 37 / 39 MiB, cert-controller 41 / 54, webhook 32 / 32. |
+| 2026-11-22 ~13:22 | `helm upgrade` | Fail, then pass | Adding the controller's liveness probe (which also sets its health port 8082 explicitly; the tests hadn't seen it) failed after 5 minutes: the new controller pod stayed Pending, "didn't have free ports for the requested pod ports". A rolling update needs the old and the new host-network pod on one node at once. Fixed test-first with `strategy: Recreate` (`d5706e0`); the next upgrade finished in 23 s. |
+| 2026-11-22 13:31 | Rotation | Pass | Before: old token 200, none 401, random 403. `admin_token_version` 1 → 2 (`1336013`), applied: SSM version 2, state check 0 and 0. After a forced sync the Secret held version 2, but the running API still took the old token (200) and refused the new one (403). After `rollout restart` (32 s): new 200, old 403, none 401. Smoke test 6/6. |
+| 2026-11-22 ~13:36 | Node memory | Note | 2341 MiB of 3812 (61%), with the API just restarted. C7 checks this again before adding monitoring. |
+| 2026-11-22 13:44 | Destroy | Pass | Tunnel closed first. 9 destroyed; cost-check clean; no active sessions. About USD 0.034. |
+
+Total for this run: about USD 0.034 before tax.
+
 Record each run here, including failures and what was changed.

@@ -1,0 +1,21 @@
+# gitleaks settings (ci/gitleaks.sh, the pre-commit hook and the Secret scan workflow): the default rules,
+# plus one rule for passwords assigned as plain text.
+#
+# The default rules look for known token formats and high-entropy strings. They missed two restic
+# passwords in commit 7ca581f, written as RESTIC_PASSWORD="${RESTIC_PASSWORD:-<literal>}" (docs/runbook.md,
+# "Leaked credentials"). tests/test_secret_scanning.py proves this rule catches both, and that references
+# such as "$VAR", "${VAR}", "${VAR:?message}" or "$(command)" are not flagged.
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "plain-password-assignment"
+description = "A *_PASSWORD variable set to a literal value, directly or as a ${VAR:-default}"
+# NAME_PASSWORD = then an optional quote, an optional ${NAME:- or ${NAME:= default, and the literal (group 1):
+# 8 or more characters that can't start a reference ($), a format (%), a placeholder (<) or a quote.
+# NAME starts with a letter, like every environment variable, so prose such as "*_PASSWORD= lines" is not a
+# finding. [ \t]* rather than \s*: an empty NAME_PASSWORD= must not run on into the next line.
+regex = '''\b[A-Z][A-Z0-9_]*_PASSWORD[ \t]*=[ \t]*["']?(?:\$\{[A-Z0-9_]+:?[-=])?([^\s"'$%{}<>`]{8,})'''
+secretGroup = 1
+keywords = ["_password"]

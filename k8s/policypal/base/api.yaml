@@ -85,11 +85,16 @@ spec:
           value: /app/uploads
         - name: LOG_LEVEL
           value: INFO
-        - name: DATABASE_URL
+        # The Secret holds only the password; the URL is built here. Kubernetes replaces $(POSTGRES_PASSWORD)
+        # because that variable is defined above it in this container. The password is letters and digits,
+        # so the URL needs no escaping. The API ignores POSTGRES_PASSWORD itself.
+        - name: POSTGRES_PASSWORD
           valueFrom:
             secretKeyRef:
               name: policypal-db
-              key: DATABASE_URL
+              key: POSTGRES_PASSWORD
+        - name: DATABASE_URL
+          value: postgresql+psycopg://policypal:$(POSTGRES_PASSWORD)@postgres:5432/policypal
         - name: ADMIN_TOKEN
           valueFrom:
             secretKeyRef:

@@ -55,6 +55,18 @@ MUST_KEEP = [
     "ansible/playbooks/aws-node.yml",
     # The secrets script holds no values (it generates them inside the cluster), so it is committed.
     "scripts/policypal-secrets.sh",
+    # C5: secret management
+    ".gitleaks.toml",
+    ".gitleaksignore",
+    ".pre-commit-config.yaml",
+    ".github/workflows/secret-scan.yml",
+    "k8s/platform/external-secrets/chart.env",
+    "k8s/platform/external-secrets/values.yaml",
+    "k8s/platform/external-secrets/clustersecretstore.yaml",
+    "k8s/policypal/overlays/aws/externalsecret-admin.yaml",
+    "scripts/install-eso.sh",
+    "scripts/render-eso.sh",
+    "terraform/persistent/policypal_secrets.tf",
 ]
 
 LOCAL_ONLY = ["CLAUDE.md", "CLAUDE.local.md", "planning", ".local-archive", ".claude", ".agents",
@@ -95,11 +107,12 @@ def test_no_local_only_paths_in_committed_gitignore() -> None:
     assert not patterns & set(LOCAL_ONLY)
 
 
-def test_every_policypal_manifest_can_be_committed(tmp_path: Path) -> None:
+@pytest.mark.parametrize("folder", ["k8s/policypal", "k8s/platform"])
+def test_every_manifest_can_be_committed(tmp_path: Path, folder: str) -> None:
     """Patterns such as *-secret.yaml would silently drop a manifest; check every file that exists."""
-    root = REPO_ROOT / "k8s" / "policypal"
+    root = REPO_ROOT / folder
     files = sorted(str(p.relative_to(REPO_ROOT)) for p in root.rglob("*") if p.is_file())
-    assert files, "k8s/policypal has no files"
+    assert files, f"{folder} has no files"
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     shutil.copy(GITIGNORE, tmp_path / ".gitignore")
     result = subprocess.run(

@@ -72,13 +72,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v7
+      with:
+        fetch-depth: 0 # the secret-scanning tests check the gitleaks rule against an old commit (7ca581f)
 
     - name: Set up Python
       uses: actions/setup-python@v7
       with:
         python-version: '3.12'
 
-    - name: Repo-level tests (cost check with a fake aws CLI, .gitignore rules)
+    - name: Repo-level tests (scripts with fake CLIs, manifests, repo rules)
       run: |
         pip install -q -r tests/requirements.txt
         python -m pytest -q tests

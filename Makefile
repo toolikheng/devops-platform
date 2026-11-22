@@ -7,6 +7,7 @@
         test-infra cost-check tf-check ansible-check owner-ip cloud-up cloud-down \
         cloud-config cloud-tunnel cloud-rebuild \
         k8s-check policypal-secrets-local policypal-local cloud-deploy cloud-smoke \
+        cloud-addons check-state-secrets \
         destroy all clean
 
 SHELL := /bin/bash
@@ -29,12 +30,12 @@ CI_DIR := $(REPO_ROOT)/ci
 # App virtualenv with the dev dependencies (created by `make venv`; gitignored).
 VENV := $(APP_DIR)/.venv
 VENV_STAMP := $(VENV)/.installed
-# Repo-level tests in tests/ (cost check, .gitignore rules) have their own venv (gitignored).
+# Repo-level tests in tests/ have their own venv (gitignored).
 TESTS_VENV := $(REPO_ROOT)/tests/.venv
 TESTS_VENV_STAMP := $(TESTS_VENV)/.installed
-# AWS profile and region for the AWS targets (`aws login --profile devops` first).
+# AWS profile for the AWS targets (`aws login --profile devops` first). The region is fixed in each stack
+# and script (ap-southeast-1), not taken from the shell.
 AWS_PROFILE ?= devops
-AWS_REGION ?= ap-southeast-1
 # Extra Terraform arguments for cloud-up/cloud-down, e.g. CLOUD_ARGS='-var use_spot=false' for on-demand.
 CLOUD_ARGS ?=
 # Where make cloud-config writes the generated AWS inventory (gitignored; tests point it elsewhere).
@@ -77,7 +78,7 @@ help:
 	@$(ECHO) "  $(GREEN)make venv$(NC)          Create app/.venv with dev dependencies (automatic)"
 	@$(ECHO) "  $(GREEN)make test$(NC)          Run pytest suite"
 	@$(ECHO) "  $(GREEN)make lint$(NC)          Run linters (ruff, mypy)"
-	@$(ECHO) "  $(GREEN)make test-infra$(NC)    Run the repo-level tests in tests/ (cost check, .gitignore)"
+	@$(ECHO) "  $(GREEN)make test-infra$(NC)    Run the repo-level tests in tests/ (scripts with fake CLIs, manifests, repo rules)"
 	@$(ECHO) "  $(GREEN)make run-app$(NC)       Run the app locally on :8000"
 	@$(ECHO) ""
 	@$(ECHO) "$(BLUE)Phase 3 - Containerize:$(NC)"
@@ -106,15 +107,17 @@ help:
 	@$(ECHO) "  $(GREEN)make cost-check$(NC)    Read-only scan for billable AWS leftovers (all regions)"
 	@$(ECHO) "  $(GREEN)make tf-check$(NC)      Offline Terraform checks: fmt, validate, test, tflint, trivy"
 	@$(ECHO) "  $(GREEN)make ansible-check$(NC) Offline Ansible checks: ansible-lint, syntax-check (both playbooks)"
-	@$(ECHO) "  $(GREEN)make k8s-check$(NC)     Offline Kubernetes checks: render both PolicyPal overlays, kubeconform -strict"
+	@$(ECHO) "  $(GREEN)make k8s-check$(NC)     Offline Kubernetes checks: render PolicyPal (both overlays) and External Secrets Operator, kubeconform -strict"
 	@$(ECHO) "  $(GREEN)make owner-ip$(NC)      Store your public IP (/32) for the node's firewall (AWS write)"
 	@$(ECHO) "  $(GREEN)make cloud-up$(NC)      Store your IP, then create the ephemeral stack (asks before applying; billed hourly)"
 	@$(ECHO) "  $(GREEN)make cloud-down$(NC)    Destroy the ephemeral stack (asks first), then run cost-check"
 	@$(ECHO) "  $(GREEN)make cloud-config$(NC)  Configure the running node with Ansible over Session Manager (common, node_exporter, k3s)"
 	@$(ECHO) "  $(GREEN)make cloud-tunnel$(NC)  Forward the node's Kubernetes API to localhost:16443 (foreground; Ctrl-C stops it)"
 	@$(ECHO) "  $(GREEN)make cloud-rebuild$(NC) cloud-up, then cloud-config: from nothing to a Ready k3s node"
+	@$(ECHO) "  $(GREEN)make cloud-addons$(NC)  Install External Secrets Operator on the node (needs make cloud-tunnel running)"
 	@$(ECHO) "  $(GREEN)make cloud-deploy$(NC)  Deploy PolicyPal to the node and smoke-test it (needs make cloud-tunnel running)"
 	@$(ECHO) "  $(GREEN)make cloud-smoke$(NC)   Smoke-test PolicyPal on the node only (needs make cloud-tunnel running)"
+	@$(ECHO) "  $(GREEN)make check-state-secrets$(NC) Read-only: show that no secret value is in the persistent Terraform state"
 	@$(ECHO) ""
 	@$(ECHO) "$(BLUE)Utilities:$(NC)"
 	@$(ECHO) "  $(GREEN)make all$(NC)           Run all phases (check → infra → deploy)"
@@ -297,7 +300,11 @@ policypal-local: policypal-secrets-local
 
 # Read-only: describe/list/get calls only, never the Cost Explorer API. Exit 1 if anything billable is left.
 cost-check:
-	@AWS_PROFILE="$(AWS_PROFILE)" AWS_REGION="$(AWS_REGION)" bash "$(REPO_ROOT)/scripts/cost-check.sh"
+	@AWS_PROFILE="$(AWS_PROFILE)" bash "$(REPO_ROOT)/scripts/cost-check.sh"
+
+# Read-only: terraform state pull and ssm get-parameter. Prints names and counts, never a value.
+check-state-secrets:
+	@AWS_PROFILE="$(AWS_PROFILE)" bash "$(REPO_ROOT)/scripts/check-state-secrets.sh"
 
 # AWS writes. owner-ip overwrites one free SSM parameter with this machine's IP straight away. cloud-up
 # runs it first, then shows Terraform's plan and waits for "yes", as cloud-down does; never add -auto-approve.
@@ -326,11 +333,15 @@ cloud-rebuild:
 	@$(MAKE) --no-print-directory cloud-up
 	@$(MAKE) --no-print-directory cloud-config
 
-# PolicyPal on the AWS node. No AWS changes: kubectl goes through make cloud-tunnel (run it in another
-# terminal), and the UI is checked at the node's public IP, which only your IP can reach.
+# On the AWS node. No AWS changes: kubectl and helm go through make cloud-tunnel (run it in another
+# terminal), and the UI is checked at the node's public IP, which only your IP can reach. cloud-addons
+# installs External Secrets Operator, which makes PolicyPal's Secrets from SSM Parameter Store, so it runs
+# once per new node, before cloud-deploy.
+cloud-addons:
+	@KUBECONFIG="$(AWS_KUBECONFIG)" bash "$(REPO_ROOT)/scripts/install-eso.sh"
+
 cloud-deploy:
 	@ip="$$(AWS_PROFILE="$(AWS_PROFILE)" bash "$(REPO_ROOT)/scripts/node-ip.sh")"; \
-		KUBECONFIG="$(AWS_KUBECONFIG)" bash "$(REPO_ROOT)/scripts/policypal-secrets.sh"; \
 		KUBECONFIG="$(AWS_KUBECONFIG)" bash "$(REPO_ROOT)/scripts/deploy-policypal.sh" aws "http://$$ip"
 
 cloud-smoke:

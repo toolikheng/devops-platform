@@ -2,15 +2,16 @@
 # cost-check.sh - read-only scan of the AWS account for resources that cost money while they exist.
 #
 # Every enabled region is checked for the usual leftovers (instances, volumes, Elastic IPs). The home
-# region (AWS_REGION, default ap-southeast-1) is also checked for every other billable service this
-# project could create. Only describe/list/get calls are made. They are free; the Cost Explorer API
+# region, ap-southeast-1, is also checked for every other billable service this project could create. Only describe/list/get calls are made. They are free; the Cost Explorer API
 # is billed per request and is never called.
 #
 # Exit codes: 0 nothing billable found, 1 billable leftovers found,
 #             2 a check could not run (an incomplete scan is never reported as clean).
 set -uo pipefail
 
-HOME_REGION="${AWS_REGION:-ap-southeast-1}"
+# The region both stacks fix in code. AWS_REGION is ignored on purpose (as in owner-ip.sh): make cloud-down
+# destroys in this region, so the scan after it must cover this region in full, whatever the shell says.
+HOME_REGION="ap-southeast-1"
 checks=0
 found=0
 errors=0
