@@ -214,12 +214,21 @@ def test_terraform_workflow_plans_pull_requests_and_applies_on_demand() -> None:
 
 def test_terraform_workflow_jobs_run_in_order_with_their_own_roles() -> None:
     jobs = jobs_of(TERRAFORM)
-    assert set(jobs) == {"static", "plan", "comment", "apply"}
-    assert jobs["plan"]["needs"] == "static" and jobs["comment"]["needs"] == "plan" and jobs["apply"]["needs"] == "plan"
+    assert set(jobs) == {"plan", "comment", "apply"}
+    assert "needs" not in jobs["plan"] and jobs["comment"]["needs"] == "plan" and jobs["apply"]["needs"] == "plan"
     assert role_of(jobs["plan"]) == "gha-tf-plan" and "environment" not in jobs["plan"]
     assert role_of(jobs["apply"]) == "gha-tf-apply" and jobs["apply"]["environment"] == "aws-apply"
-    assert aws_step(jobs["static"]) is None and aws_step(jobs["comment"]) is None
+    assert aws_step(jobs["comment"]) is None
     assert "pull_request" in jobs["comment"]["if"] and "workflow_dispatch" in jobs["apply"]["if"]
+
+
+def test_the_static_checks_run_once_in_ci() -> None:
+    # terraform.yml had its own static job running the same ci/terraform-checks.sh as ci.yml on every PR that
+    # touched terraform/ (removed after the C6 review). ci.yml runs them on every PR.
+    for path in AWS_WORKFLOWS:
+        assert "terraform-checks.sh" not in path.read_text(), path.name
+    assert "pull_request" in load(CI)["on"]
+    assert "bash ci/terraform-checks.sh" in runs(jobs_of(CI)["infra-checks"])
 
 
 def test_the_plan_role_never_takes_the_state_lock() -> None:
@@ -231,7 +240,7 @@ def test_only_the_comment_job_writes_to_the_pull_request() -> None:
     # The job holding AWS credentials cannot write to GitHub; the job writing the comment has no AWS access.
     jobs = jobs_of(TERRAFORM)
     assert jobs["comment"]["permissions"] == {"pull-requests": "write"}
-    for name in ("static", "plan", "apply"):
+    for name in ("plan", "apply"):
         assert "pull-requests" not in jobs[name]["permissions"], name
     assert any("gh pr comment" in line for line in runs(jobs["comment"]))
 
@@ -257,7 +266,7 @@ def test_apply_and_the_nightly_destroy_never_run_at_the_same_time() -> None:
     # Same group: one waits for the other. Never cancelled midway: a half-applied stack keeps billing.
     for job in (jobs_of(TERRAFORM)["apply"], jobs_of(NIGHTLY)["destroy"]):
         assert job["concurrency"] == {"group": "aws-ephemeral-state", "cancel-in-progress": False}
-    for name in ("static", "plan", "comment"):
+    for name in ("plan", "comment"):
         assert "concurrency" not in jobs_of(TERRAFORM)[name], name
 
 

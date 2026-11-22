@@ -2,8 +2,8 @@
 # credentials for its own role through OIDC; no AWS key is stored anywhere. The persistent stack (IAM,
 # budgets, state bucket) is applied from the owner's laptop only, so no workflow can change IAM.
 #
-# Pull request touching terraform/: the static checks, then a read-only plan, posted as a PR comment that
-#   lists each resource address and action. Never values: the repo is public, and so are its logs.
+# Pull request touching terraform/: a read-only plan, posted as a PR comment that lists each resource address
+#   and action. Never values: the repo is public, and so are its logs. (The static checks run in ci.yml.)
 # Manual run (Actions > Terraform > Run workflow, apply or destroy): the same plan, shown in the run summary
 #   with its hash. The apply job waits for the owner's approval (environment aws-apply, master only), plans
 #   again and applies that saved plan only if its changes hash the same as the approved ones. The plan file
@@ -38,29 +38,8 @@ on:
 permissions: {}
 
 jobs:
-  static:
-    name: Static checks (no AWS access)
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - uses: hashicorp/setup-terraform@v4
-        with:
-          terraform_version: 1.17.1
-          terraform_wrapper: false
-
-      - name: fmt, validate, test (mocked AWS), tflint, trivy
-        run: bash ci/terraform-checks.sh
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # tflint plugin download (avoids API rate limits)
-
   plan:
     name: Plan (read-only role)
-    needs: static
     runs-on: ubuntu-latest
     permissions:
       contents: read
