@@ -6,6 +6,18 @@
 # in the pod network: the webhook listens on 10250, which is the kubelet's port on the host.
 hostNetwork: true
 
+# On the host network the controller's ports are the node's ports: metrics on 8080 and health checks on
+# 8082 (measured with ss on the node; both are free there, and the security group lets in only 80). The
+# chart leaves the liveness probe off, which also leaves 8082 an unwritten default; turning it on sets
+# --live-addr=:8082 and lets Kubernetes restart a controller that hangs.
+livenessProbe:
+  enabled: true
+
+# Replace the controller, don't roll it: a rolling update starts the new pod next to the old one, and on
+# one node both would need the same host ports, so the new pod would stay Pending (seen on the node).
+strategy:
+  type: Recreate
+
 # Requests and limits for all three pods (the chart sets none).
 resources:
   requests:

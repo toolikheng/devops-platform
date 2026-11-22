@@ -22,10 +22,10 @@ RENDER_ESO = REPO_ROOT / "scripts" / "render-eso.sh"
 
 CONTROLLER = "external-secrets"
 NOT_ON_HOST = ("external-secrets-webhook", "external-secrets-cert-controller")
-# Ports already taken on the node's host network: sshd, Traefik through ServiceLB (80, 443), node_exporter,
-# and k3s (API 6443 and its internal 6444, kubelet 10248/10250, kube-proxy 10249/10256, controllers 10257 to
-# 10259, containerd streaming 10010).
-NODE_PORTS = {22, 80, 443, 6443, 6444, 9100, 10010, 10248, 10249, 10250, 10256, 10257, 10258, 10259}
+# Ports already taken on the node's host network (`ss -ltnp` on the node, 2026-11-22): sshd 22,
+# systemd-resolved 53, Traefik through ServiceLB (80, 443), node_exporter 9100, and k3s (API 6443 and its
+# internal 6444, kubelet 10248/10250, kube-proxy 10249/10256, controllers 10257 to 10259, containerd 10010).
+NODE_PORTS = {22, 53, 80, 443, 6443, 6444, 9100, 10010, 10248, 10249, 10250, 10256, 10257, 10258, 10259}
 
 
 @pytest.fixture(scope="module")
@@ -73,6 +73,28 @@ def test_only_the_controller_runs_on_the_host_network(eso: list) -> None:
     assert pod_spec(found[CONTROLLER]).get("hostNetwork") is True
     for name in NOT_ON_HOST:
         assert not pod_spec(found[name]).get("hostNetwork"), name
+
+
+def test_the_controller_sets_every_port_it_listens_on(eso: list) -> None:
+    # On the host network a port nobody wrote down can clash. The controller always listens for metrics and
+    # for health checks: on the node it held 8080 and 8082 while only --metrics-addr was set, because the
+    # health port is a built-in default. Both must be set explicitly.
+    [c] = pod_spec(deployments(eso)[CONTROLLER])["containers"]
+    flags = {a.split("=", 1)[0] for a in c.get("args", [])}
+    assert {"--metrics-addr", "--live-addr"} <= flags
+
+
+def test_the_controller_is_replaced_not_rolled(eso: list) -> None:
+    # A rolling update starts the new pod next to the old one. On the host network both need the same node
+    # ports, so on one node the new pod stays Pending ("didn't have free ports"): seen on the node at the
+    # first helm upgrade. Recreate stops the old pod first; the Secrets it made stay in the cluster.
+    assert deployments(eso)[CONTROLLER]["spec"].get("strategy", {}).get("type") == "Recreate"
+
+
+def test_the_controller_has_a_liveness_probe(eso: list) -> None:
+    # The chart leaves it off: a hung controller would stop syncing Secrets and never be restarted.
+    [c] = pod_spec(deployments(eso)[CONTROLLER])["containers"]
+    assert c.get("livenessProbe", {}).get("httpGet"), "liveness probe on the health port"
 
 
 def test_the_controller_takes_no_port_the_node_already_uses(eso: list) -> None:
