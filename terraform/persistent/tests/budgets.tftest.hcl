@@ -103,4 +103,11 @@ run "budget_action_attaches_the_deny_policy_at_the_cap" {
     )
     error_message = "The action must attach the deny policy to toolikheng-admin, using the budget-action role."
   }
+
+  # CI can start instances too (terraform.yml apply), so the cap stops it as well. The other GitHub roles
+  # cannot start anything: plan reads, nightly destroy deletes, deploy sends a command.
+  assert {
+    condition     = toset(one(aws_budgets_budget_action.deny_new_spend.definition[0].iam_action_definition).roles) == toset(["gha-tf-apply"])
+    error_message = "The action must also attach the deny policy to the CI apply role, gha-tf-apply."
+  }
 }
