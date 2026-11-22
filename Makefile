@@ -120,7 +120,7 @@ help:
 	@$(ECHO) "  $(GREEN)make cloud-deploy$(NC)  Deploy PolicyPal to the node and smoke-test it (needs make cloud-tunnel running)"
 	@$(ECHO) "  $(GREEN)make cloud-smoke$(NC)   Smoke-test PolicyPal on the node only (needs make cloud-tunnel running)"
 	@$(ECHO) "  $(GREEN)make check-state-secrets$(NC) Read-only: show that no secret value is in the persistent Terraform state"
-	@$(ECHO) "  $(GREEN)make skip-nightly-destroy$(NC) Keep the stack through the 02:00 MYT nightly destroy (GitHub setting; UNTIL=..., 7 days max)"
+	@$(ECHO) "  $(GREEN)make skip-nightly-destroy$(NC) Keep the stack through the 02:17 MYT nightly destroy (GitHub setting; UNTIL=..., 7 days max)"
 	@$(ECHO) ""
 	@$(ECHO) "$(BLUE)Utilities:$(NC)"
 	@$(ECHO) "  $(GREEN)make all$(NC)           Run all phases (check → infra → deploy)"

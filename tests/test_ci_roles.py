@@ -1,7 +1,7 @@
 """The GitHub roles (terraform/persistent) and what uses them must agree, offline.
 
 A job whose OIDC subject its role does not trust fails only on GitHub, with "Not authorized to perform
-sts:AssumeRoleWithWebIdentity"; a cost check the nightly role may not run fails only at 02:00. Here they fail
+sts:AssumeRoleWithWebIdentity"; a cost check the nightly role may not run fails only at 02:17. Here they fail
 in a second instead. Facts written in more than one place are also kept equal:
 - each workflow job's subject (environment, pull request or master) is one its role trusts;
 - the instance-type allowlist: the compute module's validation, the apply role's IAM condition and the

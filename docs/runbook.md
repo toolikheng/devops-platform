@@ -436,7 +436,7 @@ Three workflows reach AWS, each job with short-lived credentials for its own rol
 | `terraform.yml` | pull request touching `terraform/` | `gha-tf-plan`, no environment | static checks, read-only plan, PR comment with resource addresses and actions only |
 | `terraform.yml` | on demand: apply or destroy, instance type, Spot | plan: `gha-tf-plan`; apply: `gha-tf-apply` in `aws-apply` (I approve) | plan and hash in the run summary; after approval it plans again and applies the saved plan only if the hash matches |
 | `deploy.yml` | on demand: a PolicyPal commit | `gha-deploy` in `aws-deploy` | renders and validates the `aws` overlay for that commit, then runs the deploy on the node through SSM Run Command; rolls back and fails red if the smoke test fails |
-| `nightly-destroy.yml` | 02:00 MYT and on demand | `gha-tf-destroy` in `aws-nightly` | destroys the ephemeral stack unless a skip is set, then `scripts/cost-check.sh` |
+| `nightly-destroy.yml` | 02:17 MYT and on demand | `gha-tf-destroy` in `aws-nightly` | destroys the ephemeral stack unless a skip is set, then `scripts/cost-check.sh` |
 
 The role ARNs are built from the repository secret `AWS_ACCOUNT_ID`, so the account ID is masked in the public logs. The node must already run k3s and External Secrets Operator before `deploy.yml`: `make cloud-config` and `make cloud-addons` from the laptop.
 
@@ -524,7 +524,7 @@ No running instance carries `Project=devops-platform` and `Stack=ephemeral`: cre
 
 ### The nightly destroy didn't run
 
-GitHub can start scheduled runs late or skip them under load, and disables schedules after 60 days without repository activity (`gh workflow enable nightly-destroy.yml`). It happened on the first night (2026-11-23): no run at all. Check with `gh run list --workflow nightly-destroy.yml --event schedule` (an empty list after 02:00 MYT means it never started). The budget alerts and `make cost-check` are the backup; `gh workflow run nightly-destroy.yml` or `make cloud-down` destroys now.
+GitHub can start scheduled runs late or skip them under load, and disables schedules after 60 days without repository activity (`gh workflow enable nightly-destroy.yml`). It happened on the first night (2026-11-23), with the cron at 02:00 MYT: no run at all. GitHub's docs name the start of every hour as a busy time, so the cron now runs at 02:17 MYT. Check with `gh run list --workflow nightly-destroy.yml --event schedule` (an empty list after 02:00 MYT means it never started). The budget alerts and `make cost-check` are the backup; `gh workflow run nightly-destroy.yml` or `make cloud-down` destroys now.
 
 ## Secret scanning
 

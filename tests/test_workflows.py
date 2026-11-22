@@ -10,7 +10,7 @@ C6: the three workflows that reach AWS, each job with its own short-lived OIDC r
   aws-apply), plans again and applies only if the changes are the ones approved.
 - deploy.yml: renders and checks the manifests for one PolicyPal commit, then runs the deploy on the node
   through SSM Run Command (environment aws-deploy). The node rolls back if the smoke test fails.
-- nightly-destroy.yml: destroys the ephemeral stack at 02:00 MYT unless a skip time is set, then runs the
+- nightly-destroy.yml: destroys the ephemeral stack at 02:17 MYT unless a skip time is set, then runs the
   cost check (environment aws-nightly).
 The roles' side (trust and permissions) is in terraform/persistent/tests; tests/test_ci_roles.py checks
 that the two sides agree.
@@ -292,10 +292,19 @@ def test_the_manifests_are_only_in_the_step_that_sends_them() -> None:
     assert "bash ci/deploy-over-ssm.sh policypal.yaml" in step["run"]
 
 
-def test_nightly_destroy_runs_at_two_in_the_morning_malaysia_time_and_on_demand() -> None:
+def test_nightly_destroy_runs_at_two_seventeen_malaysia_time_and_on_demand() -> None:
     on = load(NIGHTLY)["on"]
-    assert on["schedule"] == [{"cron": "0 18 * * *"}], "18:00 UTC = 02:00 MYT"
+    assert on["schedule"] == [{"cron": "17 18 * * *"}], "18:17 UTC = 02:17 MYT"
     assert "workflow_dispatch" in on
+
+
+def test_the_nightly_destroy_is_scheduled_off_the_hour() -> None:
+    # GitHub delays scheduled runs under load, and may drop queued ones; the start of every hour is a high-load
+    # time (GitHub's docs). At "0 18 * * *" the run never started on its first night (2026-11-23), and a missed
+    # nightly destroy keeps a stack billing.
+    [entry] = load(NIGHTLY)["on"]["schedule"]
+    minute = entry["cron"].split()[0]
+    assert minute.isdigit() and int(minute) != 0, entry["cron"]
 
 
 def test_nightly_destroy_checks_the_skip_switch_before_touching_aws() -> None:

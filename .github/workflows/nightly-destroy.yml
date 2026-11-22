@@ -1,4 +1,4 @@
-# Destroys the ephemeral stack every night at 02:00 MYT, in case a session ended without make cloud-down,
+# Destroys the ephemeral stack every night at 02:17 MYT, in case a session ended without make cloud-down,
 # then runs the cost check. Also on demand (Actions > Nightly destroy > Run workflow).
 #
 # Skipped while the repo variable NIGHTLY_DESTROY_SKIP_UNTIL (make skip-nightly-destroy) is a UTC time in
@@ -9,7 +9,9 @@ name: Nightly destroy
 
 on:
   schedule:
-    - cron: "0 18 * * *" # 18:00 UTC = 02:00 MYT
+    # 18:17 UTC = 02:17 MYT. Off the hour: GitHub delays, and may drop, scheduled runs at busy times such as the
+    # start of every hour; at "0 18 * * *" the first night's run never started.
+    - cron: "17 18 * * *"
   workflow_dispatch:
 
 permissions: {}

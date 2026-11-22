@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# skip-nightly-destroy.sh - keep the ephemeral stack through the nightly destroy (02:00 MYT).
+# skip-nightly-destroy.sh - keep the ephemeral stack through the nightly destroy (02:17 MYT).
 #
 # Usage: skip-nightly-destroy.sh [UNTIL]   (make skip-nightly-destroy [UNTIL=...])
 #   UNTIL: a UTC time such as 2026-11-24T00:00:00Z, at most 7 days ahead. Default: 24 hours from now.

@@ -61,7 +61,7 @@ make destroy        # delete the cluster and the nodes
 | GitHub Actions reaches AWS with no stored key | Live: a pull request's plan job got one-hour credentials for its read-only role through OIDC and commented the planned changes (addresses and actions only); the public log shows no account ID, no IP and no plan detail, and `gh secret list` holds only `AWS_ACCOUNT_ID`. The first attempt was refused because this repo's tokens use GitHub's immutable subject (owner and repo with their numeric IDs); CloudTrail showed the subject, and the trust policies now match it exactly. Offline: 36 `terraform test` runs check every trust condition and permission list, 27 tests tie each workflow job to a role that trusts it, and a mutation check broke 57 rules one at a time; every one was caught ([ADR 020](docs/decisions/020-one-oidc-role-per-ci-job.md)). |
 | An apply makes only the changes I approved | Live: `terraform.yml` showed the plan (which resources, and how) and its hash, waited for my approval, planned again, and applied the saved plan only after the hashes matched (values aren't hashed: that would leak short ones like my IP); a CI destroy removed all 9 resources through delete permissions limited to the stack's tags. The first CI apply was stopped by the role's own image Deny: `decode-authorization-message` showed Canonical's images are listed under the owner alias `amazon`, and the Deny now allows that alias (Marketplace and other accounts' images stay denied). |
 | Deploys from GitHub need no inbound access | Live: `deploy.yml` rendered and validated the manifests with no AWS access, sent them inside one SSM Run Command to the tagged node, and the node deployed and passed the smoke test 6/6 (2 min 48 s on a new node). A commit with no image rolled back on the node and turned the run red after 15 minutes, with the API down meanwhile; the render job now asks GHCR first and refuses such a commit in 0.7 s, before the node is touched ([ADR 021](docs/decisions/021-deploy-through-ssm-run-command.md)). |
-| The nightly destroy cleans up, when it runs | Live, started by hand (twice): the skip check passed, the destroy role removed the stack, and the cost check inside the job found nothing billable (72 checks). By schedule: on its first night GitHub didn't start the 02:00 MYT run at all; I found the stack still up at 03:00 and started the job by hand. A scheduled run hasn't been seen yet, which is why the budgets and `make cost-check` stay as the backup. |
+| The nightly destroy cleans up, when it runs | Live, started by hand (twice): the skip check passed, the destroy role removed the stack, and the cost check inside the job found nothing billable (72 checks). By schedule: on its first night GitHub didn't start the 02:00 MYT run at all; I found the stack still up at 03:00 and started the job by hand. GitHub's docs name the start of every hour as a busy time when scheduled runs can be delayed or dropped, so the schedule moved to 02:17 MYT. A scheduled run hasn't been seen yet, which is why the budgets and `make cost-check` stay as the backup. |
 | The budget action blocks new spend, never clean-up | IAM policy simulator with the deny policy added to the admin user: starting instances, NAT gateways or RDS is explicitly denied. Terminating, deleting, detaching the policy and reading or writing the state file stay allowed. The action's role can only attach that one policy, and only to that user and to the CI apply role `gha-tf-apply`. |
 | Rolling restarts drop no requests | Continuous requests through the ingress during a rolling restart: 1,549 and 1,520 requests in two runs, 0 failures. Before the `preStop` delay was added, the same test failed 24 of 1,533 requests (502s and a timeout). |
 
@@ -175,7 +175,7 @@ See [ADR 008](docs/decisions/008-k3s-on-ec2-over-eks.md) (k3s on EC2, not EKS), 
 - For AWS, each job gets one-hour credentials for its own role through GitHub OIDC; no AWS key is stored ([ADR 020](docs/decisions/020-one-oidc-role-per-ci-job.md)):
   - `terraform.yml`: on pull requests touching `terraform/`, a read-only plan posted as a comment (addresses and actions only); on demand, apply or destroy of the ephemeral stack after my approval, applying the saved plan only if the change list's hash matches the one I approved.
   - `deploy.yml`: a PolicyPal commit, checked on GHCR, rendered and validated with no AWS access, then deployed on the node through SSM Run Command; the node rolls back and the run fails if the smoke test fails ([ADR 021](docs/decisions/021-deploy-through-ssm-run-command.md)).
-  - `nightly-destroy.yml`: destroys the ephemeral stack at 02:00 MYT unless `make skip-nightly-destroy` set a skip, then runs the cost check.
+  - `nightly-destroy.yml`: destroys the ephemeral stack at 02:17 MYT unless `make skip-nightly-destroy` set a skip, then runs the cost check.
 
 ## Architecture
 
@@ -188,7 +188,7 @@ See [ADR 008](docs/decisions/008-k3s-on-ec2-over-eks.md) (k3s on EC2, not EKS), 
  AWS (OIDC, one role per job):  PR ──► read-only plan ──► PR comment
                                 apply/destroy ──► my approval ──► plan again, hash check ──► saved plan
                                 deploy.yml ──► GHCR check, render ──► SSM Run Command ──► node deploys itself
-                                02:00 MYT ──► destroy ──► cost check
+                                02:17 MYT ──► destroy ──► cost check
 
  WSL2 machine
  ├─ Docker nodes node1-3  ◄── Ansible over SSH (localhost:2201-2203)
@@ -242,7 +242,7 @@ make cloud-addons          # AWS: install External Secrets Operator on the node 
 make cloud-deploy          # AWS: deploy PolicyPal (ESO makes its Secrets) and smoke-test it; rolls back if the smoke test fails
 make cloud-smoke           # AWS: only the smoke test
 make check-state-secrets   # AWS, read-only: count each live secret value in the Terraform state (must be 0)
-make skip-nightly-destroy  # GitHub setting: keep the stack through the 02:00 MYT nightly destroy (24 h; UNTIL=... up to 7 days)
+make skip-nightly-destroy  # GitHub setting: keep the stack through the 02:17 MYT nightly destroy (24 h; UNTIL=... up to 7 days)
 gh workflow run terraform.yml -f action=apply -f instance_type=t3.micro -f use_spot=true   # waits for my approval
 gh workflow run deploy.yml -f policypal_tag=<PolicyPal commit>   # GHCR check, render, deploy on the node
 ```
