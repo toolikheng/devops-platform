@@ -7,7 +7,7 @@
 #
 # - gha-tf-plan: reads only; of the state, only the ephemeral stack's.
 # - gha-tf-apply: builds and removes the ephemeral stack. Only in ap-southeast-1, only allowlisted instance
-#   types, encrypted volumes of 30 GB or less and Canonical images; it passes only the node role, only to
+#   types, encrypted volumes of 30 GB or less, no Marketplace or community images; it passes only the node role, only to
 #   EC2; it deletes only what carries the stack's tags; it can change nothing in IAM. The budget action
 #   attaches the deny-new-spend policy to it at the monthly cap, as to the admin user.
 # - gha-tf-destroy: reads and deletes only (nightly), then the cost check.
@@ -194,12 +194,14 @@ locals {
         Condition = { Bool = { "ec2:Encrypted" = "false" } }
       },
       {
-        # Canonical's account: no Marketplace or community images.
-        Sid       = "OnlyCanonicalImages"
+        # No Marketplace or community images. ec2:Owner is the owner's alias when the image has one, and
+        # Canonical's Ubuntu images (account 099720109477) carry the alias "amazon"; Marketplace images are
+        # "aws-marketplace", anyone else's their account ID. The AMI lookup itself asks for Canonical's account.
+        Sid       = "OnlyAmazonListedOrCanonicalImages"
         Effect    = "Deny"
         Action    = ["ec2:RunInstances"]
         Resource  = local.images_here
-        Condition = { StringNotEquals = { "ec2:Owner" = "099720109477" } }
+        Condition = { StringNotEquals = { "ec2:Owner" = ["amazon", "099720109477"] } }
       },
       {
         # Tags only while creating, so an existing resource (the default VPC, say) cannot be tagged into

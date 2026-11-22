@@ -7,7 +7,7 @@
 #
 # - gha-tf-plan reads only, and only the ephemeral stack's state.
 # - gha-tf-apply builds and removes the ephemeral stack: in ap-southeast-1 only, instance types on the
-#   allowlist only, encrypted volumes of 30 GB or less, Canonical images only, and it may pass only the node
+#   allowlist only, encrypted volumes of 30 GB or less, no Marketplace or community images, and it may pass only the node
 #   role, only to EC2. It deletes only what carries the stack's tags, and it can change nothing in IAM.
 # - gha-tf-destroy can only read and delete (nightly), and run the cost check after.
 # - gha-deploy can only send a shell command to the tagged node and read the result.
@@ -200,13 +200,18 @@ run "apply_role_launches_only_what_the_cost_rules_allow" {
     error_message = "RunInstances must be denied for an unencrypted volume."
   }
 
+  # ec2:Owner is the owner's alias when the image has one: Canonical's Ubuntu images (account 099720109477)
+  # carry the alias "amazon", and a Deny on the account ID alone blocked the very image Terraform picks
+  # (first CI apply, 2026-11-22; decode-authorization-message showed ec2:Owner = amazon). Marketplace images
+  # are "aws-marketplace"; any other account's images carry their account ID: both stay denied.
   assert {
     condition = anytrue([
       for s in jsondecode(aws_iam_role_policy.github["gha-tf-apply"].policy).Statement :
       s.Effect == "Deny" && flatten([s.Resource]) == ["arn:aws:ec2:ap-southeast-1::image/*"] &&
-      s.Condition.StringNotEquals["ec2:Owner"] == "099720109477"
+      toset(keys(s.Condition)) == toset(["StringNotEquals"]) &&
+      toset(flatten([s.Condition.StringNotEquals["ec2:Owner"]])) == toset(["amazon", "099720109477"])
     ])
-    error_message = "RunInstances must be denied for any image not owned by Canonical (no Marketplace AMIs)."
+    error_message = "RunInstances must be denied for any image not owned by \"amazon\" (Canonical's Ubuntu carries that alias) or by Canonical's account: no Marketplace or community AMIs."
   }
 }
 
