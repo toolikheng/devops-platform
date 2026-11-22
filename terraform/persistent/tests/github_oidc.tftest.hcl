@@ -4,7 +4,9 @@
 # One role per kind of job. A role's trust policy names exactly the GitHub runs that may use it, through the
 # token's "sub" claim: "repo:<owner>/<repo>:environment:<name>" for a job that uses a GitHub Environment,
 # "repo:<owner>/<repo>:pull_request" for a pull request, "repo:<owner>/<repo>:ref:refs/heads/master" for any
-# other run on master. Both claims are matched with StringEquals: a wildcard such as "repo:toolikheng/*"
+# other run on master. This repo's tokens use GitHub's immutable subject: owner and repo carry their numeric
+# IDs ("toolikheng@149467084/devops-platform@1406132198", seen in CloudTrail on the first live PR run), so a
+# repo re-created under the same name could not use these roles. Both claims are matched with StringEquals: a wildcard such as "repo:toolikheng/*"
 # would trust every repository and branch of the account. The workflows' side is checked by
 # tests/test_ci_roles.py (each job's subject is one its role trusts).
 
@@ -90,7 +92,7 @@ run "each_role_trusts_exactly_its_jobs" {
     condition = toset(flatten([
       for s in jsondecode(aws_iam_role.github["gha-tf-plan"].assume_role_policy).Statement :
       s.Condition.StringEquals["token.actions.githubusercontent.com:sub"]
-    ])) == toset(["repo:toolikheng/devops-platform:pull_request", "repo:toolikheng/devops-platform:ref:refs/heads/master"])
+    ])) == toset(["repo:toolikheng@149467084/devops-platform@1406132198:pull_request", "repo:toolikheng@149467084/devops-platform@1406132198:ref:refs/heads/master"])
     error_message = "gha-tf-plan must trust pull requests and runs on master, nothing else."
   }
 
@@ -100,7 +102,7 @@ run "each_role_trusts_exactly_its_jobs" {
     condition = toset(flatten([
       for s in jsondecode(aws_iam_role.github["gha-tf-apply"].assume_role_policy).Statement :
       s.Condition.StringEquals["token.actions.githubusercontent.com:sub"]
-    ])) == toset(["repo:toolikheng/devops-platform:environment:aws-apply"])
+    ])) == toset(["repo:toolikheng@149467084/devops-platform@1406132198:environment:aws-apply"])
     error_message = "gha-tf-apply must trust only jobs in the aws-apply environment."
   }
 
@@ -108,7 +110,7 @@ run "each_role_trusts_exactly_its_jobs" {
     condition = toset(flatten([
       for s in jsondecode(aws_iam_role.github["gha-tf-destroy"].assume_role_policy).Statement :
       s.Condition.StringEquals["token.actions.githubusercontent.com:sub"]
-    ])) == toset(["repo:toolikheng/devops-platform:environment:aws-nightly"])
+    ])) == toset(["repo:toolikheng@149467084/devops-platform@1406132198:environment:aws-nightly"])
     error_message = "gha-tf-destroy must trust only jobs in the aws-nightly environment."
   }
 
@@ -116,7 +118,7 @@ run "each_role_trusts_exactly_its_jobs" {
     condition = toset(flatten([
       for s in jsondecode(aws_iam_role.github["gha-deploy"].assume_role_policy).Statement :
       s.Condition.StringEquals["token.actions.githubusercontent.com:sub"]
-    ])) == toset(["repo:toolikheng/devops-platform:environment:aws-deploy"])
+    ])) == toset(["repo:toolikheng@149467084/devops-platform@1406132198:environment:aws-deploy"])
     error_message = "gha-deploy must trust only jobs in the aws-deploy environment."
   }
 }

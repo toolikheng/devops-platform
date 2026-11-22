@@ -28,7 +28,9 @@ COMPUTE_VARIABLES = REPO_ROOT / "terraform" / "modules" / "compute" / "variables
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 COST_CHECK = REPO_ROOT / "scripts" / "cost-check.sh"
 ALLOWLIST = ["t3.micro", "t3.small", "t4g.micro", "t4g.small", "c7i-flex.large", "m7i-flex.large"]
-REPO = "toolikheng/devops-platform"
+# GitHub's immutable subject for this repo: owner and repo with their numeric IDs (gh api users/toolikheng,
+# gh api repos/toolikheng/devops-platform). Tokens carry it instead of the plain name.
+SUBJECT_REPO = "toolikheng@149467084/devops-platform@1406132198"
 # AWS CLI service names whose IAM prefix differs.
 IAM_PREFIX = {"elbv2": "elasticloadbalancing", "elb": "elasticloadbalancing"}
 
@@ -43,8 +45,8 @@ def hcl_list(text: str, name: str) -> list[str]:
 def role_subjects() -> dict[str, set[str]]:
     """Role name -> the GitHub subjects (after "repo:<owner>/<repo>:") its trust policy allows."""
     text = GITHUB_OIDC.read_text()
-    repo = re.search(r'github_repository\s*=\s*"([^"]+)"', text)
-    assert repo and repo.group(1) == REPO
+    repo = re.search(r'github_subject_repo\s*=\s*"([^"]+)"', text)
+    assert repo and repo.group(1) == SUBJECT_REPO, "the trust policies must use the immutable subject"
     block = re.search(r"github_role_subjects\s*=\s*\{(.*?)\n\s*\}", text, re.S)
     assert block, "github_role_subjects not found"
     pairs = re.findall(r'"(gha-[a-z-]+)"\s*=\s*\[([^\]]*)\]', block.group(1))

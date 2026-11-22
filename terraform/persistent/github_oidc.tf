@@ -9,9 +9,13 @@
 # also waits for the owner's approval. What each role may do is in github_permissions.tf.
 
 locals {
-  github_repository = "toolikheng/devops-platform"
+  # The repo as GitHub names it in this repo's tokens: the immutable subject, where owner and repo carry their
+  # numeric IDs (gh api users/toolikheng; gh api repos/toolikheng/devops-platform). If the repo were deleted
+  # and someone created toolikheng/devops-platform again, its ID would differ and these roles would refuse it.
+  # The repo setting is in gh api repos/toolikheng/devops-platform/actions/oidc/customization/sub.
+  github_subject_repo = "toolikheng@149467084/devops-platform@1406132198"
 
-  # Role name => the GitHub runs (token subjects, after "repo:<owner>/<repo>:") that may assume it.
+  # Role name => the GitHub runs (token subjects, after "repo:<github_subject_repo>:") that may assume it.
   # tests/test_ci_roles.py checks every workflow job against this map.
   github_role_subjects = {
     "gha-tf-plan"    = ["pull_request", "ref:refs/heads/master"]
@@ -53,7 +57,7 @@ resource "aws_iam_role" "github" {
       Condition = {
         StringEquals = {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-          "token.actions.githubusercontent.com:sub" = [for subject in each.value : "repo:${local.github_repository}:${subject}"]
+          "token.actions.githubusercontent.com:sub" = [for subject in each.value : "repo:${local.github_subject_repo}:${subject}"]
         }
       }
     }]
