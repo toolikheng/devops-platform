@@ -376,7 +376,7 @@ Harmless. `kubectl apply` replaces `volumeClaimTemplates` as a whole, and the se
 | `/devops-platform/owner-cidr` | SSM String (not secret) | the ephemeral stack's plan | Terraform; `make owner-ip` sets the value | when my IP changes |
 | k3s admin kubeconfig | the node; `~/.kube/devops-aws.yaml` (600) | me | k3s | new cluster every session |
 | SSH key | `~/.ssh` | Ansible, through Session Manager | me | — |
-| AWS access for CI | none: OIDC from C6 | — | — | — |
+| AWS access for CI | nothing stored: GitHub OIDC, one role per job (`terraform/persistent/github_oidc.tf`) | the three AWS workflows | STS, per job, for one hour at most | nothing to rotate |
 
 On k3d there is no AWS identity: `scripts/policypal-secrets.sh` creates random local values instead.
 
@@ -426,6 +426,92 @@ Postgres keeps the password it was initialised with, so changing only SSM would 
 ### `make cloud-addons` fails with "context deadline exceeded" and a Pending controller pod
 
 `kubectl -n external-secrets describe pod` says "didn't have free ports for the requested pod ports": a rolling update tried to start the new controller next to the old one, and on one node both need the same host ports. `values.yaml` sets `strategy: Recreate` to prevent this. If it happens anyway, `kubectl -n external-secrets delete pod <old controller pod>` lets the new one start; the Secrets stay.
+
+## CI/CD on AWS (GitHub Actions with OIDC)
+
+Three workflows reach AWS, each job with short-lived credentials for its own role (`terraform/persistent/github_oidc.tf`, permissions in `github_permissions.tf`). No AWS key is stored in GitHub. The persistent stack, which holds IAM, is applied only from my laptop.
+
+| Workflow | When | Role and environment | What it does |
+|---|---|---|---|
+| `terraform.yml` | pull request touching `terraform/` | `gha-tf-plan`, no environment | static checks, read-only plan, PR comment with resource addresses and actions only |
+| `terraform.yml` | on demand: apply or destroy, instance type, Spot | plan: `gha-tf-plan`; apply: `gha-tf-apply` in `aws-apply` (I approve) | plan and hash in the run summary; after approval it plans again and applies the saved plan only if the hash matches |
+| `deploy.yml` | on demand: a PolicyPal commit | `gha-deploy` in `aws-deploy` | renders and validates the `aws` overlay for that commit, then runs the deploy on the node through SSM Run Command; rolls back and fails red if the smoke test fails |
+| `nightly-destroy.yml` | 02:00 MYT and on demand | `gha-tf-destroy` in `aws-nightly` | destroys the ephemeral stack unless a skip is set, then `scripts/cost-check.sh` |
+
+The role ARNs are built from the repository secret `AWS_ACCOUNT_ID`, so the account ID is masked in the public logs. The node must already run k3s and External Secrets Operator before `deploy.yml`: `make cloud-config` and `make cloud-addons` from the laptop.
+
+### One-time GitHub settings
+
+After `terraform apply` of the persistent stack (it creates the OIDC provider and the four roles):
+
+```bash
+REPO=toolikheng/devops-platform
+ME="$(gh api user --jq .id)"
+
+# aws-apply: master only, and every run waits for my approval (I start the runs, so self-review is allowed)
+gh api -X PUT "repos/$REPO/environments/aws-apply" --input - <<EOF
+{"wait_timer": 0, "prevent_self_review": false, "reviewers": [{"type": "User", "id": $ME}],
+ "deployment_branch_policy": {"protected_branches": false, "custom_branch_policies": true}}
+EOF
+gh api -X POST "repos/$REPO/environments/aws-apply/deployment-branch-policies" -f name=master -f type=branch
+
+# aws-deploy and aws-nightly: master only, no reviewer (the nightly destroy must run unattended)
+for env in aws-deploy aws-nightly; do
+  gh api -X PUT "repos/$REPO/environments/$env" --input - <<'EOF'
+{"deployment_branch_policy": {"protected_branches": false, "custom_branch_policies": true}}
+EOF
+  gh api -X POST "repos/$REPO/environments/$env/deployment-branch-policies" -f name=master -f type=branch
+done
+
+# The account ID goes straight from AWS into the secret, never onto the screen.
+aws sts get-caller-identity --profile devops --query Account --output text | gh secret set AWS_ACCOUNT_ID
+# Terraform's node needs my SSH public key (Ansible uses it through Session Manager).
+gh variable set SSH_PUBLIC_KEY < ~/.ssh/id_ed25519.pub
+```
+
+Check:
+
+```bash
+gh api "repos/$REPO/environments" --jq '.environments[] | {name, rules: [.protection_rules[].type]}'
+gh secret list     # AWS_ACCOUNT_ID only: no AWS keys
+gh variable list   # SSH_PUBLIC_KEY (and NIGHTLY_DESTROY_SKIP_UNTIL while a skip is set)
+```
+
+### Running the workflows
+
+GitHub only dispatches and schedules workflows that are on `master`, and the three environments accept `master` only.
+
+```bash
+gh workflow run terraform.yml -f action=apply -f instance_type=t3.micro -f use_spot=true
+gh run watch          # the apply job waits: Actions > the run > Review deployments > aws-apply > Approve
+gh workflow run deploy.yml -f policypal_tag=<PolicyPal commit, 40 characters>
+gh workflow run nightly-destroy.yml        # the nightly destroy, now
+
+make skip-nightly-destroy                  # keep the stack tonight (24 hours; UNTIL=2026-11-24T00:00:00Z for longer, 7 days max)
+gh variable delete NIGHTLY_DESTROY_SKIP_UNTIL   # cancel the skip
+```
+
+A skip only stops the nightly job: the stack still bills every hour, so `make cloud-down` stays the way to end a session.
+
+### `Not authorized to perform sts:AssumeRoleWithWebIdentity`
+
+The job's token subject is not one its role trusts: the job runs in another environment or branch, a pull request comes from a fork (forks get no token at all), or `AWS_ACCOUNT_ID` is wrong. `tests/test_ci_roles.py` checks every job's subject against the trust policies offline; compare the job's `environment:` with `github_role_subjects` in `terraform/persistent/github_oidc.tf`.
+
+### `plan-summary: the changes have changed since they were approved`
+
+Between the plan I approved and the apply, something changed what Terraform would do: a laptop apply, another run, or a new owner IP. Nothing was applied. I run the workflow again and review the new plan.
+
+### An apply or destroy fails with `UnauthorizedOperation` or `AccessDenied`
+
+The role lacks a permission the provider needs (a new provider version can call something new). AWS returns an encoded message: `aws sts decode-authorization-message --encoded-message <message> --profile devops` shows the action and resource. Add the action to `github_permissions.tf` and its test, then plan and apply the persistent stack from the laptop. `make cloud-down` from the laptop still works meanwhile.
+
+### `deploy-over-ssm: expected one running node`
+
+No running instance carries `Project=devops-platform` and `Stack=ephemeral`: create the node first (`terraform.yml` apply or `make cloud-rebuild`), then `make cloud-addons`.
+
+### The nightly destroy didn't run
+
+GitHub can start scheduled runs late or skip them under load, and disables schedules after 60 days without repository activity (`gh workflow enable nightly-destroy.yml`). The budget alerts and `make cost-check` are the backup; `gh workflow run nightly-destroy.yml` or `make cloud-down` destroys now.
 
 ## Secret scanning
 
