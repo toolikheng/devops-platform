@@ -48,8 +48,12 @@ rollback() {
     now="$(revision "$d")"
     if [ -n "${before[$d]}" ] && [ "$now" != "${before[$d]}" ]; then
       echo "deploy-policypal: rolling deployment/$d back to revision ${before[$d]}" >&2
-      k rollout undo "deployment/$d" --to-revision="${before[$d]}"
-      k rollout status "deployment/$d" --timeout="$ROLLOUT_TIMEOUT" || true
+      # A failed undo must not stop the others (set -e would): say so and go on.
+      if k rollout undo "deployment/$d" --to-revision="${before[$d]}"; then
+        k rollout status "deployment/$d" --timeout="$ROLLOUT_TIMEOUT" || true
+      else
+        echo "deploy-policypal: rolling deployment/$d back failed; check it with kubectl rollout history" >&2
+      fi
     fi
   done
 }

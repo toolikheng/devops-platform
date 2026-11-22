@@ -107,6 +107,8 @@ if tool == "kubectl":
         sys.exit(1 if (d / "fail-apply").exists() else 0)
     if a[:2] == ["rollout", "status"]:
         sys.exit(1 if (d / f"fail-rollout-{a[2].split('/')[-1]}").exists() else 0)
+    if a[:2] == ["rollout", "undo"]:
+        sys.exit(1 if (d / f"fail-undo-{a[2].split('/')[-1]}").exists() else 0)
     if a[:2] == ["get", "deployment"] and any("revision" in x for x in a):
         when = "after" if (d / "applied").exists() else "before"
         answer(f"rev-{a[2]}-{when}", 1)
@@ -490,6 +492,23 @@ def test_failed_smoke_test_rolls_back_too(fakes: Fakes) -> None:
         ["rollout", "undo", "deployment/policypal-api", "--to-revision=3"],
         ["rollout", "undo", "deployment/policypal-ui", "--to-revision=2"],
     ]
+
+
+def test_a_failed_undo_does_not_stop_the_other_rollbacks(fakes: Fakes) -> None:
+    # Each Deployment goes back on its own: the UI must not stay on its new revision because the API's undo
+    # failed. The deploy still fails, and says which rollback needs a look.
+    fakes.eso_synced()
+    fakes.revisions("policypal-api", before="3", after="4")
+    fakes.revisions("policypal-ui", before="2", after="3")
+    fakes.api(g41=ANSWER_G04)
+    fakes.flag("fail-undo-policypal-api")
+    result = fakes.script("deploy-policypal.sh", "aws", UI_URL)
+    assert result.returncode != 0
+    assert sorted(fakes.kubectl("rollout", "undo")) == [
+        ["rollout", "undo", "deployment/policypal-api", "--to-revision=3"],
+        ["rollout", "undo", "deployment/policypal-ui", "--to-revision=2"],
+    ]
+    assert "rolling deployment/policypal-api back failed" in output(result)
 
 
 def test_first_deploy_has_nothing_to_roll_back(fakes: Fakes) -> None:
