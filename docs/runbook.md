@@ -8,7 +8,7 @@ Commands are run from the repo root in WSL2. `make help` lists every target.
 - `make check` must pass. It checks `git`, `ssh`, `curl`, `make`, `jq`, `openssl`, `ansible`, `python3` and its venv module, `docker`, `kubectl`, `k3d`, `helm`, that the Docker daemon is reachable, and that `~/.ssh/id_ed25519` exists. `make install` apt-installs missing packages with sudo, generates the SSH key, and prints install links for Docker, kubectl, k3d and helm.
 - hadolint, Trivy, promtool and yq are not needed on the host; they run as pinned Docker images.
 - Host port 8080 must be free (the k3d load balancer).
-- For the AWS targets: AWS CLI v2.32 or newer, the Session Manager plugin and Terraform 1.11 or newer. `make ansible-check` also needs ansible-lint (`pipx install ansible-lint`).
+- For the AWS targets: AWS CLI v2.32 or newer, the Session Manager plugin and Terraform 1.11 or newer. `make ansible-check` also needs ansible-lint (`pipx install ansible-lint`). The pre-commit hook needs pre-commit (`pipx install pre-commit==4.7.0`, then `pre-commit install` once per clone).
 
 ## Everything from scratch
 
@@ -211,7 +211,8 @@ make cloud-up                                    # stores your current IP, shows
 make cloud-config                                # Ansible over Session Manager: common, node_exporter, k3s (about 2 min)
 make cloud-tunnel                                # in a second terminal: localhost:16443 -> the node's 6443; Ctrl-C closes it
 KUBECONFIG=~/.kube/devops-aws.yaml kubectl get nodes
-make cloud-deploy                                # PolicyPal: Secrets, deploy, smoke test (see "PolicyPal" below)
+make cloud-addons                                # External Secrets Operator, once per new node (see "Secrets" below)
+make cloud-deploy                                # PolicyPal: deploy (ESO makes its Secrets), smoke test (see "PolicyPal" below)
 aws ssm start-session --target "$(cd terraform/envs/aws && terraform output -raw instance_id)"   # a shell, if needed
 # ... work ...
 # Ctrl-C in the tunnel's terminal first (see "Closing the tunnel")
@@ -313,14 +314,14 @@ PolicyPal's manifests are in `k8s/policypal/` (base plus `local` and `aws` overl
 
 ```bash
 make k8s-check                 # offline: render both overlays, kubeconform -strict
-make policypal-local           # k3d: cluster-up, Secrets (once), deploy, smoke test
+make policypal-local           # k3d: cluster-up, random local Secrets (once), deploy, smoke test
 #   UI: http://policypal.localhost:8080
-make cloud-deploy              # AWS, with make cloud-tunnel running: Secrets (once), deploy, smoke test
+make cloud-deploy              # AWS, with make cloud-tunnel running and ESO installed: deploy, smoke test
 make cloud-smoke               # AWS: smoke test only
 #   UI: http://<public_ip from terraform output>/  (only your IP can reach it)
 ```
 
-The deploy (`scripts/deploy-policypal.sh`) renders the overlay with the same pinned kustomize as the checks, applies it, waits for Postgres, the API and the UI (`ROLLOUT_TIMEOUT`, default 15m, covers the first image pull), then runs the smoke test. If the apply, a rollout or the smoke test fails, every Deployment whose revision this deploy changed is rolled back to the revision it had, and the script exits 1. Postgres is never rolled back. A first deploy has nothing to roll back to.
+The deploy (`scripts/deploy-policypal.sh`) renders the overlay with the same pinned kustomize as the checks, applies it, waits up to 2 minutes for the Secrets `policypal-db` and `policypal-admin` (on AWS the ExternalSecrets in this apply make them; on k3d the script made them before), waits for Postgres, the API and the UI (`ROLLOUT_TIMEOUT`, default 15m, covers the first image pull), then runs the smoke test. If the apply, a rollout or the smoke test fails, every Deployment whose revision this deploy changed is rolled back to the revision it had, and the script exits 1. Postgres is never rolled back. A first deploy has nothing to roll back to.
 
 To deploy another PolicyPal commit, change `newTag` in the overlay (keep the quotes: a hash of only digits would be a YAML number), run `make k8s-check`, then deploy on k3d first.
 
@@ -333,9 +334,14 @@ kubectl -n policypal get secret policypal-admin -o jsonpath='{.data.ADMIN_TOKEN}
 
 Measure memory: `kubectl top pods -n policypal --containers`, and the peak since start for one container: `kubectl -n policypal exec deploy/policypal-api -- cat /sys/fs/cgroup/memory.peak`.
 
-### `deploy-policypal: Secrets policypal-db and policypal-admin are missing`
+### `deploy-policypal: waiting for the Secrets policypal-db policypal-admin failed`
 
-Run `scripts/policypal-secrets.sh` against the same cluster (`make policypal-local` and `make cloud-deploy` do it for you). It never replaces an existing Secret: Postgres keeps the password it was first started with, so a new one would lock the API out. To start over on k3d, `kubectl delete namespace policypal` removes the data and the Secrets together.
+The deploy applied the manifests, but a Secret the pods need didn't appear within 2 minutes. Nothing new was rolled out (the Postgres pod shows `CreateContainerConfigError` meanwhile).
+
+- **On AWS**, External Secrets Operator makes them: `kubectl -n policypal describe externalsecret` shows why it couldn't (see "Secrets" below). Is ESO installed (`make cloud-addons`)?
+- **On k3d**, run `scripts/policypal-secrets.sh` (`make policypal-local` does it for you). It never replaces an existing Secret: Postgres keeps the password it was first started with, so a new one would lock the API out. To start over on k3d, `kubectl delete namespace policypal` removes the data and the Secrets together.
+
+Then run the deploy again.
 
 ### The smoke test fails
 
@@ -361,22 +367,89 @@ The Deployments allow 15 minutes without progress (`progressDeadlineSeconds: 900
 
 Harmless. `kubectl apply` replaces `volumeClaimTemplates` as a whole, and the server adds default fields to it, so apply always sends a patch. The StatefulSet's generation doesn't change and Postgres isn't restarted; `kubectl diff -f <(bash scripts/render-k8s.sh aws)` shows nothing.
 
+## Secrets (SSM Parameter Store and External Secrets Operator)
+
+| Secret | Kept in | Read by | Created by | Rotation |
+|---|---|---|---|---|
+| `/policypal/aws/db-password` | SSM SecureString, Standard, key `aws/ssm` | ESO → Secret `policypal-db` (`POSTGRES_PASSWORD`, `DATABASE_URL`) → Postgres, API | Terraform, write-only (`terraform/persistent/policypal_secrets.tf`) | `db_password_version`, after `ALTER ROLE` (below) |
+| `/policypal/aws/admin-token` | same | ESO → Secret `policypal-admin` (`ADMIN_TOKEN`) → API; me, for the UI's admin page | same | `admin_token_version` (below) |
+| `/devops-platform/owner-cidr` | SSM String (not secret) | the ephemeral stack's plan | Terraform; `make owner-ip` sets the value | when my IP changes |
+| k3s admin kubeconfig | the node; `~/.kube/devops-aws.yaml` (600) | me | k3s | new cluster every session |
+| SSH key | `~/.ssh` | Ansible, through Session Manager | me | — |
+| AWS access for CI | none: OIDC from C6 | — | — | — |
+
+On k3d there is no AWS identity: `scripts/policypal-secrets.sh` creates random local values instead.
+
+The values are never in Git, the Terraform plan or its state. To check the state (read-only; prints only names and counts):
+
+```bash
+make check-state-secrets   # every count must be 0
+```
+
+ESO is installed once per new node, before the first deploy: `make cloud-addons` (needs `make cloud-tunnel`). It runs the pinned chart from `k8s/platform/external-secrets/chart.env` with `values.yaml`, then applies the `ClusterSecretStore`. Running it again upgrades in place. Its controller runs on the host network to reach the node's credentials ([ADR 017](decisions/017-imds-hop-limit-and-host-network.md)).
+
+```bash
+kubectl get clustersecretstore aws-parameter-store                 # READY True
+kubectl -n policypal get externalsecret                            # STATUS SecretSynced
+kubectl -n external-secrets logs deploy/external-secrets | tail    # errors, with the AWS message
+```
+
+### Rotate the admin token
+
+1. Raise `admin_token_version` by 1 in `terraform/persistent/variables.tf` and commit it (the commit is the record; the value never appears).
+2. `cd terraform/persistent && terraform plan -out tfplan` shows one in-place change (`value_wo_version`); `terraform apply tfplan`.
+3. `make check-state-secrets`: still 0.
+4. If the node is running: `kubectl -n policypal annotate externalsecret policypal-admin force-sync="$(date +%s)" --overwrite` (otherwise ESO picks it up within the hour), then `kubectl -n policypal rollout restart deployment/policypal-api`. The API reads the token only at start; until it restarts, the old token still works.
+
+The old value stays in the parameter's history: `aws ssm get-parameter --name /policypal/aws/admin-token:1 --with-decryption`.
+
+### Rotate the database password
+
+Postgres keeps the password it was initialised with, so changing only SSM would lock the API out. Every session starts a new database, so between sessions just raise `db_password_version` and apply. On a running node (written down, not yet demonstrated):
+
+1. Raise `db_password_version`, commit, plan, apply.
+2. Set the new value in Postgres without printing it or putting it in a command line (`printf` is a shell builtin; the SQL goes to `psql` on stdin, and the password is letters and digits only):
+
+   ```bash
+   pw="$(aws ssm get-parameter --region ap-southeast-1 --name /policypal/aws/db-password --with-decryption --query Parameter.Value --output text)"
+   printf "ALTER ROLE policypal PASSWORD '%s';\n" "$pw" | kubectl -n policypal exec -i statefulset/postgres -- psql -U policypal -d policypal
+   unset pw
+   ```
+3. Force-sync `policypal-db`, then `kubectl -n policypal rollout restart deployment/policypal-api`. Until the restart, new database connections from the old API pod fail.
+
+### The store is not Ready, or an ExternalSecret shows `SecretSyncedError`
+
+- `kubectl get clustersecretstore aws-parameter-store -o yaml` → `status.conditions`. "unable to validate store" on AWS means the controller got no credentials: is it on the host network (`kubectl -n external-secrets get pod -o wide`: its IP must be the node's)? On k3d this is expected: there is no AWS identity.
+- The controller's log has the AWS error. `AccessDeniedException` means the parameter is outside `/policypal/aws/` or the node role lacks its `policypal-parameters` policy (persistent stack). `ParameterNotFound`: the persistent stack hasn't been applied.
+- "is not allowed from namespace": the store serves only `policypal` (`spec.conditions`).
+
+### `make cloud-addons` fails with "context deadline exceeded" and a Pending controller pod
+
+`kubectl -n external-secrets describe pod` says "didn't have free ports for the requested pod ports": a rolling update tried to start the new controller next to the old one, and on one node both need the same host ports. `values.yaml` sets `strategy: Recreate` to prevent this. If it happens anyway, `kubectl -n external-secrets delete pod <old controller pod>` lets the new one start; the Secrets stay.
+
 ## Secret scanning
 
 ```bash
-bash ci/gitleaks.sh   # full history of every branch; values are redacted in the output
+bash ci/gitleaks.sh            # full history of every branch; findings shown with values redacted
+bash ci/gitleaks.sh --staged   # only what is staged (the pre-commit hook)
+pipx install pre-commit==4.7.0 && pre-commit install   # once per clone: the hook scans every commit
 ```
 
-A clean result means no *known pattern* was found, not that there are no secrets: gitleaks' default rules don't match plain `NAME_PASSWORD=value` lines, for example. If a real credential is ever found:
+`.gitleaks.toml` adds one rule to gitleaks' defaults, `plain-password-assignment`: a `NAME_PASSWORD` set to a literal of 8 or more characters, also as a `${NAME:-default}`. The defaults missed exactly that shape in `7ca581f` (below). References (`$VAR`, `${VAR}`, `$(command)`), printf formats and `<placeholders>` are not flagged. `.github/workflows/secret-scan.yml` scans the full history on every pull request, every Monday and on demand. The hook uses the pre-commit hook type only; other hooks in `.git/hooks` are left alone.
 
-1. Stop and rotate or revoke it first. Rotation makes the leaked value useless; removing it from history needs a force-push and is a separate decision.
-2. Record it below with the type, where it was, the dates and what was done. Never record the value.
+A clean result means no *known pattern* was found, not that there are no secrets. When something is found:
+
+- **A false positive** (example text, a test value made at run time): change the text, or narrow the rule with a test that shows the case, as was done when the hook flagged the words "`*_PASSWORD=` assignments" in a comment.
+- **A known finding in history that needs no action** goes in `.gitleaksignore` (its fingerprint, `commit:file:rule:line`, with the reason in a comment). A test fails if anything other than the two listed below is in it, so adding one means changing that test too, on purpose.
+- **A real credential:**
+  1. Stop and rotate or revoke it first. Rotation makes the leaked value useless; removing it from history needs a force-push and is a separate decision.
+  2. Record it below with the type, where it was, the dates and what was done. Never record the value.
 
 ### Leaked credentials log
 
 | Date found | Type | Where | In history | Action |
 |------------|------|-------|------------|--------|
-| 2026-11-20 | restic repository password (two values) | `backup/scripts/backup.sh`, `backup/scripts/restore-test.sh` | Added in `7ca581f` (2026-09-16), removed in `8e7665b` (2026-10-19) | Found by manual review after a clean gitleaks scan. The passwords only encrypted local restic repositories of demo data inside k3d clusters that no longer exist, they were not used anywhere else, and the current code generates a random password (`make secrets-init`). No rotation needed; history not rewritten. |
+| 2026-11-20 | restic repository password (two values) | `backup/scripts/backup.sh`, `backup/scripts/restore-test.sh` | Added in `7ca581f` (2026-09-16), removed in `8e7665b` (2026-10-19) | Found by manual review after a clean gitleaks scan. The passwords only encrypted local restic repositories of demo data inside k3d clusters that no longer exist, they were not used anywhere else, and the current code generates a random password (`make secrets-init`). No rotation needed; history not rewritten. Since C5 the `plain-password-assignment` rule finds both lines; their fingerprints are in `.gitleaksignore`. |
 
 ## Troubleshooting
 
