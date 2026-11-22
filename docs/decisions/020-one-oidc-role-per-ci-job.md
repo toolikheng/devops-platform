@@ -21,12 +21,13 @@ With OIDC the questions are how many roles, what each may do, and who changes IA
 
   | Role | Trusts (token `sub`) | May |
   |---|---|---|
-  | `gha-tf-plan` | `repo:toolikheng/devops-platform:pull_request` and `…:ref:refs/heads/master` | read: EC2 descriptions, the node's instance profile, the owner-cidr parameter, the ephemeral state only |
+  | `gha-tf-plan` | `repo:toolikheng@149467084/devops-platform@1406132198:pull_request` and `…:ref:refs/heads/master` | read: EC2 descriptions, the node's instance profile, the owner-cidr parameter, the ephemeral state only |
   | `gha-tf-apply` | `…:environment:aws-apply` | build and remove the ephemeral stack, nothing in IAM |
   | `gha-tf-destroy` | `…:environment:aws-nightly` | read and delete, never create; run the cost check |
   | `gha-deploy` | `…:environment:aws-deploy` | send `AWS-RunShellScript` to the tagged node and read the result |
 
   Both claims are matched with `StringEquals`. A wildcard such as `repo:toolikheng/*` would trust every repository and branch.
+- **The subject is GitHub's immutable one.** This repo's tokens name the owner and the repo with their numeric IDs (`toolikheng@149467084/devops-platform@1406132198`), and the trust policies match exactly that. If the repo were deleted and someone created `toolikheng/devops-platform` again, its ID would differ and the roles would refuse its tokens.
 - **The environments do the rest.** A job in a GitHub Environment gets `environment:<name>` as its subject whatever its branch, so `aws-apply`, `aws-deploy` and `aws-nightly` accept `master` only, and `aws-apply` also waits for my approval. Fork pull requests get no OIDC token at all.
 - **Permissions come from real runs.** The EC2 actions are the calls the Terraform AWS provider made in a Spot apply and destroy (C5) and an on-demand apply (C2), read from CloudTrail event history. The apply role may launch only in ap-southeast-1, and Deny statements on `ec2:RunInstances` repeat the cost rules in IAM: instance types on the allowlist, volumes encrypted and 30 GB or less, Canonical images only. It passes only the node role, only to EC2, and may tag only while creating. Apply and destroy delete only resources tagged `Project=devops-platform` and `Stack=ephemeral` (the Spot request, created untagged by AWS, is the exception: cancelling it costs nothing). The state access is `envs/aws/terraform.tfstate` and its lockfile only.
 - **IAM changes only from my laptop.** The persistent stack (IAM, budgets, the state bucket) is planned and applied with my `aws login` session. No role can change IAM, so a compromised workflow cannot give itself more access.
@@ -37,6 +38,7 @@ With OIDC the questions are how many roles, what each may do, and who changes IA
 ## Consequences
 
 - `gh secret list` shows `AWS_ACCOUNT_ID` only: no AWS key exists in GitHub.
+- Found on the first live run: the trust policies first used the plain subject `repo:toolikheng/devops-platform:…`, and the PR plan could not assume its role (`Not authorized to perform sts:AssumeRoleWithWebIdentity`). The repo uses the immutable subject (`gh api repos/toolikheng/devops-platform/actions/oidc/customization/sub` shows `use_immutable_subject: true`), and CloudTrail recorded the refused token's subject. The offline tests had checked my assumption of the format, and the IAM policy simulator checks permissions, not trust, so only a real token could show it. The tests now pin the immutable form.
 - The offline tests check both sides: the trust and permission lists exactly (`terraform/persistent/tests/github_*.tftest.hcl`), and every workflow job's subject against its role's trust (`tests/test_ci_roles.py`). Mutation testing: 57 of 57 deliberate mistakes caught (for example a wildcard subject, a job without its environment, a missing Deny, an apply without the hash check).
 - AWS relies on GitHub's environment rules for "master only" and "approved". Anyone with admin rights on the repo could change them; here that is only me.
 - All three environments keep GitHub's default `can_admins_bypass: true`: a repository admin can bypass their protection rules, so for `aws-apply` an admin could apply without the approval step. In a repo where I am the only admin that changes nothing. In a team I would set it to `false` (`"can_admins_bypass": false` in the environment's settings), so the reviewer rule holds for admins too.

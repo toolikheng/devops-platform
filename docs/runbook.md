@@ -495,7 +495,16 @@ A skip only stops the nightly job: the stack still bills every hour, so `make cl
 
 ### `Not authorized to perform sts:AssumeRoleWithWebIdentity`
 
-The job's token subject is not one its role trusts: the job runs in another environment or branch, a pull request comes from a fork (forks get no token at all), or `AWS_ACCOUNT_ID` is wrong. `tests/test_ci_roles.py` checks every job's subject against the trust policies offline; compare the job's `environment:` with `github_role_subjects` in `terraform/persistent/github_oidc.tf`.
+The job's token subject is not one its role trusts: the job runs in another environment or branch, a pull request comes from a fork (forks get no token at all), the repo's subject format changed, or `AWS_ACCOUNT_ID` is wrong. `tests/test_ci_roles.py` checks every job's subject against the trust policies offline; compare the job's `environment:` with `github_role_subjects` in `terraform/persistent/github_oidc.tf`. Two read-only checks show what GitHub really sends:
+
+```bash
+gh api repos/toolikheng/devops-platform/actions/oidc/customization/sub   # immutable subject: owner@id/repo@id
+aws cloudtrail lookup-events --region ap-southeast-1 --profile devops \
+  --lookup-attributes AttributeKey=EventName,AttributeValue=AssumeRoleWithWebIdentity \
+  --query 'Events[].CloudTrailEvent' --output text | jq -r '[.errorCode, .userIdentity.userName] | @tsv'
+```
+
+The second prints each refused token's subject; the trust policies use `github_subject_repo` in `github_oidc.tf`.
 
 ### `plan-summary: the changes have changed since they were approved`
 
