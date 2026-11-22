@@ -361,7 +361,7 @@ The Deployments allow 15 minutes without progress (`progressDeadlineSeconds: 900
 
 ### A deploy rolled back
 
-`kubectl -n policypal get pods` and `kubectl -n policypal describe pod <name>` show why (often `ImagePullBackOff`: the tag doesn't exist on GHCR). kubectl warns that `rollout undo` doesn't update the last-applied annotation; the next deploy with a good tag sets it again. While a bad API version was being tried the API was down (`Recreate`); the UI kept serving.
+`kubectl -n policypal get pods` and `kubectl -n policypal describe pod <name>` show why (often `ImagePullBackOff`: the tag doesn't exist on GHCR). kubectl warns that `rollout undo` doesn't update the last-applied annotation; the next deploy with a good tag sets it again. While a bad API version was being tried the API was down (`Recreate`); the UI kept serving. `deploy.yml` checks the tag on GHCR before it touches the node, so a rollback there means the image exists but didn't start or failed the smoke test: its run log shows the node's output.
 
 ### `statefulset.apps/postgres configured` on every deploy
 
@@ -513,6 +513,10 @@ Between the plan I approved and the apply, something changed what Terraform woul
 ### An apply or destroy fails with `UnauthorizedOperation` or `AccessDenied`
 
 The role lacks a permission the provider needs (a new provider version can call something new). AWS returns an encoded message: `aws sts decode-authorization-message --encoded-message <message> --profile devops` shows the action and resource. Add the action to `github_permissions.tf` and its test, then plan and apply the persistent stack from the laptop. `make cloud-down` from the laptop still works meanwhile.
+
+### `deploy-render: ghcr.io/toolikheng/policypal:<commit> is not on GHCR`
+
+`deploy.yml` stopped before anything reached the node: GHCR has no image with that tag. The input must be PolicyPal's full 40-character commit hash, and PolicyPal's CI must have published an image for it (its Actions run for that commit). "could not check … on GHCR" means GHCR gave no clear answer (an outage, a rate limit): run it again later. Nothing was deployed either way.
 
 ### `deploy-over-ssm: expected one running node`
 

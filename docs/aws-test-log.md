@@ -234,4 +234,60 @@ Checks: delete `policypal-admin` and time ESO recreating it; an IMDSv2 token req
 
 Total for this run: about USD 0.034 before tax.
 
+## CI/CD with GitHub OIDC (Phase C6)
+
+### Local first (k3d and offline, free)
+
+- The roles were checked offline before any apply: 36 `terraform test` runs on the persistent stack (exact trust conditions and permission lists), 27 tests tying each workflow job to a role that trusts it, and 58 workflow rules. A mutation check broke 57 rules one at a time (wildcard subject, a job without its environment, a missing Deny, an apply without the hash check, …); every one was caught.
+- The deploy path on k3d: the `local` overlay rendered with the broken tag `000…0` and deployed as a given file (`DEPLOY_MANIFESTS`, the way the node gets it) went to `ImagePullBackOff`; both Deployments rolled back to revision 1's image; the script exited 1 after 145 s (2-minute rollout timeout); the smoke test passed 6/6 afterwards. The tagged render with the pinned commit was byte for byte the plain render.
+- The EC2 actions in the apply and destroy roles came from CloudTrail event history of earlier real runs (Terraform's own calls), not from memory.
+
+### Steps
+
+```bash
+aws login --profile devops
+make cost-check
+cd terraform/persistent && terraform plan -out tfplan && terraform apply tfplan && cd -   # OIDC provider + 4 roles
+# once: the GitHub settings in docs/runbook.md (environments, AWS_ACCOUNT_ID secret, SSH_PUBLIC_KEY variable)
+# a pull request touching terraform/  -> Terraform workflow: plan comment
+gh workflow run terraform.yml -f action=apply -f instance_type=t3.micro -f use_spot=true   # approve in aws-apply
+gh workflow run terraform.yml -f action=destroy -f instance_type=t3.micro -f use_spot=true # approve in aws-apply
+make cloud-rebuild && make cloud-tunnel   # (second terminal) && make cloud-addons
+gh workflow run deploy.yml -f policypal_tag=16d4edb48b0508a75680831c186d435ae565bccf
+gh workflow run deploy.yml -f policypal_tag=0000000000000000000000000000000000000000      # rollback test (before the GHCR check existed)
+gh workflow run nightly-destroy.yml
+make cost-check
+```
+
+### Expected results
+
+| Check | Expected |
+|---|---|
+| PR | read-only plan through OIDC, a comment with addresses and actions only; no account ID, IP or plan detail in the public log |
+| Apply | waits for my approval; plans again; applies the saved plan only if the hash matches |
+| Destroy (CI) | removes everything, deleting only tagged resources |
+| Deploy | smoke test 6/6 on the node through SSM Run Command, no inbound access |
+| Broken commit | rollback on the node, workflow red |
+| Nightly | skip check, destroy, cost check clean; also by schedule at 02:00 MYT |
+| End | `make cost-check` exit 0 |
+
+### Result log
+
+| Date (MYT) | Run | Result | Notes |
+|---|---|---|---|
+| 2026-11-22 20:02 | Persistent apply | Pass | 9 added (OIDC provider, 4 roles, 4 policies), 2 changed (the budget action now also targets `gha-tf-apply`). `make check-state-secrets` 0 and 0; second plan no changes. IAM policy simulator: 39 of 39 decisions as expected. |
+| 2026-11-22 20:14–20:19 | C5 carry-over, c7i-flex.large Spot | Pass | `make cloud-deploy` 6/6 with the one-key ExternalSecrets; the API's database URL is built from the Secret's password (checked in the pod, not printed); a host-network pod is refused in `policypal` on AWS too. |
+| 2026-11-22 20:28 | `ci/deploy-over-ssm.sh` from the laptop | Pass | 14 s: the node fetched the repo at the pushed commit, ran the plain `sh` commands, got its private address from IMDSv2, applied (all objects unchanged) and passed the smoke test 6/6. |
+| 2026-11-22 20:30 | PR #7 plan | Fail, then pass | STS refused the token: "Not authorized to perform sts:AssumeRoleWithWebIdentity". The repo uses GitHub's immutable subject (`repo:toolikheng@149467084/devops-platform@1406132198:…`), seen in CloudTrail; the trust policies had the plain name. Fixed test-first (`38c0a8b`), applied (4 changed); the rerun commented "No changes." with the hash. Public log: no account ID, no IP, no plan. |
+| 2026-11-22 21:02 | Destroy (laptop) | Pass | 9 destroyed; cost-check clean; no sessions. About USD 0.049 for the session. |
+| 2026-11-22 23:03 | `terraform.yml` apply, t3.micro Spot | Fail | After my approval: 8 resources created (network, key pair; free), then `RunInstances` refused by the apply role's own image Deny. `aws sts decode-authorization-message`: `ec2:Owner = amazon` (Canonical's images carry that alias; the Deny allowed only Canonical's account ID). Fixed test-first (`bcfa6d1`), applied (1 changed). |
+| 2026-11-22 23:23 | `terraform.yml` apply, retry | Pass | Plan: 1 to add (the instance). Approved; the apply job planned again, the hash matched, and the saved plan created a t3.micro Spot node with IMDSv2 required. Public log: no account ID, no IP. |
+| 2026-11-22 23:30 | `terraform.yml` destroy | Pass | Approved; 9 destroyed through the tag-limited delete permissions; state empty, instance terminated, no VPC, no Spot request. |
+| 2026-11-22 23:41 | `deploy.yml`, pinned commit | Pass | Render 9 s with no AWS access; deploy 2 min 48 s through `gha-deploy` (first image pull on a new node); smoke test 6/6 on the node. The encoded manifests showed in every step header (job-level env): moved to the one step that uses it (`055ba64`). |
+| 2026-11-22 23:46 | `deploy.yml`, `000…0` | Pass (red, as intended) | `ImagePullBackOff`, rollout timed out after 15 minutes, API and UI rolled back to revision 1, the job failed after 15 min 48 s. From the laptop afterwards: both Deployments on the pinned image, smoke test 6/6. The API was down for those 15 minutes, so the render job now checks the tag on GHCR first (`8ccc187`): `000…0` is refused in 0.7 s, before the node. |
+| 2026-11-23 00:05 | `nightly-destroy.yml` by hand | Pass | "No skip set: destroying."; destroyed with `gha-tf-destroy`; the cost check in CI ran 72 checks, nothing billable. From the laptop: state empty, instance terminated. |
+| 2026-11-23 00:29 | Overnight stack for the schedule | Running | t3.micro Spot left for the 02:00 MYT schedule (my choice, about USD 0.012/h). |
+
+Total so far: about USD 0.049 (live #1) and about USD 0.033 (live #2, before the overnight stack) before tax.
+
 Record each run here, including failures and what was changed.
