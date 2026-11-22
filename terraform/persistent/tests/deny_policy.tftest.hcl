@@ -73,7 +73,7 @@ run "deny_policy_never_blocks_state_writes_or_clean_up" {
   }
 }
 
-run "budget_action_role_can_only_attach_the_deny_policy_to_the_admin_user" {
+run "budget_action_role_can_only_attach_the_deny_policy_to_the_admin_user_and_the_ci_apply_role" {
   command = apply
 
   assert {
@@ -86,14 +86,25 @@ run "budget_action_role_can_only_attach_the_deny_policy_to_the_admin_user" {
     error_message = "Only AWS Budgets, acting for this account, may assume the budget-action role."
   }
 
+  # Two statements, each limited to the deny policy (iam:PolicyARN): one for the admin user, one for the
+  # CI apply role. The role can attach nothing else and change nobody else.
   assert {
-    condition = alltrue([
+    condition = length(jsondecode(aws_iam_role_policy.budget_action.policy).Statement) == 2 && alltrue([
       for s in jsondecode(aws_iam_role_policy.budget_action.policy).Statement :
-      s.Effect == "Allow" &&
-      length(setsubtract(toset(flatten([s.Action])), toset(["iam:AttachUserPolicy", "iam:DetachUserPolicy"]))) == 0 &&
-      s.Resource == "arn:aws:iam::111122223333:user/toolikheng-admin" &&
-      s.Condition.ArnEquals["iam:PolicyARN"] == aws_iam_policy.deny_new_spend.arn
+      s.Effect == "Allow" && s.Condition.ArnEquals["iam:PolicyARN"] == aws_iam_policy.deny_new_spend.arn && (
+        (toset(flatten([s.Action])) == toset(["iam:AttachUserPolicy", "iam:DetachUserPolicy"]) &&
+        flatten([s.Resource]) == ["arn:aws:iam::111122223333:user/toolikheng-admin"]) ||
+        (toset(flatten([s.Action])) == toset(["iam:AttachRolePolicy", "iam:DetachRolePolicy"]) &&
+        flatten([s.Resource]) == ["arn:aws:iam::111122223333:role/gha-tf-apply"])
+      )
     ])
-    error_message = "The budget-action role may only attach or detach the deny policy, and only on toolikheng-admin."
+    error_message = "The budget-action role may only attach or detach the deny policy: on toolikheng-admin, and on gha-tf-apply."
+  }
+
+  assert {
+    condition = toset(flatten([for s in jsondecode(aws_iam_role_policy.budget_action.policy).Statement : s.Action])) == toset([
+      "iam:AttachUserPolicy", "iam:DetachUserPolicy", "iam:AttachRolePolicy", "iam:DetachRolePolicy",
+    ])
+    error_message = "Both targets must be covered: the admin user and the CI apply role."
   }
 }

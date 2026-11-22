@@ -2,25 +2,17 @@
 set -euo pipefail
 
 # Offline Kubernetes checks: renders each PolicyPal overlay with the pinned kustomize image, and External
-# Secrets Operator's pinned chart with the pinned Helm image, and validates every object against the
-# schemas of the node's Kubernetes version (ci/versions.env) with kubeconform (strict: unknown fields fail). ExternalSecret and
-# ClusterSecretStore are custom resources, so their schemas come from the CRDs catalog at a pinned commit.
-# The project rules on the rendered YAML (probes, limits, image tags, no Secrets, ESO on the host network,
-# ...) are pytest tests in tests/, run by make test-infra. Only Docker is needed; kubeconform downloads the
-# schemas from GitHub.
+# Secrets Operator's pinned chart with the pinned Helm image, and validates every object with
+# ci/kubeconform.sh (strict, against the node's Kubernetes version). The project rules on the rendered YAML
+# (probes, limits, image tags, no Secrets, ESO on the host network, ...) are pytest tests in tests/, run by
+# make test-infra. Only Docker is needed.
 
 echo "=== Running Kubernetes checks ==="
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-KUBECONFORM_IMAGE="ghcr.io/yannh/kubeconform:v0.8.0"
-# KUBERNETES_VERSION: the version of k3s on the AWS node.
-# shellcheck source=ci/versions.env
-source "$REPO_ROOT/ci/versions.env"
-CRD_SCHEMAS="https://raw.githubusercontent.com/datreeio/CRDs-catalog/034f273c7ab88c24f01d828db4dfc95e86f5b3a4/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json"
 
 kubeconform() {
-  docker run --rm -i "$KUBECONFORM_IMAGE" -strict -summary -kubernetes-version "$KUBERNETES_VERSION" \
-    -schema-location default -schema-location "$CRD_SCHEMAS" "$@" -
+  bash "$REPO_ROOT/ci/kubeconform.sh" "$@"
 }
 
 for overlay in local aws; do

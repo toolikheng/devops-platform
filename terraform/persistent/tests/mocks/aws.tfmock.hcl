@@ -36,3 +36,10 @@ mock_resource "aws_ssm_parameter" {
     insecure_value = "NOT-SET-IN-CONFIG"
   }
 }
+
+# The roles' trust policies name the provider by its ARN.
+mock_resource "aws_iam_openid_connect_provider" {
+  defaults = {
+    arn = "arn:aws:iam::111122223333:oidc-provider/token.actions.githubusercontent.com"
+  }
+}

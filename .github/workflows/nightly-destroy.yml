@@ -1,0 +1,77 @@
+# Destroys the ephemeral stack every night at 02:00 MYT, in case a session ended without make cloud-down,
+# then runs the cost check. Also on demand (Actions > Nightly destroy > Run workflow).
+#
+# Skipped while the repo variable NIGHTLY_DESTROY_SKIP_UNTIL (make skip-nightly-destroy) is a UTC time in
+# the future; anything unclear means destroy. The role (environment aws-nightly, master only) can read and
+# delete, never create. GitHub may run a schedule late, skip it under load, or disable it after 60 days
+# without repo activity: the budget alerts and make cost-check stay as the backup.
+name: Nightly destroy
+
+on:
+  schedule:
+    - cron: "0 18 * * *" # 18:00 UTC = 02:00 MYT
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  destroy:
+    name: Destroy the ephemeral stack, then the cost check
+    runs-on: ubuntu-latest
+    environment: aws-nightly
+    # Waits for a running apply instead of fighting it for the state, and is never cancelled midway.
+    concurrency:
+      group: aws-ephemeral-state
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        shell: bash
+        working-directory: terraform/envs/aws
+    env:
+      TF_VAR_ssh_public_key: ${{ vars.SSH_PUBLIC_KEY }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Skip tonight?
+        id: skip
+        env:
+          SKIP_UNTIL: ${{ vars.NIGHTLY_DESTROY_SKIP_UNTIL }}
+        run: bash "$GITHUB_WORKSPACE/ci/nightly-skip.sh"
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        if: steps.skip.outputs.skip != 'true'
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/gha-tf-destroy
+          role-session-name: nightly-destroy-${{ github.run_id }}
+          aws-region: ap-southeast-1
+          mask-aws-account-id: true
+
+      - uses: hashicorp/setup-terraform@v4
+        if: steps.skip.outputs.skip != 'true'
+        with:
+          terraform_version: 1.17.1
+          terraform_wrapper: false
+
+      # A saved destroy plan, applied exactly as planned; nothing is auto-approved. The lock timeout waits
+      # for a laptop run.
+      - name: Destroy
+        if: steps.skip.outputs.skip != 'true'
+        run: |
+          terraform init -input=false > /dev/null
+          terraform plan -destroy -lock-timeout=10m -input=false -out=tfplan > /dev/null
+          {
+            echo "### Nightly destroy"
+            echo '```'
+            bash "$GITHUB_WORKSPACE/ci/plan-summary.sh" tfplan
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          terraform apply -input=false tfplan > /dev/null
+
+      - name: Cost check (fails if anything billable is left)
+        if: steps.skip.outputs.skip != 'true'
+        run: bash "$GITHUB_WORKSPACE/scripts/cost-check.sh"

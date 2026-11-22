@@ -4,7 +4,8 @@
 #
 # Usage: deploy-policypal.sh local|aws <ui-url>
 #
-# Applies exactly the YAML that the checks validated (render-k8s.sh, pinned kustomize). Before applying it
+# Applies exactly the YAML that the checks validated: render-k8s.sh's (pinned kustomize), or the file named
+# by DEPLOY_MANIFESTS, which CI rendered and validated for the AWS node (no Docker there). Before applying it
 # records each Deployment's revision; on failure, every Deployment whose revision changed goes back to the
 # one it had. Postgres is never rolled back (its data volume stays as it is). A first deploy has nothing to
 # roll back to. After the apply it waits up to 2 minutes for the Secrets the pods read: on AWS, External
@@ -23,6 +24,10 @@ overlay="${1:-}"
 ui="${2:-}"
 if ! [[ "$overlay" =~ ^(local|aws)$ && "$ui" =~ ^https?://[^/]+ ]]; then
   echo "usage: deploy-policypal.sh local|aws <ui-url>" >&2
+  exit 2
+fi
+if [ -n "${DEPLOY_MANIFESTS:-}" ] && [ ! -f "$DEPLOY_MANIFESTS" ]; then
+  echo "deploy-policypal: DEPLOY_MANIFESTS=$DEPLOY_MANIFESTS is not a file" >&2
   exit 2
 fi
 
@@ -58,7 +63,11 @@ rollback() {
   done
 }
 
-manifests="$(bash "$here/render-k8s.sh" "$overlay")"
+if [ -n "${DEPLOY_MANIFESTS:-}" ]; then
+  manifests="$(cat "$DEPLOY_MANIFESTS")"
+else
+  manifests="$(bash "$here/render-k8s.sh" "$overlay")"
+fi
 
 failed=""
 if ! kubectl apply -f - <<<"$manifests"; then

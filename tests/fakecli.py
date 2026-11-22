@@ -10,9 +10,10 @@ The fake knows just enough of each real tool for the scripts here:
   waits for one resource only (like kubectl 1.37); `apply` changes the rollout revisions it reports;
   `port-forward` prints the local port it picked.
 - curl: answers by URL (or by path, any host); an HTTP error status is an error exit only with -f.
-- terraform: `output -raw NAME` and `state pull`. aws: `ssm get-parameter` by name, other calls by
-  `service.operation` (identity and region list by default, empty otherwise).
-- docker: a kustomize render prints MANIFEST, a Helm render ESO_MANIFEST. helm, k3d, ansible-playbook: log only.
+- terraform: `output -raw NAME`, `state pull` and `show -json PLANFILE`. aws: `ssm get-parameter` by name, other
+  calls by `service.operation` (identity and region list by default, empty otherwise), or a sequence of answers
+  for repeated calls (polling), the last one repeating.
+- docker: a kustomize render prints MANIFEST, a Helm render ESO_MANIFEST. helm, k3d, ansible-playbook, gh: log only.
 Any call can be made to fail (`fail`), and a real command can be logged on its way through (`spy`).
 """
 
@@ -25,7 +26,7 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO_ROOT / "scripts"
-TOOLS = ("kubectl", "curl", "docker", "k3d", "terraform", "aws", "helm", "ansible-playbook")
+TOOLS = ("kubectl", "curl", "docker", "k3d", "terraform", "aws", "helm", "ansible-playbook", "gh")
 
 PUBLIC_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleExampleExampleExampleExampleExample test@example"
 INSTANCE_ID = "i-0123456789abcdef0"
@@ -131,9 +132,19 @@ if tool == "terraform" and args[:2] == ["output", "-raw"]:
     answer(f"tf-output-{args[2]}", 1)
 if tool == "terraform" and args[:2] == ["state", "pull"]:
     answer("tf-state", 1)
+if tool == "terraform" and args[:2] == ["show", "-json"]:
+    answer("tf-show", 1)
 if tool == "aws" and args[:2] == ["ssm", "get-parameter"]:
     answer("ssm" + args[args.index("--name") + 1].replace("/", "_"), 254)
 if tool == "aws" and len(args) > 1:
+    seq = d / f"aws-{args[0]}.{args[1]}.seq"
+    if seq.exists():
+        answers = json.loads(seq.read_text())
+        rc, text = answers[0]
+        if len(answers) > 1:
+            seq.write_text(json.dumps(answers[1:]))
+        (sys.stdout if rc == 0 else sys.stderr).write(text)
+        sys.exit(rc)
     answer(f"aws-{args[0]}.{args[1]}")
 sys.exit(0)
 '''
@@ -212,9 +223,18 @@ class Fakes:
     def tf_state(self, text: str) -> None:
         self._write("tf-state", text)
 
+    def tf_show(self, plan: dict[str, Any]) -> None:
+        """What `terraform show -json PLANFILE` prints: the plan as JSON."""
+        self._write("tf-show", json.dumps(plan))
+
     def aws(self, call: str, output: str) -> None:
         """What `aws service operation ...` prints, e.g. call="sts.get-caller-identity"."""
         self._write(f"aws-{call}", output + "\n")
+
+    def aws_sequence(self, call: str, answers: list[tuple[int, str]]) -> None:
+        """Successive answers (exit code, text) of a repeated `aws service operation` call; the last repeats.
+        Text goes to stdout on exit 0, to stderr otherwise."""
+        self._write(f"aws-{call}.seq", json.dumps(answers))
 
     def parameter(self, name: str, value: str) -> None:
         """An SSM parameter `aws ssm get-parameter --name name` returns."""
@@ -264,8 +284,8 @@ class Fakes:
         return {"PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}", "HOME": str(self.home),
                 "FAKE_LOG": str(self.log), "FAKE_DIR": str(self.dir)}
 
-    def script(self, name: str, *args: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(["bash", str(SCRIPTS / name), *args], cwd=REPO_ROOT, env=self.env(),
+    def script(self, name: str, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(["bash", str(SCRIPTS / name), *args], cwd=REPO_ROOT, env={**self.env(), **(env or {})},
                               stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
 
     def make(self, target: str, *overrides: str) -> subprocess.CompletedProcess[str]:

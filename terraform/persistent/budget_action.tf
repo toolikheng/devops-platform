@@ -1,4 +1,5 @@
-# At the monthly cap, AWS Budgets attaches a deny policy to the admin user automatically. It stops new
+# At the monthly cap, AWS Budgets attaches a deny policy to the admin user and to the CI apply role
+# (gha-tf-apply, the one GitHub role that can start instances) automatically. It stops new
 # spending but never blocks clean-up: deleting, Terraform state reads/writes and IAM all stay allowed, so
 # the owner can always destroy what runs and detach the policy. Limits: running resources keep billing
 # until destroyed, and budget data refreshes only about three times a day.
@@ -55,7 +56,7 @@ resource "aws_iam_policy" "deny_new_spend" {
 }
 
 # The role AWS Budgets assumes to run the action. Trust: only the Budgets service, acting for this
-# account. Permission: attach or detach the deny policy, on the admin user only.
+# account. Permission: attach or detach the deny policy, on the admin user and gha-tf-apply only.
 resource "aws_iam_role" "budget_action" {
   name        = "devops-platform-budget-action"
   description = "Assumed by AWS Budgets to attach the deny policy when the monthly cap is reached."
@@ -75,13 +76,23 @@ resource "aws_iam_role_policy" "budget_action" {
   role = aws_iam_role.budget_action.id
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Sid       = "AttachOnlyTheDenyPolicyToTheAdminUser"
-      Effect    = "Allow"
-      Action    = ["iam:AttachUserPolicy", "iam:DetachUserPolicy"]
-      Resource  = data.aws_iam_user.admin.arn
-      Condition = { ArnEquals = { "iam:PolicyARN" = aws_iam_policy.deny_new_spend.arn } }
-    }]
+    Statement = [
+      {
+        Sid       = "AttachOnlyTheDenyPolicyToTheAdminUser"
+        Effect    = "Allow"
+        Action    = ["iam:AttachUserPolicy", "iam:DetachUserPolicy"]
+        Resource  = data.aws_iam_user.admin.arn
+        Condition = { ArnEquals = { "iam:PolicyARN" = aws_iam_policy.deny_new_spend.arn } }
+      },
+      {
+        # The CI role that can start instances (terraform.yml apply) is stopped at the cap too.
+        Sid       = "AttachOnlyTheDenyPolicyToTheCiApplyRole"
+        Effect    = "Allow"
+        Action    = ["iam:AttachRolePolicy", "iam:DetachRolePolicy"]
+        Resource  = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${aws_iam_role.github["gha-tf-apply"].name}"
+        Condition = { ArnEquals = { "iam:PolicyARN" = aws_iam_policy.deny_new_spend.arn } }
+      },
+    ]
   })
 }
 
@@ -101,6 +112,8 @@ resource "aws_budgets_budget_action" "deny_new_spend" {
     iam_action_definition {
       policy_arn = aws_iam_policy.deny_new_spend.arn
       users      = [data.aws_iam_user.admin.user_name]
+      # The other GitHub roles cannot start anything that bills.
+      roles = [aws_iam_role.github["gha-tf-apply"].name]
     }
   }
 
