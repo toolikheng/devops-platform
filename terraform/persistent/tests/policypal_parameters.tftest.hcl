@@ -50,10 +50,10 @@ run "secret_values_never_reach_terraform_state" {
 
   assert {
     condition = (
-      aws_ssm_parameter.db_password.value_wo_version == 1 &&
-      aws_ssm_parameter.admin_token.value_wo_version == 1
+      aws_ssm_parameter.db_password.value_wo_version == var.db_password_version &&
+      aws_ssm_parameter.admin_token.value_wo_version == var.admin_token_version
     )
-    error_message = "Each secret's value_wo_version must come from its variable (default 1); it is the only thing state keeps."
+    error_message = "Each secret's value_wo_version must come from its variable; it is the only thing state keeps."
   }
 }
 
@@ -61,16 +61,16 @@ run "raising_a_version_rotates_only_that_secret" {
   command = plan
 
   variables {
-    admin_token_version = 2
+    admin_token_version = 3
   }
 
   assert {
-    condition     = aws_ssm_parameter.admin_token.value_wo_version == 2
+    condition     = aws_ssm_parameter.admin_token.value_wo_version == 3
     error_message = "admin_token_version must set the admin token's value_wo_version."
   }
 
   assert {
-    condition     = aws_ssm_parameter.db_password.value_wo_version == 1
+    condition     = aws_ssm_parameter.db_password.value_wo_version == var.db_password_version
     error_message = "Rotating the admin token must not touch the database password."
   }
 }

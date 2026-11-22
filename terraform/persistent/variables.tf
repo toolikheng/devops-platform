@@ -52,9 +52,9 @@ variable "db_password_version" {
 }
 
 variable "admin_token_version" {
-  description = "Version of PolicyPal's admin token in SSM. Raise it by 1 to write a new random value (rotation)."
+  description = "Version of PolicyPal's admin token in SSM. Raise it by 1 in a commit to write a new random value: a rotation (runbook)."
   type        = number
-  default     = 1
+  default     = 2
 
   validation {
     condition     = var.admin_token_version >= 1 && floor(var.admin_token_version) == var.admin_token_version
