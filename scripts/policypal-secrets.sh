@@ -16,10 +16,8 @@ kubectl get namespace "$NAMESPACE" >/dev/null 2>&1 || kubectl create namespace "
 
 # The KEY=value lines of each Secret, generated only when it is created.
 db_values() {
-  local password
-  password="$(openssl rand -hex 24)" # hex only: no escaping needed inside the database URL
-  printf 'POSTGRES_PASSWORD=%s\nDATABASE_URL=postgresql+psycopg://policypal:%s@postgres:5432/policypal\n' \
-    "$password" "$password"
+  # Hex only: the API builds its database URL from this password (base/api.yaml), with no escaping.
+  printf 'POSTGRES_PASSWORD=%s\n' "$(openssl rand -hex 24)"
 }
 admin_values() {
   printf 'ADMIN_TOKEN=%s\n' "$(openssl rand -hex 24)"

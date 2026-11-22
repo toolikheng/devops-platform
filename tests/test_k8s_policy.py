@@ -267,7 +267,7 @@ def test_secrets_come_only_from_the_expected_secret_keys(rendered: dict, overlay
     # C5); the manifests only reference them. test_policypal_scripts.py checks the script against these refs.
     docs = rendered[overlay]
     expected = {
-        ("policypal-api", "api", "DATABASE_URL"): ("policypal-db", "DATABASE_URL"),
+        ("policypal-api", "api", "POSTGRES_PASSWORD"): ("policypal-db", "POSTGRES_PASSWORD"),
         ("policypal-api", "api", "ADMIN_TOKEN"): ("policypal-admin", "ADMIN_TOKEN"),
         ("postgres", "postgres", "POSTGRES_PASSWORD"): ("policypal-db", "POSTGRES_PASSWORD"),
     }
@@ -275,21 +275,42 @@ def test_secrets_come_only_from_the_expected_secret_keys(rendered: dict, overlay
     for workload in workloads(docs):
         for c in containers(workload):
             assert "envFrom" not in c, "reference single keys, so each container gets only what it needs"
+            from_secrets = set()
             for name, value in env(c).items():
                 if isinstance(value, dict) and "secretKeyRef" in value:
                     ref = value["secretKeyRef"]
                     found[(workload["metadata"]["name"], c["name"], name)] = (ref["name"], ref["key"])
+                    from_secrets.add(name)
                 elif re.search(r"PASSWORD|TOKEN|SECRET|DATABASE_URL", name):
-                    pytest.fail(f"{name} in {c['name']} is a literal value: it must come from a Secret")
+                    # The one other form: a value built only from Secret variables defined above it, $(NAME).
+                    built_from = set(re.findall(r"\$\((\w+)\)", value)) if isinstance(value, str) else set()
+                    assert built_from and built_from <= from_secrets, \
+                        f"{name} in {c['name']} is a literal value: it must come from a Secret"
     assert found == expected
+
+
+@overlay_param
+def test_api_builds_the_database_url_from_the_postgres_password(rendered: dict, overlay: str) -> None:
+    # The Secret holds only the password and the URL is written once, here, for both overlays. Kubernetes
+    # expands $(POSTGRES_PASSWORD) only if it is defined earlier in the same container; otherwise the API gets
+    # the text "$(POSTGRES_PASSWORD)" as its password. User and database are the ones Postgres creates.
+    docs = rendered[overlay]
+    api = container(get(docs, "Deployment", "policypal-api"), "api")
+    pg = env(container(get(docs, "StatefulSet", "postgres"), "postgres"))
+    names = [e["name"] for e in api["env"]]
+    assert names.index("POSTGRES_PASSWORD") < names.index("DATABASE_URL")
+    assert env(api)["DATABASE_URL"] == (
+        f"postgresql+psycopg://{pg['POSTGRES_USER']}:$(POSTGRES_PASSWORD)@postgres:5432/{pg['POSTGRES_DB']}")
 
 
 # --- secrets on AWS: External Secrets Operator, from SSM Parameter Store --------------------------------
 
 def test_aws_secrets_are_made_by_external_secrets_with_exactly_the_keys_the_pods_use(rendered: dict) -> None:
+    # No template: each parameter's value lands in the Secret as it is, under its secretKey.
     docs = rendered["aws"]
-    made = {(es["spec"]["target"]["name"], key)
-            for es in external_secrets(docs) for key in es["spec"]["target"]["template"]["data"]}
+    for es in external_secrets(docs):
+        assert "template" not in es["spec"]["target"], es["metadata"]["name"]
+    made = {(es["spec"]["target"]["name"], d["secretKey"]) for es in external_secrets(docs) for d in es["spec"]["data"]}
     assert made == secret_refs(docs)
 
 
@@ -315,17 +336,6 @@ def test_external_secrets_use_the_cluster_store_and_refresh_hourly(rendered: dic
         assert es["spec"]["refreshInterval"] == "1h", name
         # Owner: ESO owns the Secret, so deleting the ExternalSecret removes it (and a deleted Secret comes back).
         assert es["spec"]["target"].get("creationPolicy", "Owner") == "Owner", name
-
-
-def test_database_password_and_url_come_from_one_parameter(rendered: dict) -> None:
-    # Postgres is started with POSTGRES_PASSWORD and the API connects with DATABASE_URL: they must agree.
-    es = get(rendered["aws"], "ExternalSecret", "policypal-db")
-    data = es["spec"]["data"]
-    assert len(data) == 1
-    variable = "{{ ." + data[0]["secretKey"] + " }}"
-    template = es["spec"]["target"]["template"]["data"]
-    assert template["POSTGRES_PASSWORD"] == variable
-    assert f":{variable}@" in template["DATABASE_URL"]
 
 
 # --- exposure: only the UI, through Traefik -------------------------------------------------------------

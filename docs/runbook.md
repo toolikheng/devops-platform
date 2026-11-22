@@ -371,7 +371,7 @@ Harmless. `kubectl apply` replaces `volumeClaimTemplates` as a whole, and the se
 
 | Secret | Kept in | Read by | Created by | Rotation |
 |---|---|---|---|---|
-| `/policypal/aws/db-password` | SSM SecureString, Standard, key `aws/ssm` | ESO → Secret `policypal-db` (`POSTGRES_PASSWORD`, `DATABASE_URL`) → Postgres, API | Terraform, write-only (`terraform/persistent/policypal_secrets.tf`) | `db_password_version`, after `ALTER ROLE` (below) |
+| `/policypal/aws/db-password` | SSM SecureString, Standard, key `aws/ssm` | ESO → Secret `policypal-db` (`POSTGRES_PASSWORD`) → Postgres, and the API, which builds `DATABASE_URL` from it | Terraform, write-only (`terraform/persistent/policypal_secrets.tf`) | `db_password_version`, after `ALTER ROLE` (below) |
 | `/policypal/aws/admin-token` | same | ESO → Secret `policypal-admin` (`ADMIN_TOKEN`) → API; me, for the UI's admin page | same | `admin_token_version` (below) |
 | `/devops-platform/owner-cidr` | SSM String (not secret) | the ephemeral stack's plan | Terraform; `make owner-ip` sets the value | when my IP changes |
 | k3s admin kubeconfig | the node; `~/.kube/devops-aws.yaml` (600) | me | k3s | new cluster every session |

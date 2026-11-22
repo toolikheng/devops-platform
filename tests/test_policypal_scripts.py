@@ -284,13 +284,11 @@ def test_an_existing_namespace_is_left_to_the_manifests(fakes: Fakes) -> None:
     assert not fakes.kubectl("create", "namespace") and not fakes.kubectl("apply")
 
 
-def test_database_url_carries_the_same_random_password(fakes: Fakes) -> None:
+def test_values_are_long_random_hex(fakes: Fakes) -> None:
+    # Hex only: the API puts the password inside its database URL (api.yaml), where it needs no escaping.
     fakes.script("policypal-secrets.sh")
-    db = fakes.created_secret("policypal-db")
-    password = db["POSTGRES_PASSWORD"]
-    assert re.fullmatch(r"[0-9a-f]{48}", password), "48 hex characters: safe inside a URL"
-    assert db["DATABASE_URL"] == f"postgresql+psycopg://policypal:{password}@postgres:5432/policypal"
-    assert re.fullmatch(r"[0-9a-f]{32,}", fakes.created_secret("policypal-admin")["ADMIN_TOKEN"])
+    assert re.fullmatch(r"[0-9a-f]{48}", fakes.created_secret("policypal-db")["POSTGRES_PASSWORD"])
+    assert re.fullmatch(r"[0-9a-f]{48}", fakes.created_secret("policypal-admin")["ADMIN_TOKEN"])
 
 
 def test_values_differ_between_clusters(fakes: Fakes, tmp_path_factory: pytest.TempPathFactory) -> None:
@@ -636,16 +634,6 @@ def test_deploy_targets_never_change_aws(fakes: Fakes, target: str) -> None:
     for call in fakes.calls("terraform"):
         assert call["args"][0] in ("init", "output"), call["args"]
     assert not fakes.calls("aws")
-
-
-def test_both_overlays_build_the_database_url_the_same_way(fakes: Fakes, rendered: dict) -> None:
-    # policypal-db comes from the script on k3d and from an ExternalSecret on AWS: the API must get the same URL.
-    fakes.script("policypal-secrets.sh")
-    db = fakes.created_secret("policypal-db")
-    [es] = [d for d in rendered["aws"] if d["kind"] == "ExternalSecret" and d["metadata"]["name"] == "policypal-db"]
-    variable = "{{ ." + es["spec"]["data"][0]["secretKey"] + " }}"
-    expected = db["DATABASE_URL"].replace(db["POSTGRES_PASSWORD"], variable)
-    assert es["spec"]["target"]["template"]["data"]["DATABASE_URL"] == expected
 
 
 # --- External Secrets Operator: scripts/install-eso.sh, scripts/render-eso.sh, make cloud-addons ----------
