@@ -16,6 +16,8 @@ from typing import Any
 import pytest
 import yaml
 
+from conftest import chart_env
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ESO_DIR = REPO_ROOT / "k8s" / "platform" / "external-secrets"
 RENDER_ESO = REPO_ROOT / "scripts" / "render-eso.sh"
@@ -36,12 +38,6 @@ def eso() -> list[dict[str, Any]]:
     return [doc for doc in yaml.safe_load_all(result.stdout) if doc]
 
 
-def chart() -> dict[str, str]:
-    """KEY=value lines of chart.env, which both scripts read."""
-    text = (ESO_DIR / "chart.env").read_text()
-    return dict(re.findall(r"^([A-Z_]+)=(\S+)$", text, re.M))
-
-
 def store() -> dict[str, Any]:
     return yaml.safe_load((ESO_DIR / "clustersecretstore.yaml").read_text())
 
@@ -57,7 +53,7 @@ def pod_spec(deployment: dict[str, Any]) -> dict[str, Any]:
 # --- the chart ------------------------------------------------------------------------------------------
 
 def test_chart_is_pinned_to_one_exact_version() -> None:
-    pinned = chart()
+    pinned = chart_env()
     assert pinned.get("ESO_CHART") == "external-secrets"
     assert pinned.get("ESO_CHART_REPO") == "https://charts.external-secrets.io"
     assert re.fullmatch(r"\d+\.\d+\.\d+", pinned.get("ESO_CHART_VERSION", ""))
@@ -116,7 +112,7 @@ def test_every_eso_container_has_requests_and_a_memory_limit(eso: list) -> None:
 
 
 def test_eso_images_are_the_pinned_chart_version(eso: list) -> None:
-    expected = f"ghcr.io/external-secrets/external-secrets:v{chart()['ESO_CHART_VERSION']}"
+    expected = f"ghcr.io/external-secrets/external-secrets:v{chart_env()['ESO_CHART_VERSION']}"
     images = {c["image"] for d in deployments(eso).values() for c in pod_spec(d)["containers"]}
     assert images == {expected}
 

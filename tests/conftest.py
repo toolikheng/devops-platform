@@ -11,7 +11,29 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parent.parent
 NAMES_MODULE = REPO_ROOT / "terraform" / "modules" / "names" / "outputs.tf"
 RENDER = REPO_ROOT / "scripts" / "render-k8s.sh"
+ESO_CHART_ENV = REPO_ROOT / "k8s" / "platform" / "external-secrets" / "chart.env"
 OVERLAYS = ("local", "aws")
+
+
+def secret_refs(docs: list[dict[str, Any]]) -> set[tuple[str, str]]:
+    """(Secret, key) for every secretKeyRef in rendered workloads, init containers included: what the
+    cluster must hold before the pods can start."""
+    refs = set()
+    for doc in docs:
+        if doc["kind"] in ("Deployment", "StatefulSet"):
+            spec = doc["spec"]["template"]["spec"]
+            for c in spec["containers"] + spec.get("initContainers", []):
+                for e in c.get("env", []):
+                    ref = e.get("valueFrom", {}).get("secretKeyRef")
+                    if ref:
+                        refs.add((ref["name"], ref["key"]))
+    return refs
+
+
+def chart_env() -> dict[str, str]:
+    """KEY=value lines of chart.env: the External Secrets Operator chart that install-eso.sh installs and
+    render-eso.sh renders for the checks."""
+    return dict(re.findall(r"^([A-Z_]+)=(\S+)$", ESO_CHART_ENV.read_text(), re.M))
 
 
 @pytest.fixture(scope="session")

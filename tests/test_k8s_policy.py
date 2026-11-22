@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 import yaml
 
-from conftest import OVERLAYS
+from conftest import OVERLAYS, secret_refs
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 K3S_DEFAULTS = REPO_ROOT / "ansible" / "roles" / "k3s" / "defaults" / "main.yml"
@@ -82,13 +82,6 @@ def memory_bytes(quantity: str) -> int:
 
 def api(docs: list[dict[str, Any]]) -> dict[str, Any]:
     return get(docs, "Deployment", "policypal-api")
-
-
-def secret_refs(docs: list[dict[str, Any]]) -> set[tuple[str, str]]:
-    """(Secret, key) for every secretKeyRef in the workloads: what the cluster must hold."""
-    return {(e["valueFrom"]["secretKeyRef"]["name"], e["valueFrom"]["secretKeyRef"]["key"])
-            for w in workloads(docs) for c in containers(w) for e in c.get("env", [])
-            if "secretKeyRef" in e.get("valueFrom", {})}
 
 
 def external_secrets(docs: list[dict[str, Any]]) -> list[dict[str, Any]]:

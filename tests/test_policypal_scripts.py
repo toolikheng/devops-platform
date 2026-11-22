@@ -29,6 +29,8 @@ from typing import Any
 import pytest
 import yaml
 
+from conftest import chart_env, secret_refs
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO_ROOT / "scripts"
 AWS_GROUP_VARS = REPO_ROOT / "ansible" / "inventory" / "group_vars" / "aws.yml"
@@ -223,10 +225,10 @@ class Fakes:
         text = (self.dir / f"secret-{name}").read_text()
         return dict(line.split("=", 1) for line in text.splitlines() if line)
 
-    def created_secrets(self) -> dict[str, set[str]]:
-        """Secret name -> keys, for every Secret the scripts created."""
-        return {p.name.removeprefix("secret-"): set(self.created_secret(p.name.removeprefix("secret-")))
-                for p in self.dir.glob("secret-*")}
+    def created_secrets(self) -> set[tuple[str, str]]:
+        """(Secret, key) for every Secret the scripts created."""
+        return {(p.name.removeprefix("secret-"), key)
+                for p in self.dir.glob("secret-*") for key in self.created_secret(p.name.removeprefix("secret-"))}
 
     # --- running --------------------------------------------------------------------------------------
     def env(self) -> dict[str, str]:
@@ -241,20 +243,6 @@ class Fakes:
         return subprocess.run(["make", "--no-print-directory", target, *overrides], cwd=REPO_ROOT,
                               env=self.env(), stdin=subprocess.DEVNULL, capture_output=True, text=True,
                               timeout=120)
-
-
-def secret_keys_referenced(docs: list[dict[str, Any]]) -> dict[str, set[str]]:
-    """Secret name -> keys, from every secretKeyRef in rendered manifests: what the cluster must hold."""
-    keys: dict[str, set[str]] = {}
-    for doc in docs:
-        if doc["kind"] in ("Deployment", "StatefulSet"):
-            spec = doc["spec"]["template"]["spec"]
-            for c in spec["containers"] + spec.get("initContainers", []):
-                for e in c.get("env", []):
-                    ref = e.get("valueFrom", {}).get("secretKeyRef")
-                    if ref:
-                        keys.setdefault(ref["name"], set()).add(ref["key"])
-    return keys
 
 
 @pytest.fixture
@@ -274,7 +262,7 @@ def test_secrets_are_created_with_the_keys_the_manifests_reference(fakes: Fakes,
     result = fakes.script("policypal-secrets.sh")
     assert result.returncode == 0, output(result)
     for overlay, docs in rendered.items():
-        assert fakes.created_secrets() == secret_keys_referenced(docs), overlay
+        assert fakes.created_secrets() == secret_refs(docs), overlay
     assert fakes.kubectl("create", "namespace"), "the namespace must exist before its Secrets"
 
 
@@ -442,7 +430,7 @@ def test_deploy_applies_the_rendered_overlay_then_waits_and_smoke_tests(fakes: F
         assert len(names) == 1, f"one Secret per kubectl wait: {calls[i]['args']}"
         assert calls[i]["ns"] == "policypal" and "--timeout=2m" in calls[i]["args"]
         waited += names
-    assert sorted(waited) == sorted(secret_keys_referenced(rendered["aws"])), "exactly the Secrets the pods need"
+    assert sorted(waited) == sorted({name for name, _ in secret_refs(rendered["aws"])}), "exactly the Secrets the pods need"
     applied = next(i for i, c in enumerate(calls) if c["args"][:2] == ["apply", "-f"])
     rollout = next(i for i, c in enumerate(calls) if c["args"][:2] == ["rollout", "status"])
     assert applied < min(waits) and max(waits) < rollout
@@ -662,15 +650,10 @@ def test_both_overlays_build_the_database_url_the_same_way(fakes: Fakes, rendere
 
 # --- External Secrets Operator: scripts/install-eso.sh, scripts/render-eso.sh, make cloud-addons ----------
 
-def eso_chart() -> dict[str, str]:
-    """KEY=value lines of chart.env: the one place the chart and its version are written down."""
-    return dict(re.findall(r"^([A-Z_]+)=(\S+)$", (ESO_DIR / "chart.env").read_text(), re.M))
-
-
 def test_install_eso_installs_the_pinned_chart_with_our_values_then_the_store(fakes: Fakes) -> None:
     result = fakes.script("install-eso.sh")
     assert result.returncode == 0, output(result)
-    pinned = eso_chart()
+    pinned = chart_env()
     [helm] = fakes.calls("helm")
     args = helm["args"]
     assert args[:4] == ["upgrade", "--install", "external-secrets", pinned["ESO_CHART"]]
@@ -698,7 +681,7 @@ def test_render_eso_renders_the_same_pinned_chart_and_values(fakes: Fakes) -> No
     result = fakes.script("render-eso.sh")
     assert result.returncode == 0, output(result)
     assert result.stdout == ESO_MANIFEST
-    pinned = eso_chart()
+    pinned = chart_env()
     [call] = fakes.calls("docker")
     args = call["args"]
     image = next(a for a in args if a.startswith("alpine/helm:"))
