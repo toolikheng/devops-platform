@@ -174,7 +174,7 @@ terraform plan -out=tfplan                     # review it, then:
 terraform apply tfplan                         # applies exactly the reviewed plan
 ```
 
-`make tf-check` runs the offline checks (no credentials needed): fmt, validate, `terraform test` with a mock provider, tflint and trivy.
+`make tf-check` runs the offline checks (no credentials needed): fmt, validate, `terraform test` with a mock provider, tflint and trivy. Trivy's version, like the node's Kubernetes version, is pinned once in `ci/versions.env` ([ADR 019](decisions/019-shared-tool-versions.md)); a bump is one edit there, and `make test-infra` then names the k3s role or CI input that must follow.
 
 ### Bootstrap in a new account
 
@@ -321,7 +321,7 @@ make cloud-smoke               # AWS: smoke test only
 #   UI: http://<public_ip from terraform output>/  (only your IP can reach it)
 ```
 
-The deploy (`scripts/deploy-policypal.sh`) renders the overlay with the same pinned kustomize as the checks, applies it, waits up to 2 minutes for the Secrets `policypal-db` and `policypal-admin` (on AWS the ExternalSecrets in this apply make them; on k3d the script made them before), waits for Postgres, the API and the UI (`ROLLOUT_TIMEOUT`, default 15m, covers the first image pull), then runs the smoke test. If the apply, a rollout or the smoke test fails, every Deployment whose revision this deploy changed is rolled back to the revision it had, and the script exits 1. Postgres is never rolled back. A first deploy has nothing to roll back to.
+The deploy (`scripts/deploy-policypal.sh`) renders the overlay with the same pinned kustomize as the checks, applies it, waits up to 2 minutes for the Secrets `policypal-db` and `policypal-admin` (on AWS the ExternalSecrets in this apply make them; on k3d the script made them before), waits for Postgres, the API and the UI (`ROLLOUT_TIMEOUT`, default 15m, covers the first image pull), then runs the smoke test. If the apply, a rollout or the smoke test fails, every Deployment whose revision this deploy changed is rolled back to the revision it had, and the script exits 1. If one rollback fails, the script says which (`rolling deployment/<name> back failed`) and still rolls back the others; check that one with `kubectl -n policypal rollout history`. Postgres is never rolled back. A first deploy has nothing to roll back to.
 
 To deploy another PolicyPal commit, change `newTag` in the overlay (keep the quotes: a hash of only digits would be a YAML number), run `make k8s-check`, then deploy on k3d first.
 
