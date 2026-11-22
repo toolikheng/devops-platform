@@ -30,7 +30,7 @@ CI_DIR := $(REPO_ROOT)/ci
 # App virtualenv with the dev dependencies (created by `make venv`; gitignored).
 VENV := $(APP_DIR)/.venv
 VENV_STAMP := $(VENV)/.installed
-# Repo-level tests in tests/ (cost check, .gitignore rules) have their own venv (gitignored).
+# Repo-level tests in tests/ have their own venv (gitignored).
 TESTS_VENV := $(REPO_ROOT)/tests/.venv
 TESTS_VENV_STAMP := $(TESTS_VENV)/.installed
 # AWS profile for the AWS targets (`aws login --profile devops` first). The region is fixed in each stack
@@ -78,7 +78,7 @@ help:
 	@$(ECHO) "  $(GREEN)make venv$(NC)          Create app/.venv with dev dependencies (automatic)"
 	@$(ECHO) "  $(GREEN)make test$(NC)          Run pytest suite"
 	@$(ECHO) "  $(GREEN)make lint$(NC)          Run linters (ruff, mypy)"
-	@$(ECHO) "  $(GREEN)make test-infra$(NC)    Run the repo-level tests in tests/ (cost check, .gitignore)"
+	@$(ECHO) "  $(GREEN)make test-infra$(NC)    Run the repo-level tests in tests/ (scripts with fake CLIs, manifests, repo rules)"
 	@$(ECHO) "  $(GREEN)make run-app$(NC)       Run the app locally on :8000"
 	@$(ECHO) ""
 	@$(ECHO) "$(BLUE)Phase 3 - Containerize:$(NC)"
