@@ -199,6 +199,17 @@ def test_cloud_down_destroys_then_runs_the_cost_check(fakes: Fakes) -> None:
     assert "No billable leftovers" in result.stdout
 
 
+def test_cloud_down_checks_the_stacks_region_whatever_aws_region_says(fakes: Fakes) -> None:
+    # The destroy is always in ap-southeast-1; the cost check after it must scan that region in full.
+    result = fakes.make("cloud-down", "AWS_REGION=us-east-1")
+    assert result.returncode == 0, result.stdout + result.stderr
+    regions = set()
+    for call in fakes.calls("aws"):
+        args = call["args"].split()
+        regions.add(args[args.index("--region") + 1])
+    assert regions == {"ap-southeast-1"}
+
+
 def test_cloud_down_does_not_touch_the_owner_ip(fakes: Fakes) -> None:
     result = fakes.make("cloud-down")
     assert result.returncode == 0, result.stdout + result.stderr

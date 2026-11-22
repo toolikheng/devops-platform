@@ -33,9 +33,9 @@ VENV_STAMP := $(VENV)/.installed
 # Repo-level tests in tests/ (cost check, .gitignore rules) have their own venv (gitignored).
 TESTS_VENV := $(REPO_ROOT)/tests/.venv
 TESTS_VENV_STAMP := $(TESTS_VENV)/.installed
-# AWS profile and region for the AWS targets (`aws login --profile devops` first).
+# AWS profile for the AWS targets (`aws login --profile devops` first). The region is fixed in each stack
+# and script (ap-southeast-1), not taken from the shell.
 AWS_PROFILE ?= devops
-AWS_REGION ?= ap-southeast-1
 # Extra Terraform arguments for cloud-up/cloud-down, e.g. CLOUD_ARGS='-var use_spot=false' for on-demand.
 CLOUD_ARGS ?=
 # Where make cloud-config writes the generated AWS inventory (gitignored; tests point it elsewhere).
@@ -300,7 +300,7 @@ policypal-local: policypal-secrets-local
 
 # Read-only: describe/list/get calls only, never the Cost Explorer API. Exit 1 if anything billable is left.
 cost-check:
-	@AWS_PROFILE="$(AWS_PROFILE)" AWS_REGION="$(AWS_REGION)" bash "$(REPO_ROOT)/scripts/cost-check.sh"
+	@AWS_PROFILE="$(AWS_PROFILE)" bash "$(REPO_ROOT)/scripts/cost-check.sh"
 
 # Read-only: terraform state pull and ssm get-parameter. Prints names and counts, never a value.
 check-state-secrets:

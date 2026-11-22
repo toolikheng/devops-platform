@@ -61,13 +61,13 @@ class FakeAws:
     def fail(self, call: str, region: str | None = None) -> None:
         self._path(call, region, ".fail").touch()
 
-    def run(self) -> subprocess.CompletedProcess[str]:
+    def run(self, aws_region: str = HOME_REGION) -> subprocess.CompletedProcess[str]:
         env = {k: v for k, v in os.environ.items() if not k.startswith("AWS_")}
         env.update(
             PATH=f"{self.bin}{os.pathsep}{env['PATH']}",
             FAKE_AWS_FIXTURES=str(self.fixtures),
             FAKE_AWS_LOG=str(self.log),
-            AWS_REGION=HOME_REGION,
+            AWS_REGION=aws_region,
         )
         return subprocess.run(
             ["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=60
@@ -158,6 +158,15 @@ def test_only_read_only_calls_and_never_cost_explorer(aws: FakeAws) -> None:
         service, operation = call.split()[:2]
         assert service != "ce", f"Cost Explorer API call (billed per request): {call}"
         assert operation.startswith(("describe-", "list-", "get-")), f"not read-only: {call}"
+
+
+def test_home_region_is_the_stacks_region_whatever_aws_region_says(aws: FakeAws) -> None:
+    # The stacks fix their region in code. A region exported in the shell must not move the full scan:
+    # make cloud-down would then destroy in one region and check another.
+    result = aws.run(aws_region=OTHER_REGION)
+    assert result.returncode == 0, result.stdout + result.stderr
+    nat = [c.split() for c in aws.calls() if c.startswith("ec2 describe-nat-gateways")]
+    assert [c[c.index("--region") + 1] for c in nat] == [HOME_REGION]
 
 
 def test_every_call_names_its_region(aws: FakeAws) -> None:
