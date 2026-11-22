@@ -321,11 +321,11 @@ def test_the_registry_token_is_never_printed(fakes: Fakes, tmp_path: Path) -> No
     assert GHCR_TOKEN not in output(result)
 
 
-def test_render_checks_the_image_the_overlay_deploys() -> None:
-    # deploy-render.sh asks GHCR about one image; the overlay names the image whose tag it sets.
+@pytest.mark.parametrize("script", ["ci/deploy-render.sh", "scripts/render-k8s.sh"])
+def test_the_scripts_name_the_image_the_overlay_deploys(script: str) -> None:
+    # deploy-render.sh asks GHCR about this image and render-k8s.sh sets its tag; the overlay names it.
     [image] = [i["name"] for i in yaml.safe_load(AWS_OVERLAY.read_text())["images"]]
-    script = (REPO_ROOT / "ci" / "deploy-render.sh").read_text()
-    match = re.search(r'^IMAGE="([^"]+)"$', script, re.M)
+    match = re.search(r'^IMAGE="([^"]+)"$', (REPO_ROOT / script).read_text(), re.M)
     assert match and match.group(1) == image
 
 
@@ -337,7 +337,9 @@ def test_render_writes_the_aws_overlay_and_validates_that_exact_file(fakes: Fake
     assert out.read_text() == MANIFEST
     docker = fakes.calls("docker")
     [render_call] = [c for c in docker if any("kustomize" in a for a in c["args"])]
-    assert render_call["args"][-1].endswith("/policypal/overlays/aws")
+    # The commit's tag goes in through render-k8s.sh's wrapper; test_policypal_scripts.py renders it for real
+    # and compares it with the aws overlay.
+    assert render_call["args"][-1] == "/tag" and f"{REPO_ROOT / 'k8s'}:/k8s:ro" in render_call["args"]
     [validation] = [c for c in docker if any("kubeconform" in a for a in c["args"])]
     assert "-strict" in validation["args"]
     assert flag_value(validation["args"], "-kubernetes-version") == versions()["KUBERNETES_VERSION"]
