@@ -493,6 +493,14 @@ gh variable delete NIGHTLY_DESTROY_SKIP_UNTIL   # cancel the skip
 
 A skip only stops the nightly job: the stack still bills every hour, so `make cloud-down` stays the way to end a session.
 
+**Working in the morning.** A scheduled destroy can start hours late (07:30 on the first night) and has no time window on purpose, so it can remove a stack I'm using. Before a session in the hours after 02:17 MYT, I set a skip that ends with the session:
+
+```bash
+make skip-nightly-destroy UNTIL=2026-11-24T06:00:00Z   # UTC: until 14:00 MYT
+```
+
+Not the 24-hour default: set at 09:00 MYT it would also skip that night's 02:17 run, and a stack I forgot would keep billing. When the session ends early, `gh variable delete NIGHTLY_DESTROY_SKIP_UNTIL`.
+
 While a run waits at the `aws-apply` gate, `gh run view --log` refuses ("still in progress"). The finished plan job's log is available through the jobs API, so the change list and hash can be read from a terminal before approving:
 
 ```bash
