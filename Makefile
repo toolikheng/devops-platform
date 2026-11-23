@@ -42,7 +42,7 @@ CLOUD_ARGS ?=
 AWS_INVENTORY ?= $(ANSIBLE_DIR)/inventory/aws.yml
 # Extra ansible-playbook arguments for cloud-config, e.g. ANSIBLE_ARGS='--check --diff'.
 ANSIBLE_ARGS ?=
-# skip-nightly-destroy: keep the stack until this UTC time (e.g. 2026-11-24T00:00:00Z); default 24 hours.
+# skip-nightly-destroy: keep the stack until this UTC time (e.g. 2026-11-24T00:00:00Z); default 8 hours.
 UNTIL ?=
 # The AWS cluster's kubeconfig, written by make cloud-config (kubeconfig_path in ansible/inventory/group_vars/aws.yml).
 AWS_KUBECONFIG ?= $(HOME)/.kube/devops-aws.yaml
@@ -120,7 +120,7 @@ help:
 	@$(ECHO) "  $(GREEN)make cloud-deploy$(NC)  Deploy PolicyPal to the node and smoke-test it (needs make cloud-tunnel running)"
 	@$(ECHO) "  $(GREEN)make cloud-smoke$(NC)   Smoke-test PolicyPal on the node only (needs make cloud-tunnel running)"
 	@$(ECHO) "  $(GREEN)make check-state-secrets$(NC) Read-only: show that no secret value is in the persistent Terraform state"
-	@$(ECHO) "  $(GREEN)make skip-nightly-destroy$(NC) Keep the stack through the 02:17 MYT nightly destroy (GitHub setting; UNTIL=..., 7 days max)"
+	@$(ECHO) "  $(GREEN)make skip-nightly-destroy$(NC) Hold off the 02:17 MYT nightly destroy for 8 hours (GitHub setting; UNTIL=... for longer, 7 days max)"
 	@$(ECHO) ""
 	@$(ECHO) "$(BLUE)Utilities:$(NC)"
 	@$(ECHO) "  $(GREEN)make all$(NC)           Run all phases (check → infra → deploy)"

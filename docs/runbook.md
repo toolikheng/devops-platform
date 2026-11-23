@@ -487,11 +487,29 @@ gh run watch          # the apply job waits: Actions > the run > Review deployme
 gh workflow run deploy.yml -f policypal_tag=<PolicyPal commit, 40 characters>
 gh workflow run nightly-destroy.yml        # the nightly destroy, now
 
-make skip-nightly-destroy                  # keep the stack tonight (24 hours; UNTIL=2026-11-24T00:00:00Z for longer, 7 days max)
+make skip-nightly-destroy                  # hold off the nightly destroy for 8 hours (UNTIL=2026-11-24T00:00:00Z for longer, 7 days max)
 gh variable delete NIGHTLY_DESTROY_SKIP_UNTIL   # cancel the skip
 ```
 
 A skip only stops the nightly job: the stack still bills every hour, so `make cloud-down` stays the way to end a session.
+
+**Working in the morning.** A scheduled destroy can start hours late (07:30 on the first night) and has no time window on purpose, so it can remove a stack I'm using. Before a session in the hours after 02:17 MYT, I set a skip:
+
+```bash
+make skip-nightly-destroy                              # the next 8 hours: one session
+make skip-nightly-destroy UNTIL=2026-11-24T06:00:00Z   # anything longer, in UTC (here 14:00 MYT); 7 days at most
+```
+
+Eight hours is the default so that a skip set in the morning ends before that night's 02:17 run, and a stack I forgot is still destroyed. A skip set after 18:17 MYT does cover that night's run, which is how to keep a stack overnight on purpose. When the session ends early, `gh variable delete NIGHTLY_DESTROY_SKIP_UNTIL`.
+
+While a run waits at the `aws-apply` gate, `gh run view --log` refuses ("still in progress"). The finished plan job's log is available through the jobs API, so the change list and hash can be read from a terminal before approving:
+
+```bash
+run=<run id>
+job="$(gh run view "$run" --json jobs --jq '.jobs[] | select(.name | startswith("Plan (")) | .databaseId')"
+gh api "repos/toolikheng/devops-platform/actions/jobs/$job/logs" | sed -E 's/^[^ ]+ //' \
+  | grep -E '^(create|update|delete|replace) |^No changes|^Hash of these'
+```
 
 ### `Not authorized to perform sts:AssumeRoleWithWebIdentity`
 
@@ -524,7 +542,7 @@ No running instance carries `Project=devops-platform` and `Stack=ephemeral`: cre
 
 ### The nightly destroy didn't run
 
-GitHub can start scheduled runs late or skip them under load, and disables schedules after 60 days without repository activity (`gh workflow enable nightly-destroy.yml`). It happened on the first night (2026-11-23), with the cron at 02:00 MYT: no run at all. GitHub's docs name the start of every hour as a busy time, so the cron now runs at 02:17 MYT. Check with `gh run list --workflow nightly-destroy.yml --event schedule` (an empty list after 02:00 MYT means it never started). The budget alerts and `make cost-check` are the backup; `gh workflow run nightly-destroy.yml` or `make cloud-down` destroys now.
+GitHub can start scheduled runs late or skip them under load, and disables schedules after 60 days without repository activity (`gh workflow enable nightly-destroy.yml`). On the first night (2026-11-23), with the cron at 02:00 MYT, the run started 5 h 30 min late, at 07:30. GitHub's docs name the start of every hour as a busy time, so the cron now runs at 02:17 MYT. Check with `gh run list --workflow nightly-destroy.yml --event schedule`: no run after 02:17 MYT means it hasn't started *yet*, not that it never will, so don't wait for it if a stack is still up. The budget alerts and `make cost-check` are the backup; `gh workflow run nightly-destroy.yml` or `make cloud-down` destroys now.
 
 ## Secret scanning
 

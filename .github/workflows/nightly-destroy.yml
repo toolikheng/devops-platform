@@ -10,7 +10,7 @@ name: Nightly destroy
 on:
   schedule:
     # 18:17 UTC = 02:17 MYT. Off the hour: GitHub delays, and may drop, scheduled runs at busy times such as the
-    # start of every hour; at "0 18 * * *" the first night's run never started.
+    # start of every hour; at "0 18 * * *" the first night's run started 5 h 30 min late.
     - cron: "17 18 * * *"
   workflow_dispatch:
 

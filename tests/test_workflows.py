@@ -300,8 +300,8 @@ def test_nightly_destroy_runs_at_two_seventeen_malaysia_time_and_on_demand() -> 
 
 def test_the_nightly_destroy_is_scheduled_off_the_hour() -> None:
     # GitHub delays scheduled runs under load, and may drop queued ones; the start of every hour is a high-load
-    # time (GitHub's docs). At "0 18 * * *" the run never started on its first night (2026-11-23), and a missed
-    # nightly destroy keeps a stack billing.
+    # time (GitHub's docs). At "0 18 * * *" the first night's run started 5 h 30 min late (2026-11-23), and a late
+    # or missed nightly destroy keeps a stack billing.
     [entry] = load(NIGHTLY)["on"]["schedule"]
     minute = entry["cron"].split()[0]
     assert minute.isdigit() and int(minute) != 0, entry["cron"]
