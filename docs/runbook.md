@@ -493,6 +493,15 @@ gh variable delete NIGHTLY_DESTROY_SKIP_UNTIL   # cancel the skip
 
 A skip only stops the nightly job: the stack still bills every hour, so `make cloud-down` stays the way to end a session.
 
+While a run waits at the `aws-apply` gate, `gh run view --log` refuses ("still in progress"). The finished plan job's log is available through the jobs API, so the change list and hash can be read from a terminal before approving:
+
+```bash
+run=<run id>
+job="$(gh run view "$run" --json jobs --jq '.jobs[] | select(.name | startswith("Plan (")) | .databaseId')"
+gh api "repos/toolikheng/devops-platform/actions/jobs/$job/logs" | sed -E 's/^[^ ]+ //' \
+  | grep -E '^(create|update|delete|replace) |^No changes|^Hash of these'
+```
+
 ### `Not authorized to perform sts:AssumeRoleWithWebIdentity`
 
 The job's token subject is not one its role trusts: the job runs in another environment or branch, a pull request comes from a fork (forks get no token at all), the repo's subject format changed, or `AWS_ACCOUNT_ID` is wrong. `tests/test_ci_roles.py` checks every job's subject against the trust policies offline; compare the job's `environment:` with `github_role_subjects` in `terraform/persistent/github_oidc.tf`. Two read-only checks show what GitHub really sends:
