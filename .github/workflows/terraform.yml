@@ -2,13 +2,13 @@
 # credentials for its own role through OIDC; no AWS key is stored anywhere. The persistent stack (IAM,
 # budgets, state bucket) is applied from the owner's laptop only, so no workflow can change IAM.
 #
-# Pull request touching terraform/: the static checks, then a read-only plan, posted as a PR comment that
-#   lists each resource address and action. Never values: the repo is public, and so are its logs.
+# Pull request touching terraform/: a read-only plan, posted as a PR comment that lists each resource address
+#   and action. Never values: the repo is public, and so are its logs. (The static checks run in ci.yml.)
 # Manual run (Actions > Terraform > Run workflow, apply or destroy): the same plan, shown in the run summary
 #   with its hash. The apply job waits for the owner's approval (environment aws-apply, master only), plans
 #   again and applies that saved plan only if its changes hash the same as the approved ones. The plan file
 #   itself cannot be handed over: it holds the owner's IP in plain text, and a public repo's artifacts can
-#   be downloaded.
+#   be downloaded. Every Terraform command is in ci/ephemeral-stack.sh.
 name: Terraform
 
 on:
@@ -17,6 +17,7 @@ on:
     paths:
       - "terraform/**"
       - ".github/workflows/terraform.yml"
+      - "ci/ephemeral-stack.sh"
       - "ci/plan-summary.sh"
   workflow_dispatch:
     inputs:
@@ -38,45 +39,20 @@ on:
 permissions: {}
 
 jobs:
-  static:
-    name: Static checks (no AWS access)
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - uses: hashicorp/setup-terraform@v4
-        with:
-          terraform_version: 1.17.1
-          terraform_wrapper: false
-
-      - name: fmt, validate, test (mocked AWS), tflint, trivy
-        run: bash ci/terraform-checks.sh
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # tflint plugin download (avoids API rate limits)
-
   plan:
     name: Plan (read-only role)
-    needs: static
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
-    defaults:
-      run:
-        shell: bash
-        working-directory: terraform/envs/aws
     env:
       TF_VAR_ssh_public_key: ${{ vars.SSH_PUBLIC_KEY }}
-      PLAN_MODE: ${{ inputs.action == 'destroy' && '-destroy' || '' }}
+      ACTION: ${{ inputs.action }}
       INSTANCE_TYPE: ${{ inputs.instance_type }}
       USE_SPOT: ${{ inputs.use_spot }}
     outputs:
-      hash: ${{ steps.summary.outputs.hash }}
-      summary: ${{ steps.summary.outputs.summary }}
+      hash: ${{ steps.plan.outputs.hash }}
+      summary: ${{ steps.plan.outputs.summary }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -94,30 +70,10 @@ jobs:
           terraform_version: 1.17.1
           terraform_wrapper: false
 
-      # -lock=false: the plan role may read the state but not write the lockfile. The plan itself is not
-      # printed; the next step shows only addresses and actions.
-      - name: Plan
-        run: |
-          terraform init -input=false > /dev/null
-          vars=()
-          if [ -n "$INSTANCE_TYPE" ]; then vars+=(-var "instance_type=$INSTANCE_TYPE"); fi
-          if [ -n "$USE_SPOT" ]; then vars+=(-var "use_spot=$USE_SPOT"); fi
-          terraform plan $PLAN_MODE "${vars[@]}" -lock=false -input=false -out=tfplan > /dev/null
-
-      - name: Changes (addresses and actions only)
-        id: summary
-        run: |
-          bash "$GITHUB_WORKSPACE/ci/plan-summary.sh" tfplan > summary.txt
-          hash="$(bash "$GITHUB_WORKSPACE/ci/plan-summary.sh" --hash tfplan)"
-          echo "hash=$hash" >> "$GITHUB_OUTPUT"
-          { echo "summary<<SUMMARY_END"; cat summary.txt; echo "SUMMARY_END"; } >> "$GITHUB_OUTPUT"
-          {
-            echo "### Terraform plan: ephemeral stack"
-            echo
-            if [ -s summary.txt ]; then echo '```'; cat summary.txt; echo '```'; else echo "No changes."; fi
-            echo
-            echo "Hash of these changes: \`$hash\`"
-          } >> "$GITHUB_STEP_SUMMARY"
+      # Without the lock; to the log, the run summary and the job outputs: addresses, actions and the hash.
+      - name: Plan (addresses and actions only)
+        id: plan
+        run: bash ci/ephemeral-stack.sh plan
 
   comment:
     name: Plan comment on the pull request
@@ -158,13 +114,9 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    defaults:
-      run:
-        shell: bash
-        working-directory: terraform/envs/aws
     env:
       TF_VAR_ssh_public_key: ${{ vars.SSH_PUBLIC_KEY }}
-      PLAN_MODE: ${{ inputs.action == 'destroy' && '-destroy' || '' }}
+      ACTION: ${{ inputs.action }}
       INSTANCE_TYPE: ${{ inputs.instance_type }}
       USE_SPOT: ${{ inputs.use_spot }}
       APPROVED_HASH: ${{ needs.plan.outputs.hash }}
@@ -185,14 +137,6 @@ jobs:
           terraform_version: 1.17.1
           terraform_wrapper: false
 
-      # A saved plan file is applied exactly as planned, without a prompt; nothing is auto-approved.
+      # Plans again with the lock, checks the hash, applies that saved plan; nothing is auto-approved.
       - name: Plan again, apply only the approved changes
-        run: |
-          terraform init -input=false > /dev/null
-          vars=()
-          if [ -n "$INSTANCE_TYPE" ]; then vars+=(-var "instance_type=$INSTANCE_TYPE"); fi
-          if [ -n "$USE_SPOT" ]; then vars+=(-var "use_spot=$USE_SPOT"); fi
-          terraform plan $PLAN_MODE "${vars[@]}" -lock-timeout=5m -input=false -out=tfplan > /dev/null
-          bash "$GITHUB_WORKSPACE/ci/plan-summary.sh" --check "$APPROVED_HASH" tfplan
-          terraform apply -input=false tfplan > /dev/null
-          echo "Applied. Next for PolicyPal: make cloud-config and make cloud-addons from the laptop, then deploy.yml." >> "$GITHUB_STEP_SUMMARY"
+        run: bash ci/ephemeral-stack.sh apply "$APPROVED_HASH"

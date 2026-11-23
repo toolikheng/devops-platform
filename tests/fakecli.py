@@ -9,8 +9,10 @@ The fake knows just enough of each real tool for the scripts here:
 - kubectl: namespaces and Secrets that exist; `create secret` keeps the values it was sent; `wait --for=create`
   waits for one resource only (like kubectl 1.37); `apply` changes the rollout revisions it reports;
   `port-forward` prints the local port it picked.
-- curl: answers by URL (or by path, any host); an HTTP error status is an error exit only with -f.
-- terraform: `output -raw NAME`, `state pull` and `show -json PLANFILE`. aws: `ssm get-parameter` by name, other
+- curl: answers by URL (or by path, any host); an HTTP error status is an error exit only with -f; with
+  `-w '%{http_code}'` it prints the HTTP status the test set (200 by default).
+- terraform: `output -raw NAME`, `state pull` and `show -json PLANFILE`; `plan` and `apply` print what the test
+  set (as the real ones print the whole plan); `plan -out=FILE` writes FILE. aws: `ssm get-parameter` by name, other
   calls by `service.operation` (identity and region list by default, empty otherwise), or a sequence of answers
   for repeated calls (polling), the last one repeating.
 - docker: a kustomize render prints MANIFEST, a Helm render ESO_MANIFEST. helm, k3d, ansible-playbook, gh: log only.
@@ -119,6 +121,9 @@ if tool == "curl":
     if not rules:
         sys.exit(7)  # could not connect
     rule = max(rules, key=lambda r: bool(r["when"]))
+    if "-w" in args and args[args.index("-w") + 1] == "%{http_code}":
+        print(rule.get("status") or 200, end="")
+        sys.exit(0)
     sys.stdout.write(rule["body"])
     # Like curl: an HTTP error status is an error exit only with -f (--fail).
     sys.exit(rule["rc"] if rule["rc"] and any(x.startswith("-f") for x in args) else 0)
@@ -134,6 +139,11 @@ if tool == "terraform" and args[:2] == ["state", "pull"]:
     answer("tf-state", 1)
 if tool == "terraform" and args[:2] == ["show", "-json"]:
     answer("tf-show", 1)
+if tool == "terraform" and args[:1] == ["plan"]:
+    for out in [x.split("=", 1)[1] for x in args if x.startswith("-out=")]:
+        Path(out).write_text("saved plan")
+if tool == "terraform" and args[:1] in (["plan"], ["apply"]) and (d / "tf-says").exists():
+    print((d / "tf-says").read_text())
 if tool == "aws" and args[:2] == ["ssm", "get-parameter"]:
     answer("ssm" + args[args.index("--name") + 1].replace("/", "_"), 254)
 if tool == "aws" and len(args) > 1:
@@ -204,12 +214,15 @@ class Fakes:
         self._install(command)
         self._write(f"spy-{command}", real)
 
-    def http(self, url: str, body: str | None, rc: int | None = None, when: str | None = None) -> None:
+    def http(self, url: str, body: str | None, rc: int | None = None, when: str | None = None,
+             status: int | None = None) -> None:
         """curl of `url` (a full URL, or a path on any host) prints `body`, exiting `rc` when called with -f.
-        `when`: only for requests whose arguments contain this text. None as body: nothing listens (exit 7)."""
+        `when`: only for requests whose arguments contain this text. `status`: what `-w '%{http_code}'`
+        prints (200 if not set). None as body: nothing listens (exit 7)."""
         def change(rules: list[dict[str, Any]]) -> list[dict[str, Any]]:
             rules = [r for r in rules if (r["url"], r["when"]) != (url, when)]
-            return rules + ([{"url": url, "when": when, "body": body, "rc": rc}] if body is not None else [])
+            return rules + ([{"url": url, "when": when, "body": body, "rc": rc, "status": status}]
+                            if body is not None else [])
         self._update("http.json", change)
 
     def tf_output(self, name: str, value: str | None) -> None:
@@ -222,6 +235,10 @@ class Fakes:
 
     def tf_state(self, text: str) -> None:
         self._write("tf-state", text)
+
+    def tf_says(self, text: str) -> None:
+        """What `terraform plan` and `terraform apply` print (the real ones print the whole plan, values included)."""
+        self._write("tf-says", text)
 
     def tf_show(self, plan: dict[str, Any]) -> None:
         """What `terraform show -json PLANFILE` prints: the plan as JSON."""

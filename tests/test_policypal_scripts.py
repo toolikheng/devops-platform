@@ -374,15 +374,19 @@ def test_render_takes_only_a_full_lowercase_commit_as_the_tag(fakes: Fakes, tag:
     assert not fakes.calls("docker")
 
 
-def test_render_with_a_tag_leaves_the_repo_as_it_is(fakes: Fakes) -> None:
+def test_render_with_a_tag_reads_the_overlay_unchanged_through_a_wrapper(fakes: Fakes) -> None:
+    # Kustomize's own images field sets the tag, in a two-line kustomization on top of the overlay: the repo's
+    # k8s/ is mounted read-only as it is (no copy, no text editing of YAML).
     overlay = REPO_ROOT / "k8s" / "policypal" / "overlays" / "aws" / "kustomization.yaml"
     before = overlay.read_text()
     result = fakes.script("render-k8s.sh", "aws", OTHER_TAG)
     assert result.returncode == 0, output(result)
     assert overlay.read_text() == before
     [render] = [c for c in fakes.calls("docker") if any("kustomize" in a for a in c["args"])]
-    mount = flag_value(render["args"], "-v").split(":", 1)[0]
-    assert mount != str(REPO_ROOT / "k8s"), "a temporary copy carries the tag"
+    args = render["args"]
+    mounts = [args[i + 1] for i, a in enumerate(args) if a == "-v"]
+    assert mounts[0] == f"{REPO_ROOT / 'k8s'}:/k8s:ro", "the repo's manifests, read-only"
+    assert len(mounts) == 2 and mounts[1].endswith(":/tag:ro") and args[-1] == "/tag", "built through the wrapper"
 
 
 def test_render_with_a_tag_changes_only_the_policypal_image_tag(rendered: dict) -> None:

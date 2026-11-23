@@ -1,7 +1,8 @@
 # Deploys one PolicyPal commit to the AWS node (Actions > Deploy PolicyPal > Run workflow).
 #
-# render: renders the aws overlay with that commit as the image tag and validates it (kubeconform), with no
-#   AWS access at all.
+# render: checks that PolicyPal's image for that commit exists on GHCR (a missing tag stops here, before the
+#   node is touched), renders the aws overlay with that commit as the image tag and validates it
+#   (kubeconform), with no AWS access at all.
 # deploy: in environment aws-deploy (master only), with the deploy role's short-lived OIDC credentials,
 #   sends that exact YAML to the node through SSM Run Command. On the node, scripts/node-deploy.sh applies
 #   it with k3s's own kubeconfig, waits for the rollout, runs the smoke test, and rolls the API and UI back
@@ -36,8 +37,8 @@ jobs:
         with:
           persist-credentials: false
 
-      # deploy-render.sh refuses anything but a full commit hash before it renders.
-      - name: Render the aws overlay for this commit and validate it
+      # deploy-render.sh refuses anything but a full commit hash, then a tag GHCR doesn't have, then renders.
+      - name: Check the image on GHCR, render the aws overlay for this commit and validate it
         id: render
         run: |
           bash ci/deploy-render.sh "$POLICYPAL_TAG" policypal.yaml
@@ -55,7 +56,6 @@ jobs:
       contents: read
       id-token: write
     env:
-      MANIFESTS: ${{ needs.render.outputs.manifests }}
       POLICYPAL_TAG: ${{ inputs.policypal_tag }}
     steps:
       - uses: actions/checkout@v7
@@ -69,7 +69,10 @@ jobs:
           aws-region: ap-southeast-1
           mask-aws-account-id: true
 
+      # Only this step gets the manifests: GitHub prints a job's env in every step's header.
       - name: Deploy, smoke-test, roll back on failure
+        env:
+          MANIFESTS: ${{ needs.render.outputs.manifests }}
         run: |
           printf '%s' "$MANIFESTS" | base64 -d | gunzip > policypal.yaml
           bash ci/deploy-over-ssm.sh policypal.yaml

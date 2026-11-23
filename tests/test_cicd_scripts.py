@@ -2,11 +2,14 @@
 
 - ci/plan-summary.sh: a Terraform plan as "action address" lines, never attribute values (the repo's logs are
   public), and a hash of those lines; the apply job applies only if the hash matches the approved one.
+- ci/ephemeral-stack.sh: every Terraform run of the workflows (plan, apply after approval, nightly destroy):
+  what is locked, what reaches the log and the job's outputs, and that only a saved plan is applied.
 - ci/nightly-skip.sh: whether tonight's destroy is skipped (repo variable NIGHTLY_DESTROY_SKIP_UNTIL); anything
   unclear means destroy.
 - scripts/skip-nightly-destroy.sh (make skip-nightly-destroy): sets that variable, for at most 7 days.
-- ci/deploy-render.sh: the aws overlay for one PolicyPal commit, validated with kubeconform: the exact YAML
-  the deploy sends.
+- ci/deploy-render.sh: checks that PolicyPal's image for that commit exists on GHCR (a missing tag fails here,
+  before the node is touched and the API goes down), then renders the aws overlay for it and validates it with
+  kubeconform: the exact YAML the deploy sends.
 - ci/deploy-over-ssm.sh: finds the tagged node, sends it the deploy through SSM Run Command, waits and reports.
 The node side (scripts/node-deploy.sh) is in test_policypal_scripts.py with the other deploy scripts.
 
@@ -138,6 +141,132 @@ def test_a_plan_terraform_cannot_read_is_an_error(fakes: Fakes, plan: Path) -> N
     assert not re.fullmatch(r"[0-9a-f]{64}\n?", result.stdout), "no hash of an empty summary"
 
 
+# --- ci/ephemeral-stack.sh -----------------------------------------------------------------------------
+
+STACK_DIR = str(REPO_ROOT / "terraform" / "envs" / "aws")
+FULL_PLAN = "Terraform will perform the following actions ... cidr_blocks = [\"198.51.100.7/32\"]"
+
+
+@pytest.fixture
+def stack(fakes: Fakes, tmp_path: Path) -> dict[str, str]:
+    """A plan with the PLAN changes; terraform plan/apply print the full plan (values included), as the real
+    ones do. Returns the GitHub Actions files the script may write."""
+    fakes.tf_show(PLAN)
+    fakes.tf_says(FULL_PLAN)
+    files = {"GITHUB_OUTPUT": str(tmp_path / "output"), "GITHUB_STEP_SUMMARY": str(tmp_path / "summary")}
+    for path in files.values():
+        Path(path).write_text("")
+    return files
+
+
+def run_stack(fakes: Fakes, stack: dict[str, str], *args: str, **env: str) -> subprocess.CompletedProcess[str]:
+    return ci(fakes, "ephemeral-stack.sh", *args, env={**stack, **env})
+
+
+def terraform_calls(fakes: Fakes) -> list[list[str]]:
+    return [c["args"] for c in fakes.calls("terraform")]
+
+
+def test_plan_reads_only_and_never_takes_the_lock(fakes: Fakes, stack: dict[str, str]) -> None:
+    result = run_stack(fakes, stack, "plan")
+    assert result.returncode == 0, output(result)
+    calls = fakes.calls("terraform")
+    assert {c["cwd"] for c in calls} == {STACK_DIR}
+    assert [c["args"][0] for c in calls] == ["init", "plan", "show", "show"]
+    plan = calls[1]["args"]
+    assert "-lock=false" in plan and "-destroy" not in plan, "gha-tf-plan can't write the lockfile"
+    [out] = [Path(calls[1]["cwd"]) / a.split("=", 1)[1] for a in plan if a.startswith("-out=")]
+    assert STACK_DIR not in str(out.resolve().parent) and not out.exists(), "a temporary plan file, removed afterwards"
+    assert not [a for a in plan if a == "-var"], "a pull request plans the stack's defaults"
+
+
+def test_plan_shows_the_changes_and_hash_in_the_log_summary_and_outputs(fakes: Fakes, stack: dict[str, str]) -> None:
+    # The log too: GitHub's API can't read job summaries (C6 live #2).
+    result = run_stack(fakes, stack, "plan")
+    digest = hashlib.sha256(SUMMARY.encode()).hexdigest()
+    for text in (result.stdout, Path(stack["GITHUB_STEP_SUMMARY"]).read_text()):
+        assert SUMMARY.strip() in text and digest in text
+    out = Path(stack["GITHUB_OUTPUT"]).read_text()
+    assert f"hash={digest}\n" in out
+    assert re.search(r"summary<<(\w+)\n" + re.escape(SUMMARY.strip()) + r"\n\1\n", out), "for the PR comment"
+
+
+def test_the_full_plan_never_reaches_the_log(fakes: Fakes, stack: dict[str, str]) -> None:
+    # The public log: addresses, actions and the hash only. The real terraform prints values (the owner's IP).
+    for args in (["plan"], ["nightly"]):
+        result = run_stack(fakes, stack, *args)
+        assert result.returncode == 0 and "198.51.100.7" not in output(result), args
+
+
+def test_a_manual_destroy_and_the_inputs_reach_the_plan(fakes: Fakes, stack: dict[str, str]) -> None:
+    result = run_stack(fakes, stack, "plan", ACTION="destroy", INSTANCE_TYPE="t3.micro", USE_SPOT="false")
+    assert result.returncode == 0, output(result)
+    [plan] = [a for a in terraform_calls(fakes) if a[0] == "plan"]
+    assert "-destroy" in plan
+    assert [plan[i + 1] for i, a in enumerate(plan) if a == "-var"] == ["instance_type=t3.micro", "use_spot=false"]
+
+
+@pytest.mark.parametrize("args, env", [([], {}), (["deploy"], {}), (["plan", "extra"], {}), (["apply"], {}),
+                                       (["apply", "abc"], {}), (["plan"], {"ACTION": "recreate"})])
+def test_the_stack_script_takes_only_its_three_verbs(fakes: Fakes, stack: dict[str, str], args: list[str],
+                                                      env: dict[str, str]) -> None:
+    result = run_stack(fakes, stack, *args, **env)
+    assert result.returncode == 2 and "usage" in output(result)
+    assert not fakes.calls("terraform")
+
+
+def test_apply_plans_again_and_applies_the_saved_plan_when_the_hash_matches(fakes: Fakes, stack: dict[str, str]) -> None:
+    # The hash comes from the plan job, as in terraform.yml.
+    assert run_stack(fakes, stack, "plan").returncode == 0
+    approved = re.search(r"^hash=(\w+)$", Path(stack["GITHUB_OUTPUT"]).read_text(), re.M).group(1)
+    fakes.log.write_text("")
+    result = run_stack(fakes, stack, "apply", approved, ACTION="destroy")
+    assert result.returncode == 0, output(result)
+    calls = terraform_calls(fakes)
+    assert [a[0] for a in calls] == ["init", "plan", "show", "apply"]
+    plan, apply = calls[1], calls[3]
+    assert "-destroy" in plan and "-lock=false" not in plan and any(a.startswith("-lock-timeout=") for a in plan)
+    [out] = [a.split("=", 1)[1] for a in plan if a.startswith("-out=")]
+    assert apply == ["apply", "-input=false", out], "the saved plan, nothing else"
+    assert SUMMARY.strip() in result.stdout, "the log shows what is applied"
+
+
+def test_apply_stops_when_the_changes_are_not_the_approved_ones(fakes: Fakes, stack: dict[str, str]) -> None:
+    result = run_stack(fakes, stack, "apply", "0" * 64)
+    assert result.returncode == 1
+    assert "changed since" in output(result)
+    assert not [a for a in terraform_calls(fakes) if a[0] == "apply"]
+
+
+def test_nightly_plans_the_destroy_and_applies_that_plan(fakes: Fakes, stack: dict[str, str]) -> None:
+    result = run_stack(fakes, stack, "nightly", ACTION="apply", INSTANCE_TYPE="c7i-flex.large")
+    assert result.returncode == 0, output(result)
+    calls = terraform_calls(fakes)
+    assert [a[0] for a in calls] == ["init", "plan", "show", "apply"]
+    plan = calls[1]
+    assert "-destroy" in plan and "-var" not in plan, "always a destroy, whatever the env"
+    assert any(a.startswith("-lock-timeout=") for a in plan), "waits for a laptop run instead of failing"
+    [out] = [a.split("=", 1)[1] for a in plan if a.startswith("-out=")]
+    assert calls[3] == ["apply", "-input=false", out]
+    for text in (result.stdout, Path(stack["GITHUB_STEP_SUMMARY"]).read_text()):
+        assert SUMMARY.strip() in text
+
+
+@pytest.mark.parametrize("verb", ["plan", "nightly"])
+def test_a_failed_plan_stops_everything(fakes: Fakes, stack: dict[str, str], verb: str) -> None:
+    fakes.fail("terraform", "plan")
+    result = run_stack(fakes, stack, verb)
+    assert result.returncode != 0
+    assert [a[0] for a in terraform_calls(fakes)] == ["init", "plan"]
+    assert Path(stack["GITHUB_OUTPUT"]).read_text() == ""
+
+
+def test_nothing_is_ever_auto_approved(fakes: Fakes, stack: dict[str, str]) -> None:
+    run_stack(fakes, stack, "nightly")
+    assert terraform_calls(fakes) and not [a for a in terraform_calls(fakes) if "-auto-approve" in a]
+    assert "-auto-approve" not in (REPO_ROOT / "ci" / "ephemeral-stack.sh").read_text()
+
+
 # --- ci/nightly-skip.sh ---------------------------------------------------------------------------------
 
 def skip(fakes: Fakes, tmp_path: Path, until: str | None) -> tuple[subprocess.CompletedProcess[str], str]:
@@ -240,21 +369,105 @@ def test_the_workflow_reads_the_variable_the_script_sets() -> None:
 
 # --- ci/deploy-render.sh --------------------------------------------------------------------------------
 
+GHCR_TOKEN_URL = "https://ghcr.io/token?scope=repository:toolikheng/policypal:pull"
+GHCR_TOKEN = "registry-token-for-this-test"
+AWS_OVERLAY = REPO_ROOT / "k8s" / "policypal" / "overlays" / "aws" / "kustomization.yaml"
+
+
+def manifest_url(tag: str) -> str:
+    return f"https://ghcr.io/v2/toolikheng/policypal/manifests/{tag}"
+
+
+def ghcr(fakes: Fakes, tag: str = TAG, status: int = 200) -> None:
+    """GHCR as an anonymous client sees it: a pull token, then the tag's manifest (200) or not (404)."""
+    fakes.http(GHCR_TOKEN_URL, json.dumps({"token": GHCR_TOKEN}))
+    fakes.http(manifest_url(tag), "", status=status)
+
+
+def render(fakes: Fakes, out: Path, tag: str = TAG) -> subprocess.CompletedProcess[str]:
+    return ci(fakes, "deploy-render.sh", tag, str(out))
+
+
 @pytest.mark.parametrize("tag", ["", "latest", TAG[:39], TAG.upper(), TAG + "0", "16d4edb4;rm -rf /"])
 def test_render_takes_only_a_full_lowercase_commit(fakes: Fakes, tmp_path: Path, tag: str) -> None:
     result = ci(fakes, "deploy-render.sh", tag, str(tmp_path / "policypal.yaml"))
     assert result.returncode == 2
+    assert not fakes.calls("docker") and not fakes.calls("curl")
+
+
+def test_render_checks_the_image_exists_on_ghcr_before_anything_else(fakes: Fakes, tmp_path: Path) -> None:
+    ghcr(fakes)
+    result = render(fakes, tmp_path / "policypal.yaml")
+    assert result.returncode == 0, output(result)
+    calls = fakes.calls()
+    token = next(i for i, c in enumerate(calls) if c["tool"] == "curl" and GHCR_TOKEN_URL in c["args"])
+    head = next(i for i, c in enumerate(calls) if c["tool"] == "curl" and manifest_url(TAG) in c["args"])
+    first_docker = next(i for i, c in enumerate(calls) if c["tool"] == "docker")
+    assert token < head < first_docker, "check first, render after"
+    args = calls[head]["args"]
+    assert "-I" in args, "a HEAD request: no image is downloaded"
+    headers = [args[i + 1] for i, a in enumerate(args) if a == "-H"]
+    assert f"Authorization: Bearer {GHCR_TOKEN}" in headers
+    accept = next(h for h in headers if h.startswith("Accept:"))
+    for media_type in ("application/vnd.oci.image.index.v1+json", "application/vnd.docker.distribution.manifest.list.v2+json",
+                       "application/vnd.oci.image.manifest.v1+json", "application/vnd.docker.distribution.manifest.v2+json"):
+        assert media_type in accept, f"PolicyPal's CI could publish either format: {media_type}"
+
+
+def test_a_tag_missing_on_ghcr_stops_before_anything_is_rendered(fakes: Fakes, tmp_path: Path) -> None:
+    # The broken-commit deploy (live run 45040160686) took the API down for 15 minutes before the rollback.
+    # A tag that doesn't exist now fails here, in seconds, and nothing reaches the node.
+    zeros = "0" * 40
+    ghcr(fakes, zeros, status=404)
+    out = tmp_path / "policypal.yaml"
+    result = render(fakes, out, zeros)
+    assert result.returncode == 1
+    assert "not on GHCR" in output(result) and zeros in output(result)
+    assert not fakes.calls("docker") and not out.exists()
+
+
+@pytest.mark.parametrize("trouble", ["token", "registry error", "unreachable"])
+def test_render_stops_when_ghcr_cannot_be_asked(fakes: Fakes, tmp_path: Path, trouble: str) -> None:
+    # Fail closed: an unknown answer is not a yes.
+    ghcr(fakes)
+    if trouble == "token":
+        fakes.http(GHCR_TOKEN_URL, "", rc=22)
+    elif trouble == "registry error":
+        fakes.http(manifest_url(TAG), "", status=503)
+    else:
+        fakes.http(manifest_url(TAG), None)
+    result = render(fakes, tmp_path / "policypal.yaml")
+    assert result.returncode == 1
+    assert "could not check" in output(result)
     assert not fakes.calls("docker")
 
 
+def test_the_registry_token_is_never_printed(fakes: Fakes, tmp_path: Path) -> None:
+    ghcr(fakes)
+    result = render(fakes, tmp_path / "policypal.yaml")
+    assert result.returncode == 0 and fakes.calls("curl"), "the token was fetched and used"
+    assert GHCR_TOKEN not in output(result)
+
+
+@pytest.mark.parametrize("script", ["ci/deploy-render.sh", "scripts/render-k8s.sh"])
+def test_the_scripts_name_the_image_the_overlay_deploys(script: str) -> None:
+    # deploy-render.sh asks GHCR about this image and render-k8s.sh sets its tag; the overlay names it.
+    [image] = [i["name"] for i in yaml.safe_load(AWS_OVERLAY.read_text())["images"]]
+    match = re.search(r'^IMAGE="([^"]+)"$', (REPO_ROOT / script).read_text(), re.M)
+    assert match and match.group(1) == image
+
+
 def test_render_writes_the_aws_overlay_and_validates_that_exact_file(fakes: Fakes, tmp_path: Path) -> None:
+    ghcr(fakes)
     out = tmp_path / "policypal.yaml"
-    result = ci(fakes, "deploy-render.sh", TAG, str(out))
+    result = render(fakes, out)
     assert result.returncode == 0, output(result)
     assert out.read_text() == MANIFEST
     docker = fakes.calls("docker")
-    [render] = [c for c in docker if any("kustomize" in a for a in c["args"])]
-    assert render["args"][-1].endswith("/policypal/overlays/aws")
+    [render_call] = [c for c in docker if any("kustomize" in a for a in c["args"])]
+    # The commit's tag goes in through render-k8s.sh's wrapper; test_policypal_scripts.py renders it for real
+    # and compares it with the aws overlay.
+    assert render_call["args"][-1] == "/tag" and f"{REPO_ROOT / 'k8s'}:/k8s:ro" in render_call["args"]
     [validation] = [c for c in docker if any("kubeconform" in a for a in c["args"])]
     assert "-strict" in validation["args"]
     assert flag_value(validation["args"], "-kubernetes-version") == versions()["KUBERNETES_VERSION"]
@@ -262,8 +475,9 @@ def test_render_writes_the_aws_overlay_and_validates_that_exact_file(fakes: Fake
 
 
 def test_render_fails_when_kubeconform_does(fakes: Fakes, tmp_path: Path) -> None:
+    ghcr(fakes)
     fakes.fail("docker", "run", "--rm", "-i")
-    assert ci(fakes, "deploy-render.sh", TAG, str(tmp_path / "policypal.yaml")).returncode != 0
+    assert render(fakes, tmp_path / "policypal.yaml").returncode != 0
     assert [c for c in fakes.calls("docker") if any("kubeconform" in a for a in c["args"])], "it validated"
 
 

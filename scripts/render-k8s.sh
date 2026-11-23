@@ -5,12 +5,13 @@
 #
 # Uses a pinned kustomize image, so the checks (ci/k8s-checks.sh, tests/test_k8s_policy.py) and the
 # deploy (deploy-policypal.sh) all see exactly the same YAML, locally and in CI. Only Docker is needed.
-# With a PolicyPal commit (40 lowercase hex characters: the image tag PolicyPal's CI publishes), the
-# overlay's pinned tag is replaced in a temporary copy, so deploy.yml can deploy any commit and the repo
-# stays as it is.
+# With a PolicyPal commit (40 lowercase hex characters: the image tag PolicyPal's CI publishes), a two-line
+# kustomization on top of the overlay sets that tag with kustomize's own images field, so deploy.yml can
+# deploy any commit; the repo's manifests are read as they are, read-only.
 set -euo pipefail
 
 KUSTOMIZE_IMAGE="registry.k8s.io/kustomize/kustomize:v5.8.3"
+IMAGE="ghcr.io/toolikheng/policypal"
 K8S_DIR="$(cd "$(dirname "$0")/../k8s" && pwd)"
 
 overlay="${1:-}"
@@ -24,21 +25,13 @@ if [ "$#" -gt 1 ] && ! [[ "$tag" =~ ^[0-9a-f]{40}$ ]]; then
   exit 2
 fi
 
-dir="$K8S_DIR"
-if [ -n "$tag" ]; then
-  work="$(mktemp -d)"
-  trap 'rm -rf "$work"' EXIT
-  chmod 755 "$work" # the kustomize container's user must be able to read the copy
-  cp -R "$K8S_DIR" "$work/k8s"
-  kustomization="$work/k8s/policypal/overlays/$overlay/kustomization.yaml"
-  pinned='^  newTag: "[0-9a-f]{40}"$'
-  # Exactly one pinned tag, as the overlays have: anything else is a layout this script doesn't know.
-  if [ "$(grep -c -E "$pinned" "$kustomization")" != 1 ]; then
-    echo "render-k8s.sh: expected one quoted 40-character newTag in overlays/$overlay/kustomization.yaml" >&2
-    exit 1
-  fi
-  sed -i -E "s/$pinned/  newTag: \"$tag\"/" "$kustomization"
-  dir="$work/k8s"
+if [ -z "$tag" ]; then
+  exec docker run --rm -v "$K8S_DIR:/k8s:ro" "$KUSTOMIZE_IMAGE" build "/k8s/policypal/overlays/$overlay"
 fi
 
-docker run --rm -v "$dir:/k8s:ro" "$KUSTOMIZE_IMAGE" build "/k8s/policypal/overlays/$overlay"
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+chmod 755 "$work" # the kustomize container's user must be able to read it
+printf 'resources:\n- ../k8s/policypal/overlays/%s\nimages:\n- name: %s\n  newTag: "%s"\n' \
+  "$overlay" "$IMAGE" "$tag" >"$work/kustomization.yaml"
+docker run --rm -v "$K8S_DIR:/k8s:ro" -v "$work:/tag:ro" "$KUSTOMIZE_IMAGE" build /tag

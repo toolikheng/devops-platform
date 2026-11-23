@@ -4,7 +4,7 @@
 
 The platform has three layers:
 
-1. **Delivery.** GitHub Actions lints, tests and scans every push, and publishes the image to GHCR from master. A manual workflow deploys to a throwaway cluster and smoke-tests it.
+1. **Delivery.** GitHub Actions lints, tests and scans every push, and publishes the image to GHCR from master. A manual workflow deploys to a throwaway cluster and smoke-tests it. For AWS, three workflows plan and apply the ephemeral stack, deploy PolicyPal to the node and destroy the stack every night, each job with its own short-lived OIDC role.
 2. **Runtime.** A FastAPI service in k3d (k3s in Docker), exposed through Traefik, with SQLite on a persistent volume.
 3. **Operations.** Prometheus, Alertmanager and Grafana for metrics and alerts, a daily restic backup CronJob, and Ansible-managed Docker containers that stand in for VMs.
 
@@ -74,6 +74,9 @@ The local cluster runs an image built on the machine and imported with `k3d imag
 | Backup | `backup/` | Daily CronJob (SQLite online backup, then restic), restore Job, restore test |
 | Terraform persistent stack (AWS) | `terraform/persistent` | S3 state bucket (versioned, SSE-S3, TLS-only, native lockfile), `zero-spend` and `monthly-cap` budgets, and the USD 15 budget action that denies new spend. Also the node's role (11 SSM-agent actions, plus `GetParameter` on `/policypal/aws/*`), its instance profile, the SSM parameter `/devops-platform/owner-cidr`, and PolicyPal's two SecureStrings. Only $0-at-rest resources; applied from the laptop. See ADRs 005–007 and 016 |
 | Terraform ephemeral stack (AWS) | `terraform/envs/aws`, `terraform/modules/{network,compute}` | Everything billed by the hour, created with `make cloud-up` and destroyed with `make cloud-down` every session. `network`: one VPC with a public subnet and internet gateway (no NAT, Elastic IP or endpoints). `compute`: one Ubuntu 24.04 node (allowlisted type, IMDSv2 hop limit 1, encrypted gp3, on-demand or Spot) and its security group, allowing TCP 80 from the owner's /32 only. It finds the instance profile and owner IP by name, not through the persistent state. See ADRs 008–012 |
+| GitHub OIDC roles (AWS) | `terraform/persistent/github_oidc.tf`, `github_permissions.tf` | GitHub's OIDC provider and four roles, each trusting exact token subjects (GitHub's immutable form, `toolikheng@149467084/devops-platform@1406132198`): `gha-tf-plan` (pull requests and master, read-only), `gha-tf-apply` (environment `aws-apply`, my approval), `gha-tf-destroy` (`aws-nightly`), `gha-deploy` (`aws-deploy`). No role can change IAM; the apply role's Deny statements repeat the cost rules for `RunInstances`; deletes need the ephemeral stack's tags ([ADR 020](decisions/020-one-oidc-role-per-ci-job.md)) |
+| AWS workflows | `.github/workflows/{terraform,deploy,nightly-destroy}.yml`, `ci/{ephemeral-stack,plan-summary,nightly-skip,deploy-render,deploy-over-ssm,kubeconform}.sh` | Every Terraform run of the workflows is in `ci/ephemeral-stack.sh` (`plan`, `apply <hash>`, `nightly`); the YAML only wires inputs, roles and approvals. `terraform.yml`: PR plan comment (addresses and actions only), manual apply or destroy that plans again after approval and applies the saved plan only if the change list's hash matches. `deploy.yml`: checks the PolicyPal tag on GHCR, renders and validates the overlay with no AWS access, then sends it to the node through SSM Run Command. `nightly-destroy.yml`: 02:17 MYT (off the hour, where GitHub's scheduler is busiest), skippable for up to 7 days (`make skip-nightly-destroy`), then the cost check |
+| Deploy on the node | `scripts/node-deploy.sh` | Run by SSM Run Command as root from a checkout of the workflow's commit: k3s's own kubeconfig, the node's private address from IMDSv2 for the smoke test, then `deploy-policypal.sh` with the manifests CI validated ([ADR 021](decisions/021-deploy-through-ssm-run-command.md)) |
 | Shared scripts | `ci/`, `scripts/` | Lint, test, rule-test, build and scan scripts used by the Makefile and CI; toolchain check/install |
 
 ## Data flows
@@ -110,6 +113,22 @@ flowchart LR
     laptop -->|"make cloud-deploy: kubectl through the tunnel"| ssm
 ```
 
+**CI/CD on AWS.** A job that needs AWS asks GitHub for an OIDC token; STS checks it against GitHub's provider and the role's trust policy (audience and exact subject) and returns credentials for one hour at most. The role ARN is built from the `AWS_ACCOUNT_ID` secret, so the account ID stays masked in the public logs. A pull request touching `terraform/` gets a read-only plan (`-lock=false`) and a comment listing each change. A manual apply or destroy shows the same list and its hash; after my approval in `aws-apply` the job plans again and applies its saved plan only if the hash matches. `deploy.yml` asks GHCR whether the image exists, renders and validates the overlay, then sends it, compressed, inside one `AWS-RunShellScript` command to the instance tagged as the ephemeral stack; the node fetches this repo at the same commit and deploys, smoke-tests and rolls back on its own. Nothing connects to the node, and no cluster credential leaves it. The persistent stack, which holds IAM, is applied from the laptop only.
+
+```mermaid
+flowchart LR
+    pr[Pull request on terraform/] --> plan["plan job<br/>OIDC: gha-tf-plan (read-only)"]
+    plan --> comment[PR comment:<br/>addresses + actions]
+    dispatch[Run workflow:<br/>apply or destroy] --> plan2["plan job: list + hash"]
+    plan2 --> gate{"aws-apply:<br/>my approval"}
+    gate --> apply["apply job, OIDC: gha-tf-apply<br/>plan again, hash must match,<br/>apply the saved plan"]
+    deploy[deploy.yml: PolicyPal commit] --> render["render job, no AWS:<br/>GHCR tag check, render, kubeconform"]
+    render --> send["deploy job, OIDC: gha-deploy<br/>ssm:SendCommand to the tagged node"]
+    send --> node["node: fetch repo@commit,<br/>apply, smoke test, roll back on failure"]
+    cron["02:17 MYT or by hand"] --> skip{"skip set?"}
+    skip -->|no| destroy["OIDC: gha-tf-destroy<br/>saved destroy plan, then cost check"]
+```
+
 ## Known limitations
 
 - **`make deploy` always restarts the app**, because the dev image tag is always `latest`. The restart drops no requests.
@@ -124,3 +143,6 @@ flowchart LR
 - **The API is down during each PolicyPal deploy** (`Recreate`: one process, one ReadWriteOnce volume), and until the rollback if the new version fails.
 - **`kubectl apply` always reports the Postgres StatefulSet as configured**: it replaces `volumeClaimTemplates` as a whole and the server adds defaults. The generation doesn't change and nothing restarts.
 - **Every host-network process on the node shares one IAM role** (the SSM agent, k3s, ESO's controller), and the cluster admin credentials are copied to the laptop. Both are fine for one owner; a team would use per-pod IAM and short-lived Kubernetes credentials. PolicyPal's namespace refuses host-network pods (ADR 017).
+- **The nightly destroy depends on GitHub's scheduler.** A scheduled run can start late or be skipped, and schedules are disabled after 60 days without activity in the repo. The budget alerts and `make cost-check` are the backup.
+- **Repository admins can bypass the environments' protection rules** (`can_admins_bypass`, GitHub's default). With one owner that changes nothing; a team would turn it off so the approval on `aws-apply` binds admins too.
+- **A CI deploy shows the node's output only when the command ends**, and Run Command returns at most 24,000 characters of output and 8,000 of errors. Whoever may send the command is root on the node; only jobs in `aws-deploy` (master only) can.

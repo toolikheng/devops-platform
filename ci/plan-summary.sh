@@ -7,9 +7,11 @@
 #
 # Addresses and actions only, never attribute values: the repo is public, so are its Actions logs and PR
 # comments. terraform.yml shows the list and its hash before the owner approves an apply; the apply job then
-# plans again and applies its saved plan only if --check matches, so nothing the owner did not see is
-# applied. Data source reads and no-op entries are left out; delete-and-create is "replace". Run it in the
-# stack's directory: terraform show reads the plan with that stack's providers.
+# plans again and applies its saved plan only if --check matches, so no resource is created, changed or
+# destroyed that the owner did not see listed. Values are not compared: a hash of a short value such as an IP
+# address can be reversed by trying every possibility, and the logs are public. Data source reads and no-op
+# entries are left out; delete-and-create is "replace". Run it in the stack's directory: terraform show reads
+# the plan with that stack's providers.
 set -euo pipefail
 
 usage() {

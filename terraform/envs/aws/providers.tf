@@ -8,8 +8,9 @@ provider "aws" {
 }
 
 locals {
-  # Stack=ephemeral marks what may be destroyed at the end of a session. The CI roles planned for Phase C6
-  # are to be limited to resources with this tag. (cost-check does not read tags: it lists by resource type.)
+  # Stack=ephemeral marks what may be destroyed at the end of a session: the GitHub roles may delete only
+  # resources with this tag and Project, and the deploy finds the node by both (tests/test_ci_roles.py keeps
+  # the copies equal). (cost-check does not read tags: it lists by resource type.)
   default_tags = {
     Project   = "devops-platform"
     Owner     = "toolikheng"

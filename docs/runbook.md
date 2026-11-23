@@ -361,7 +361,7 @@ The Deployments allow 15 minutes without progress (`progressDeadlineSeconds: 900
 
 ### A deploy rolled back
 
-`kubectl -n policypal get pods` and `kubectl -n policypal describe pod <name>` show why (often `ImagePullBackOff`: the tag doesn't exist on GHCR). kubectl warns that `rollout undo` doesn't update the last-applied annotation; the next deploy with a good tag sets it again. While a bad API version was being tried the API was down (`Recreate`); the UI kept serving.
+`kubectl -n policypal get pods` and `kubectl -n policypal describe pod <name>` show why (often `ImagePullBackOff`: the tag doesn't exist on GHCR). kubectl warns that `rollout undo` doesn't update the last-applied annotation; the next deploy with a good tag sets it again. While a bad API version was being tried the API was down (`Recreate`); the UI kept serving. `deploy.yml` checks the tag on GHCR before it touches the node, so a rollback there means the image exists but didn't start or failed the smoke test: its run log shows the node's output.
 
 ### `statefulset.apps/postgres configured` on every deploy
 
@@ -436,7 +436,7 @@ Three workflows reach AWS, each job with short-lived credentials for its own rol
 | `terraform.yml` | pull request touching `terraform/` | `gha-tf-plan`, no environment | static checks, read-only plan, PR comment with resource addresses and actions only |
 | `terraform.yml` | on demand: apply or destroy, instance type, Spot | plan: `gha-tf-plan`; apply: `gha-tf-apply` in `aws-apply` (I approve) | plan and hash in the run summary; after approval it plans again and applies the saved plan only if the hash matches |
 | `deploy.yml` | on demand: a PolicyPal commit | `gha-deploy` in `aws-deploy` | renders and validates the `aws` overlay for that commit, then runs the deploy on the node through SSM Run Command; rolls back and fails red if the smoke test fails |
-| `nightly-destroy.yml` | 02:00 MYT and on demand | `gha-tf-destroy` in `aws-nightly` | destroys the ephemeral stack unless a skip is set, then `scripts/cost-check.sh` |
+| `nightly-destroy.yml` | 02:17 MYT and on demand | `gha-tf-destroy` in `aws-nightly` | destroys the ephemeral stack unless a skip is set, then `scripts/cost-check.sh` |
 
 The role ARNs are built from the repository secret `AWS_ACCOUNT_ID`, so the account ID is masked in the public logs. The node must already run k3s and External Secrets Operator before `deploy.yml`: `make cloud-config` and `make cloud-addons` from the laptop.
 
@@ -514,13 +514,17 @@ Between the plan I approved and the apply, something changed what Terraform woul
 
 The role lacks a permission the provider needs (a new provider version can call something new). AWS returns an encoded message: `aws sts decode-authorization-message --encoded-message <message> --profile devops` shows the action and resource. Add the action to `github_permissions.tf` and its test, then plan and apply the persistent stack from the laptop. `make cloud-down` from the laptop still works meanwhile.
 
+### `deploy-render: ghcr.io/toolikheng/policypal:<commit> is not on GHCR`
+
+`deploy.yml` stopped before anything reached the node: GHCR has no image with that tag. The input must be PolicyPal's full 40-character commit hash, and PolicyPal's CI must have published an image for it (its Actions run for that commit). "could not check … on GHCR" means GHCR gave no clear answer (an outage, a rate limit): run it again later. Nothing was deployed either way.
+
 ### `deploy-over-ssm: expected one running node`
 
 No running instance carries `Project=devops-platform` and `Stack=ephemeral`: create the node first (`terraform.yml` apply or `make cloud-rebuild`), then `make cloud-addons`.
 
 ### The nightly destroy didn't run
 
-GitHub can start scheduled runs late or skip them under load, and disables schedules after 60 days without repository activity (`gh workflow enable nightly-destroy.yml`). The budget alerts and `make cost-check` are the backup; `gh workflow run nightly-destroy.yml` or `make cloud-down` destroys now.
+GitHub can start scheduled runs late or skip them under load, and disables schedules after 60 days without repository activity (`gh workflow enable nightly-destroy.yml`). It happened on the first night (2026-11-23), with the cron at 02:00 MYT: no run at all. GitHub's docs name the start of every hour as a busy time, so the cron now runs at 02:17 MYT. Check with `gh run list --workflow nightly-destroy.yml --event schedule` (an empty list after 02:00 MYT means it never started). The budget alerts and `make cost-check` are the backup; `gh workflow run nightly-destroy.yml` or `make cloud-down` destroys now.
 
 ## Secret scanning
 
