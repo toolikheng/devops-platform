@@ -321,14 +321,16 @@ def variable_sets(fakes: Fakes) -> list[list[str]]:
     return [c["args"] for c in fakes.calls("gh", "variable", "set")]
 
 
-def test_skip_defaults_to_the_next_24_hours(fakes: Fakes) -> None:
+def test_skip_defaults_to_the_next_8_hours(fakes: Fakes) -> None:
+    # One working session. A longer default set in the morning would also skip that night's destroy, and a
+    # forgotten stack would keep billing; anything longer is asked for with UNTIL.
     result = fakes.script("skip-nightly-destroy.sh")
     assert result.returncode == 0, output(result)
     [args] = variable_sets(fakes)
     assert args[:3] == ["variable", "set", "NIGHTLY_DESTROY_SKIP_UNTIL"]
     until = datetime.strptime(flag_value(args, "--body"), ISO).replace(tzinfo=timezone.utc)
-    assert abs(until - (datetime.now(timezone.utc) + timedelta(hours=24))) < timedelta(minutes=5)
-    assert "make cloud-down" in output(result), "reminds the owner that nothing is destroyed tonight"
+    assert abs(until - (datetime.now(timezone.utc) + timedelta(hours=8))) < timedelta(minutes=5)
+    assert "make cloud-down" in output(result), "reminds the owner that the stack keeps billing"
 
 
 def test_skip_until_a_given_time(fakes: Fakes) -> None:

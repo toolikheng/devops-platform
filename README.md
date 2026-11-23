@@ -242,7 +242,7 @@ make cloud-addons          # AWS: install External Secrets Operator on the node 
 make cloud-deploy          # AWS: deploy PolicyPal (ESO makes its Secrets) and smoke-test it; rolls back if the smoke test fails
 make cloud-smoke           # AWS: only the smoke test
 make check-state-secrets   # AWS, read-only: count each live secret value in the Terraform state (must be 0)
-make skip-nightly-destroy  # GitHub setting: keep the stack through the 02:17 MYT nightly destroy (24 h; UNTIL=... up to 7 days)
+make skip-nightly-destroy  # GitHub setting: hold off the 02:17 MYT nightly destroy for 8 hours (UNTIL=... for longer, up to 7 days)
 gh workflow run terraform.yml -f action=apply -f instance_type=t3.micro -f use_spot=true   # waits for my approval
 gh workflow run deploy.yml -f policypal_tag=<PolicyPal commit>   # GHCR check, render, deploy on the node
 ```
@@ -292,7 +292,7 @@ kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:909
 - **Everything on the node's host network shares one AWS role.** k3s, the SSM agent and External Secrets Operator's controller all get the node role's credentials; on EKS each pod could have its own. The role is small (the SSM agent's actions and reading `/policypal/aws/*`), and PolicyPal's namespace refuses host-network pods ([ADR 017](docs/decisions/017-imds-hop-limit-and-host-network.md)).
 - **A rotated secret needs a restart.** ESO updates the Secret within the hour (or at once with a forced sync), but the API reads it only when it starts. Rotating the database password also needs `ALTER ROLE` in Postgres first ([runbook](docs/runbook.md)).
 - **A PolicyPal deploy stops the API first.** It is one process with one uploads volume (`Recreate`), so the API is briefly down on every change, and stays down until the rollback if the new version fails. The UI keeps running.
-- **The nightly destroy depends on GitHub's scheduler.** Scheduled runs can start late (5 h 30 min on the first night) or be skipped, and GitHub disables schedules after 60 days without repo activity. The budget alerts and `make cost-check` stay as the backup. A late run can also destroy a stack I'm using in the morning: that's accepted (a rebuild takes about four minutes), and `make skip-nightly-destroy UNTIL=<end of session>` protects a planned session.
+- **The nightly destroy depends on GitHub's scheduler.** Scheduled runs can start late (5 h 30 min on the first night) or be skipped, and GitHub disables schedules after 60 days without repo activity. The budget alerts and `make cost-check` stay as the backup. A late run can also destroy a stack I'm using in the morning: that's accepted (a rebuild takes about four minutes), and `make skip-nightly-destroy` protects a planned session (8 hours, or `UNTIL=` for longer).
 - **Admins can bypass the approval on `aws-apply`.** The environments keep GitHub's default `can_admins_bypass`; I'm the only admin, so it changes nothing here, but a team would turn it off.
 - **The chat widget doesn't work on AWS.** It calls the API from the browser, and only the UI is published ([ADR 015](docs/decisions/015-only-the-ui-is-exposed.md)).
 - **`--check` can't preview a fresh AWS node.** Check mode stops at the first task that needs an earlier change (it only pretends to create directories). On a configured node it works and shows drift.

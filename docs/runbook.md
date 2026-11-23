@@ -487,19 +487,20 @@ gh run watch          # the apply job waits: Actions > the run > Review deployme
 gh workflow run deploy.yml -f policypal_tag=<PolicyPal commit, 40 characters>
 gh workflow run nightly-destroy.yml        # the nightly destroy, now
 
-make skip-nightly-destroy                  # keep the stack tonight (24 hours; UNTIL=2026-11-24T00:00:00Z for longer, 7 days max)
+make skip-nightly-destroy                  # hold off the nightly destroy for 8 hours (UNTIL=2026-11-24T00:00:00Z for longer, 7 days max)
 gh variable delete NIGHTLY_DESTROY_SKIP_UNTIL   # cancel the skip
 ```
 
 A skip only stops the nightly job: the stack still bills every hour, so `make cloud-down` stays the way to end a session.
 
-**Working in the morning.** A scheduled destroy can start hours late (07:30 on the first night) and has no time window on purpose, so it can remove a stack I'm using. Before a session in the hours after 02:17 MYT, I set a skip that ends with the session:
+**Working in the morning.** A scheduled destroy can start hours late (07:30 on the first night) and has no time window on purpose, so it can remove a stack I'm using. Before a session in the hours after 02:17 MYT, I set a skip:
 
 ```bash
-make skip-nightly-destroy UNTIL=2026-11-24T06:00:00Z   # UTC: until 14:00 MYT
+make skip-nightly-destroy                              # the next 8 hours: one session
+make skip-nightly-destroy UNTIL=2026-11-24T06:00:00Z   # anything longer, in UTC (here 14:00 MYT); 7 days at most
 ```
 
-Not the 24-hour default: set at 09:00 MYT it would also skip that night's 02:17 run, and a stack I forgot would keep billing. When the session ends early, `gh variable delete NIGHTLY_DESTROY_SKIP_UNTIL`.
+Eight hours is the default so that a skip set in the morning ends before that night's 02:17 run, and a stack I forgot is still destroyed. A skip set after 18:17 MYT does cover that night's run, which is how to keep a stack overnight on purpose. When the session ends early, `gh variable delete NIGHTLY_DESTROY_SKIP_UNTIL`.
 
 While a run waits at the `aws-apply` gate, `gh run view --log` refuses ("still in progress"). The finished plan job's log is available through the jobs API, so the change list and hash can be read from a terminal before approving:
 

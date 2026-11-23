@@ -2,7 +2,8 @@
 # skip-nightly-destroy.sh - keep the ephemeral stack through the nightly destroy (02:17 MYT).
 #
 # Usage: skip-nightly-destroy.sh [UNTIL]   (make skip-nightly-destroy [UNTIL=...])
-#   UNTIL: a UTC time such as 2026-11-24T00:00:00Z, at most 7 days ahead. Default: 24 hours from now.
+#   UNTIL: a UTC time such as 2026-11-24T00:00:00Z, at most 7 days ahead. Default: 8 hours from now,
+#   one working session, so a skip set in the morning ends before that night's destroy.
 #
 # Sets the repository variable NIGHTLY_DESTROY_SKIP_UNTIL with the GitHub CLI: a GitHub setting, not an AWS
 # change. nightly-destroy.yml skips while that time is in the future. The stack still bills every hour it
@@ -11,7 +12,7 @@
 set -euo pipefail
 
 MAX_DAYS=7
-until="${1:-$(date -u -d '+24 hours' +%Y-%m-%dT%H:%M:%SZ)}"
+until="${1:-$(date -u -d '+8 hours' +%Y-%m-%dT%H:%M:%SZ)}"
 if ! [[ "$until" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] ||
   ! end="$(date -u -d "$until" +%s 2>/dev/null)"; then
   echo "usage: skip-nightly-destroy.sh [UNTIL]  (UNTIL: a UTC time such as 2026-11-24T00:00:00Z)" >&2
