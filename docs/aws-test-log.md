@@ -291,8 +291,19 @@ make cost-check
 | 2026-11-23 03:00 | `nightly-destroy.yml` by hand | Pass | Run 45058281234: "No skip set: destroying.", destroyed (instance terminated 03:01:32), the cost check in the job clean (72 checks). From the laptop at 03:12: state empty, no VPC, no sessions, `make cost-check` clean. |
 | 2026-11-23 07:30 | The 02:00 scheduled run, 5 h 30 min late | Pass | Run 45083620960 (`event=schedule`, commit `4f12a7b`, cron `0 18 * * *`) started at 07:30:34 MYT, 330 minutes late. Skip check, destroy with nothing left to delete, cost check clean. |
 
-Total: about USD 0.049 (live #1) and about USD 0.064 (live #2, including the overnight stack) before tax.
+Total: about USD 0.049 (live #1), about USD 0.064 (live #2, including the overnight stack) and about USD 0.002 (the re-check below) before tax.
 
-After the code review (2026-11-23) the workflows' Terraform steps moved into one script, `ci/ephemeral-stack.sh`, and `terraform.yml` lost its duplicate static-checks job (the same checks run in `ci.yml`). The runs above tested the workflows as they were on `master` before that change (`4f12a7b`). The scheduled destroy has run once, 5 h 30 min late; an hour's delay already kept a stack billing, which is the case the budgets and `make cost-check` are there for. The new script is re-proved live after it merges: a t3.micro `terraform.yml` apply and destroy, and a `nightly-destroy.yml` started by hand. The cron moved to `17 18 * * *` (02:17 MYT): GitHub's docs name the start of every hour as a busy time when scheduled runs can be delayed or dropped; one late run can't show that this was the cause or that the move helps. The schedule test after the merge needs no stack: the next day `gh run list --workflow nightly-destroy.yml --event schedule` must show a successful run (with nothing to destroy, it still runs the cost check).
+After the code review (2026-11-23) the workflows' Terraform steps moved into one script, `ci/ephemeral-stack.sh`, and `terraform.yml` lost its duplicate static-checks job (the same checks run in `ci.yml`). The runs above tested the workflows as they were on `master` before that change (`4f12a7b`). The scheduled destroy has run once, 5 h 30 min late; an hour's delay already kept a stack billing, which is the case the budgets and `make cost-check` are there for. The cron moved to `17 18 * * *` (02:17 MYT): GitHub's docs name the start of every hour as a busy time when scheduled runs can be delayed or dropped; one late run can't show that this was the cause or that the move helps. The schedule test after the merge needs no stack: the next day `gh run list --workflow nightly-destroy.yml --event schedule` must show a successful run (with nothing to destroy, it still runs the cost check).
+
+### Re-check of `ci/ephemeral-stack.sh` on `master` (`fe30b9f`)
+
+| Date (MYT) | Run | Result | Notes |
+|---|---|---|---|
+| 2026-11-23 13:28–13:44 | `terraform.yml` apply, t3.micro Spot | Pass | Run 45117938021. The plan job's log showed the 9 changes and the same hash as a local plan; after my approval the job planned again and applied the saved plan. IMDSv2 required. Public logs: no account ID, owner IP or node IP. |
+| 2026-11-23 13:45–13:49 | `terraform.yml` destroy | Pass | Run 45119721026. Local and CI hashes equal; after my approval all 9 deleted. State empty, instance terminated, no VPC, no Spot request. |
+| 2026-11-23 13:50–13:57 | `terraform.yml` apply again | Pass | Run 45120264857, so the nightly job had a real stack to delete. |
+| 2026-11-23 13:59–14:02 | `nightly-destroy.yml` by hand | Pass | Run 45121194386: "No skip set: destroying.", the 9 deletes listed in the log, cost check in the job clean (72 checks). From the laptop at 14:05: state empty, instance terminated, no VPC, Spot request or session, `make cost-check` clean. |
+
+About USD 0.002 before tax (11 minutes of t3.micro Spot). **Not yet seen:** a scheduled run at the new 02:17 MYT cron.
 
 Record each run here, including failures and what was changed.
