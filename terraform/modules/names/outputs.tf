@@ -11,3 +11,8 @@ output "owner_cidr_parameter" {
   description = "SSM parameter that holds the owner's public IPv4 as a /32 (written by make owner-ip)."
   value       = "/devops-platform/owner-cidr"
 }
+
+output "backups_bucket" {
+  description = "S3 bucket for restic's backups of PolicyPal, created by the persistent stack and written by the node's backup job."
+  value       = "toolikheng-devops-platform-backups"
+}

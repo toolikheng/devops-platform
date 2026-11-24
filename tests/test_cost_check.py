@@ -160,6 +160,15 @@ def test_only_read_only_calls_and_never_cost_explorer(aws: FakeAws) -> None:
         assert operation.startswith(("describe-", "list-", "get-")), f"not read-only: {call}"
 
 
+def test_the_persistent_buckets_are_never_reported(aws: FakeAws) -> None:
+    # The state and backups buckets cost nothing at rest and are kept on purpose; the check makes no S3 call,
+    # so neither can show up as a leftover.
+    result = aws.run()
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not [c for c in aws.calls() if c.split()[0] in ("s3", "s3api")]
+    assert "S3 state and backups buckets" in result.stdout
+
+
 def test_home_region_is_the_stacks_region_whatever_aws_region_says(aws: FakeAws) -> None:
     # The stacks fix their region in code. A region exported in the shell must not move the full scan:
     # make cloud-down would then destroy in one region and check another.

@@ -19,8 +19,8 @@ run "one_securestring_per_catalog_entry_under_the_policypal_path" {
   command = apply
 
   assert {
-    condition     = toset(keys(aws_ssm_parameter.secret)) == toset(["admin-token", "db-password"])
-    error_message = "One parameter per entry of secret-catalog.yaml: admin-token and db-password."
+    condition     = toset(keys(aws_ssm_parameter.secret)) == toset(["admin-token", "db-password", "restic-password"])
+    error_message = "One parameter per entry of secret-catalog.yaml: admin-token, db-password, restic-password."
   }
 
   assert {
@@ -36,14 +36,15 @@ run "one_securestring_per_catalog_entry_under_the_policypal_path" {
     error_message = "Secrets must be Standard-tier SecureStrings (free) encrypted with the AWS managed key aws/ssm (no key fee)."
   }
 
-  # The catalog's description, word for word: the two parameters that existed before the catalog keep theirs,
-  # so moving them is a move and not an update.
+  # The description comes from the catalog. The admin token's no longer names the variable that the catalog
+  # replaced (ADR 023); the database password's is unchanged.
   assert {
     condition = (
       aws_ssm_parameter.secret["db-password"].description == "PolicyPal's Postgres password (POSTGRES_PASSWORD and DATABASE_URL). Rotation: docs/runbook.md." &&
-      aws_ssm_parameter.secret["admin-token"].description == "PolicyPal's admin token (X-Admin-Token). Rotation: raise admin_token_version, see docs/runbook.md."
+      aws_ssm_parameter.secret["admin-token"].description == "PolicyPal's admin token (X-Admin-Token). Rotation: raise its version in secret_versions, see docs/runbook.md." &&
+      startswith(aws_ssm_parameter.secret["restic-password"].description, "The restic repository password")
     )
-    error_message = "The existing parameters' descriptions must not change (a change is an update, not a move)."
+    error_message = "Each parameter's description must be its catalog entry's."
   }
 }
 
@@ -70,7 +71,7 @@ run "raising_a_version_rotates_only_that_secret" {
   command = plan
 
   variables {
-    secret_versions = { "db-password" = 1, "admin-token" = 3 }
+    secret_versions = { "db-password" = 1, "admin-token" = 3, "restic-password" = 1 }
   }
 
   assert {
@@ -88,7 +89,7 @@ run "versions_are_whole_numbers_from_1" {
   command = plan
 
   variables {
-    secret_versions = { "db-password" = 1.5, "admin-token" = 0 }
+    secret_versions = { "db-password" = 1.5, "admin-token" = 0, "restic-password" = 1 }
   }
 
   expect_failures = [var.secret_versions]
@@ -98,7 +99,7 @@ run "every_secret_has_a_version" {
   command = plan
 
   variables {
-    secret_versions = { "db-password" = 1 }
+    secret_versions = { "db-password" = 1, "admin-token" = 2 }
   }
 
   expect_failures = [var.secret_versions]
@@ -108,7 +109,7 @@ run "no_version_for_a_secret_that_isnt_in_the_catalog" {
   command = plan
 
   variables {
-    secret_versions = { "db-password" = 1, "admin-token" = 2, "db-pasword" = 1 }
+    secret_versions = { "db-password" = 1, "admin-token" = 2, "restic-password" = 1, "db-pasword" = 1 }
   }
 
   expect_failures = [var.secret_versions]

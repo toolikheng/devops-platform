@@ -44,8 +44,9 @@ variable "secret_versions" {
   description = "Version of each secret in SSM (secret-catalog.yaml). Raise one by 1 in a commit to write a new random value: a rotation (runbook; change the database password in Postgres first)."
   type        = map(number)
   default = {
-    "db-password" = 1
-    "admin-token" = 2
+    "db-password"     = 1
+    "admin-token"     = 2
+    "restic-password" = 1
   }
 
   validation {
