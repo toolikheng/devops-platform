@@ -115,7 +115,7 @@ help:
 	@$(ECHO) "  $(GREEN)make cloud-config$(NC)  Configure the running node with Ansible over Session Manager (common, node_exporter, k3s)"
 	@$(ECHO) "  $(GREEN)make cloud-tunnel$(NC)  Forward the node's Kubernetes API to localhost:16443 (foreground; Ctrl-C stops it)"
 	@$(ECHO) "  $(GREEN)make cloud-rebuild$(NC) cloud-up, then cloud-config: from nothing to a Ready k3s node"
-	@$(ECHO) "  $(GREEN)make cloud-addons$(NC)  Install External Secrets Operator on the node (needs make cloud-tunnel running)"
+	@$(ECHO) "  $(GREEN)make cloud-addons$(NC)  Install External Secrets Operator, then the monitoring, on the node (needs make cloud-tunnel running)"
 	@$(ECHO) "  $(GREEN)make cloud-deploy$(NC)  Deploy PolicyPal to the node and smoke-test it (needs make cloud-tunnel running)"
 	@$(ECHO) "  $(GREEN)make cloud-smoke$(NC)   Smoke-test PolicyPal on the node only (needs make cloud-tunnel running)"
 	@$(ECHO) "  $(GREEN)make check-state-secrets$(NC) Read-only: show that no secret value is in the persistent Terraform state"
@@ -340,10 +340,11 @@ cloud-rebuild:
 
 # On the AWS node. No AWS changes: kubectl and helm go through make cloud-tunnel (run it in another
 # terminal), and the UI is checked at the node's public IP, which only your IP can reach. cloud-addons
-# installs External Secrets Operator, which makes PolicyPal's Secrets from SSM Parameter Store, so it runs
-# once per new node, before cloud-deploy.
+# installs External Secrets Operator, which makes PolicyPal's Secrets from SSM Parameter Store, then the
+# monitoring (kube-prometheus-stack), so it runs once per new node, before cloud-deploy.
 cloud-addons:
 	@KUBECONFIG="$(AWS_KUBECONFIG)" bash "$(REPO_ROOT)/scripts/addon.sh" install external-secrets aws
+	@KUBECONFIG="$(AWS_KUBECONFIG)" bash "$(REPO_ROOT)/scripts/addon.sh" install kube-prometheus-stack aws
 
 cloud-deploy:
 	@ip="$$(AWS_PROFILE="$(AWS_PROFILE)" bash "$(REPO_ROOT)/scripts/node-ip.sh")"; \

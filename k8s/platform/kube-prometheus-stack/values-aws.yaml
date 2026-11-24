@@ -1,0 +1,137 @@
+# kube-prometheus-stack on the AWS node (make cloud-addons). Chart and version: chart.env.
+#
+# One 4 GiB node also runs k3s, PolicyPal, Postgres and External Secrets Operator, and every session starts a
+# new node. So: one day of metrics in memory (no volume), only what this project looks at, and requests and
+# limits on everything. tests/test_monitoring_platform.py checks these rules on the rendered chart.
+
+# k3s runs the controller manager, scheduler and kube-proxy inside one process and uses no etcd here: their
+# ServiceMonitors would only show targets that are down.
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeEtcd:
+  enabled: false
+kubeProxy:
+  enabled: false
+
+# The chart's default rule groups are written for a full cluster. The project's own alert comes with
+# PolicyPal's manifests.
+defaultRules:
+  create: false
+
+# No receiver (email, chat) is in scope: firing alerts are read in Prometheus, so Alertmanager would only take
+# memory.
+alertmanager:
+  enabled: false
+
+# Ansible installs node_exporter on the node (systemd, port 9100) and Prometheus scrapes it (below). The chart's
+# own is a host-network DaemonSet on the same port.
+nodeExporter:
+  enabled: false
+
+prometheus:
+  prometheusSpec:
+    retention: 1d
+    # No storageSpec: the data lives in an emptyDir and goes with the node.
+    # Load the project's ServiceMonitors and rules too, not only those labelled for this release.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    # Measured on k3d with these values (2026-11-24): 329Mi after 25 minutes.
+    resources:
+      requests:
+        cpu: 100m
+        memory: 384Mi
+      limits:
+        memory: 768Mi
+    # The node_exporter on every node, found through the Kubernetes API: the address is the node's, the port
+    # is node_exporter's instead of the kubelet's.
+    additionalScrapeConfigs:
+      - job_name: node-exporter
+        kubernetes_sd_configs:
+          - role: node
+        relabel_configs:
+          - source_labels: [__address__]
+            regex: '([^:]+):\d+'
+            replacement: '${1}:9100'
+            target_label: __address__
+          - source_labels: [__meta_kubernetes_node_name]
+            target_label: instance
+
+prometheusOperator:
+  resources:
+    requests:
+      cpu: 20m
+      memory: 48Mi
+    limits:
+      memory: 128Mi
+  admissionWebhooks:
+    patch:
+      resources:
+        requests:
+          cpu: 10m
+          memory: 16Mi
+        limits:
+          memory: 64Mi
+
+kube-state-metrics:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 96Mi
+
+grafana:
+  # No admin password here: on the first install the chart makes a random one in the cluster and keeps it on
+  # upgrades. Read it with:
+  #   kubectl -n monitoring get secret kube-prometheus-stack-grafana -o jsonpath='{.data.admin-password}' | base64 -d
+  # Grafana is reached only through kubectl port-forward (docs/runbook.md).
+  defaultDashboardsEnabled: false
+  plugins: []
+  grafana.ini:
+    # Grafana downloads a list of app plugins at every start unless this is set (on k3d the downloads slowed
+    # the start until the liveness probe restarted it). The Prometheus datasource is built in.
+    plugins:
+      preinstall_disabled: true
+    # No update checks or usage reports: the node has no need to reach grafana.com.
+    analytics:
+      reporting_enabled: false
+      check_for_updates: false
+      check_for_plugin_updates: false
+  persistence:
+    enabled: false
+  testFramework:
+    enabled: false
+  # Measured on k3d (Grafana 13.3, no plugins, no chart dashboards): 291Mi steady.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 288Mi
+    limits:
+      memory: 448Mi
+  sidecar:
+    # Used by every sidecar and sidecar init container (k8s-sidecar, a Python program): 79Mi measured on k3d;
+    # 96Mi was OOMKilled there.
+    resources:
+      requests:
+        cpu: 10m
+        memory: 80Mi
+      limits:
+        memory: 160Mi
+    # The one running sidecar: it loads the project's dashboard ConfigMap from this namespace.
+    dashboards:
+      enabled: true
+      searchNamespace: monitoring
+      resource: configmap
+    # The Prometheus datasource is read once, by an init container, when Grafana starts. LIST reads once and
+    # exits; the default, WATCH, never returns, so the pod would never start.
+    datasources:
+      enabled: true
+      initDatasources: true
+      watchMethod: LIST
+      searchNamespace: monitoring
+      resource: configmap
+      # The chart would add an Alertmanager datasource too, pointing at nothing (no Alertmanager here).
+      alertmanager:
+        enabled: false

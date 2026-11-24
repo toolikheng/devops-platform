@@ -21,8 +21,8 @@ from conftest import PLATFORM, REPO_ROOT, addon_envs, addon_manifests, chart_env
 from fakecli import Fakes, addon_manifest, flag_value, output
 
 # Every add-on and where it runs. External Secrets Operator: AWS only (k3d has no AWS identity, and AWS keys
-# in k3d would be long-lived credentials). kube-prometheus-stack: k3d for the homelab.
-ADDONS = [("external-secrets", "aws"), ("kube-prometheus-stack", "local")]
+# in k3d would be long-lived credentials). kube-prometheus-stack: k3d for the homelab, and the AWS node.
+ADDONS = [("external-secrets", "aws"), ("kube-prometheus-stack", "aws"), ("kube-prometheus-stack", "local")]
 MONITORING = REPO_ROOT / "monitoring"
 
 
@@ -116,13 +116,15 @@ def test_render_renders_the_same_pinned_chart_and_values_then_the_manifests(
 
 # --- make targets ---------------------------------------------------------------------------------------
 
-def test_cloud_addons_installs_external_secrets_on_the_aws_node_only(fakes: Fakes) -> None:
+def test_cloud_addons_installs_eso_then_monitoring_on_the_aws_node_only(fakes: Fakes) -> None:
     result = fakes.make("cloud-addons")
     assert result.returncode == 0, output(result)
     aws_kubeconfig = str(fakes.home / ".kube" / "devops-aws.yaml")
-    [helm] = fakes.calls("helm")
-    assert helm["args"][:3] == ["upgrade", "--install", "external-secrets"]
-    assert flag_value(helm["args"], "--values") == str(PLATFORM / "external-secrets" / "values-aws.yaml")
+    helm = fakes.calls("helm")
+    assert [(h["args"][2], flag_value(h["args"], "--values")) for h in helm] == [
+        ("external-secrets", str(PLATFORM / "external-secrets" / "values-aws.yaml")),
+        ("kube-prometheus-stack", str(PLATFORM / "kube-prometheus-stack" / "values-aws.yaml")),
+    ], "ESO first: PolicyPal's Secrets don't wait for the monitoring"
     assert fakes.kubectl("apply"), "the store"
     assert all(c["kubeconfig"] == aws_kubeconfig for c in fakes.calls("helm") + fakes.calls("kubectl"))
     assert not fakes.calls("k3d") and not fakes.calls("terraform") and not fakes.calls("aws")
