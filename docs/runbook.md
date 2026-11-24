@@ -201,7 +201,7 @@ At USD 15 actual spend in a month, AWS Budgets attaches `devops-platform-deny-ne
 
 ## AWS working session (ephemeral stack)
 
-Everything billed by the hour lives in `terraform/envs/aws` and exists only during a session. The default node is a c7i-flex.large on Spot: about USD 0.061/h, or USD 0.105/h on-demand (instance, public IPv4 and volume together).
+Everything billed by the hour lives in `terraform/envs/aws` and exists only during a session. The default node is an m7i-flex.large on Spot: about USD 0.060/h, or USD 0.127/h on-demand (instance, public IPv4 and volume together; [ADR 024](decisions/024-m7i-flex-node-for-monitoring.md)). To change the type of a running node, replace it: `terraform apply -replace=module.compute.aws_instance.node` (a one-time Spot instance can't be stopped, so an in-place change fails), then `make cloud-config`, `cloud-addons` and `cloud-deploy`.
 
 ```bash
 aws login --profile devops

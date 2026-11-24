@@ -136,7 +136,8 @@ Cost while the stack exists (ap-southeast-1, before tax). Nothing is billed once
 |---|---|---|
 | t3.micro + public IPv4 + 20 GB gp3 | USD 0.021/h | USD 0.012/h |
 | t3.small + public IPv4 + 20 GB gp3 | USD 0.034/h | USD 0.019/h |
-| c7i-flex.large + public IPv4 + 20 GB gp3 (default) | USD 0.105/h | USD 0.061/h |
+| c7i-flex.large + public IPv4 + 20 GB gp3 | USD 0.105/h | USD 0.061/h |
+| m7i-flex.large + public IPv4 + 20 GB gp3 (default from C7) | USD 0.127/h | USD 0.060/h |
 
 See [ADR 008](docs/decisions/008-k3s-on-ec2-over-eks.md) (k3s on EC2, not EKS), [ADR 009](docs/decisions/009-spot-and-on-demand.md) (Spot and on-demand), [ADR 010](docs/decisions/010-public-subnet-without-nat.md) (network and access) and the live results in [docs/aws-test-log.md](docs/aws-test-log.md).
 
@@ -158,7 +159,7 @@ See [ADR 008](docs/decisions/008-k3s-on-ec2-over-eks.md) (k3s on EC2, not EKS), 
 - **Secrets**: the manifests only reference `policypal-db` (the Postgres password; the API builds its database URL from it) and `policypal-admin`. On AWS, External Secrets Operator makes them from SSM Parameter Store (below); on k3d, which has no AWS identity, `scripts/policypal-secrets.sh` creates random local values once.
 - **Deploy** (`make policypal-local`, `make cloud-deploy`): render with the pinned kustomize the checks use, apply, wait up to 2 minutes for the Secrets, wait for every rollout, then the smoke test. If anything fails, each Deployment this deploy changed goes back to its previous revision.
 - **Smoke test** (`scripts/smoke-test.sh`): `/health`, one answered and cited question and one refusal from PolicyPal's golden set, through `kubectl port-forward` to the API; then the UI through the ingress, and that the API's pages are not reachable there.
-- **Sizing**: with PolicyPal running, the node uses about 1.75 GiB, more than a t3.small has, so the default node is a c7i-flex.large (4 GiB).
+- **Sizing**: with PolicyPal running, the node uses about 1.75 GiB, more than a t3.small has, so the node was a c7i-flex.large (4 GiB). With External Secrets Operator and the monitoring added in C7, that node peaked at 76.9% of its memory when the API restarted, above the 75% I allow, so the default is now an m7i-flex.large (8 GiB, 38% at the same peak; [ADR 024](docs/decisions/024-m7i-flex-node-for-monitoring.md)).
 
 #### Secrets: Parameter Store and External Secrets Operator
 - **Where they live:** `/policypal/aws/db-password` and `/policypal/aws/admin-token`, SSM SecureStrings (Standard tier, AWS managed key `aws/ssm`: free), in the persistent stack.
@@ -247,7 +248,7 @@ gh workflow run terraform.yml -f action=apply -f instance_type=t3.micro -f use_s
 gh workflow run deploy.yml -f policypal_tag=<PolicyPal commit>   # GHCR check, render, deploy on the node
 ```
 
-The node is a c7i-flex.large on Spot by default (k3s plus PolicyPal need more than a t3.small's 2 GiB); `make cloud-up CLOUD_ARGS='-var use_spot=false'` starts it on-demand. With the tunnel open: `KUBECONFIG=~/.kube/devops-aws.yaml kubectl get nodes`. A shell on the node: `aws ssm start-session --target "$(cd terraform/envs/aws && terraform output -raw instance_id)"`.
+The node is an m7i-flex.large on Spot by default (with the monitoring, a 4 GiB c7i-flex.large peaked at 76.9% of its memory: [ADR 024](docs/decisions/024-m7i-flex-node-for-monitoring.md)); `make cloud-up CLOUD_ARGS='-var use_spot=false'` starts it on-demand. With the tunnel open: `KUBECONFIG=~/.kube/devops-aws.yaml kubectl get nodes`. A shell on the node: `aws ssm start-session --target "$(cd terraform/envs/aws && terraform output -raw instance_id)"`.
 
 Grafana and Prometheus are reached with a port-forward:
 
