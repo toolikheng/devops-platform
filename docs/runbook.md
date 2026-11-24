@@ -493,7 +493,7 @@ gh variable delete NIGHTLY_DESTROY_SKIP_UNTIL   # cancel the skip
 
 A skip only stops the nightly job: the stack still bills every hour, so `make cloud-down` stays the way to end a session.
 
-**Working in the morning.** A scheduled destroy can start hours late (07:30 on the first night) and has no time window on purpose, so it can remove a stack I'm using. Before a session in the hours after 02:17 MYT, I set a skip:
+**Working in the morning.** A scheduled destroy can start hours late (07:30 and 11:57 so far) and has no time window on purpose, so it can remove a stack I'm using. Before a session in the hours after 02:17 MYT, I set a skip:
 
 ```bash
 make skip-nightly-destroy                              # the next 8 hours: one session
@@ -542,7 +542,7 @@ No running instance carries `Project=devops-platform` and `Stack=ephemeral`: cre
 
 ### The nightly destroy didn't run
 
-GitHub can start scheduled runs late or skip them under load, and disables schedules after 60 days without repository activity (`gh workflow enable nightly-destroy.yml`). On the first night (2026-11-23), with the cron at 02:00 MYT, the run started 5 h 30 min late, at 07:30. GitHub's docs name the start of every hour as a busy time, so the cron now runs at 02:17 MYT. Check with `gh run list --workflow nightly-destroy.yml --event schedule`: no run after 02:17 MYT means it hasn't started *yet*, not that it never will, so don't wait for it if a stack is still up. The budget alerts and `make cost-check` are the backup; `gh workflow run nightly-destroy.yml` or `make cloud-down` destroys now.
+GitHub can start scheduled runs late or skip them under load, and disables schedules after 60 days without repository activity (`gh workflow enable nightly-destroy.yml`). On the first night (2026-11-23), with the cron at 02:00 MYT, the run started 5 h 30 min late, at 07:30. GitHub's docs name the start of every hour as a busy time, so the cron moved to 02:17 MYT; the next run still started 9 h 40 min late, at 11:57. The nightly destroy is a safety net for a forgotten session; `make cloud-down` at the end of every session is the cleanup. Check with `gh run list --workflow nightly-destroy.yml --event schedule`: no run after 02:17 MYT means it hasn't started *yet*, not that it never will, so don't wait for it if a stack is still up. The budget alerts and `make cost-check` are the backup; `gh workflow run nightly-destroy.yml` or `make cloud-down` destroys now.
 
 ## Secret scanning
 
