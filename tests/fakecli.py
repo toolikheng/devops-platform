@@ -17,7 +17,8 @@ The fake knows just enough of each real tool for the scripts here:
   for repeated calls (polling), the last one repeating.
 - docker: a kustomize render prints MANIFEST, a Helm render addon_manifest(release). helm, k3d, ansible-playbook,
   gh, restic: log only (restic's environment is logged too: the password command, and whether a password is set).
-- kubectl also answers `get pvc` and `get pv` with what the test set (pvc_volume, pv_path).
+- kubectl also answers `get pvc` and `get pv` with what the test set (pvc_volume, pv_path); `exec -i` logs its stdin.
+- restic answers `snapshots --tag TAG` and `dump` with what the test set (restic_snapshots, restic_dump).
 Any call can be made to fail (`fail`), and a real command can be logged on its way through (`spy`).
 """
 
@@ -60,7 +61,8 @@ if tool == "kubectl":
         else:
             rest.append(x)
     args = rest
-stdin = sys.stdin.read() if "-" in args or any(a.endswith("/dev/stdin") for a in args) or tool == "docker" and "-i" in args else ""
+stdin = sys.stdin.read() if ("-" in args or any(a.endswith("/dev/stdin") for a in args)
+                            or tool in ("docker", "kubectl") and "-i" in args) else ""
 with open(os.environ["FAKE_LOG"], "a") as log:
     log.write(json.dumps({"tool": tool, "args": args, "ns": ns, "kubeconfig": os.environ.get("KUBECONFIG", ""),
                           "profile": os.environ.get("AWS_PROFILE", ""), "cwd": os.getcwd(), "stdin": stdin,
@@ -143,6 +145,10 @@ if tool == "docker":
     if any(x.startswith("alpine/helm:") for x in args):
         answer("addon-manifest-" + args[args.index("template") + 1])
     sys.exit(0)
+if tool == "restic" and args[:1] == ["snapshots"]:
+    answer("restic-snapshots-" + (args[args.index("--tag") + 1] if "--tag" in args else ""))
+if tool == "restic" and args[:1] == ["dump"]:
+    answer("restic-dump")
 if tool == "terraform" and args[:2] == ["output", "-raw"]:
     answer(f"tf-output-{args[2]}", 1)
 if tool == "terraform" and args[:2] == ["state", "pull"]:
@@ -222,6 +228,14 @@ class Fakes:
     def fail(self, tool: str, *args: str, rc: int = 1) -> None:
         """Every call of `tool` whose args start with `args` fails (exit `rc`, 1 by default)."""
         self._update("fail.json", lambda rules: rules + [[tool, rc, *args]])
+
+    def restic_snapshots(self, tag: str, snapshots: list[dict[str, Any]]) -> None:
+        """What `restic snapshots --json --tag TAG` prints (restic's JSON: id, time, tags, paths)."""
+        self._write(f"restic-snapshots-{tag}", json.dumps(snapshots))
+
+    def restic_dump(self, data: str) -> None:
+        """What `restic dump ...` prints."""
+        self._write("restic-dump", data)
 
     def pvc_volume(self, name: str) -> None:
         """What `kubectl get pvc ... -o jsonpath={.spec.volumeName}` prints: the bound PersistentVolume."""

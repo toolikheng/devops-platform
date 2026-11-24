@@ -40,7 +40,7 @@
     dest: /usr/local/bin/restic
     state: link
 
-- name: Install the backup script
+- name: Install the backup and restore script
   ansible.builtin.copy:
     src: policypal-backup.sh
     dest: /usr/local/sbin/policypal-backup
@@ -51,6 +51,13 @@
     src: ssm-parameter
     dest: /usr/local/sbin/ssm-parameter
     mode: "0750"
+
+# Read by the service and by a restore run by hand. No secret in it, so it can be world-readable.
+- name: Write the backup settings
+  ansible.builtin.template:
+    src: policypal-backup.env.j2
+    dest: /etc/policypal-backup.env
+    mode: "0644"
 
 - name: Install the backup service and its timer
   ansible.builtin.template:

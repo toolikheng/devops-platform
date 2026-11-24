@@ -7,13 +7,6 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/sbin/policypal-backup
-# The repository, and how restic gets its password: from SSM Parameter Store at run time, never a value here.
-Environment=RESTIC_REPOSITORY=s3:s3.{{ restic_backup_region }}.amazonaws.com/{{ restic_backup_bucket }}/restic
-Environment=RESTIC_PASSWORD_COMMAND=/usr/local/sbin/ssm-parameter {{ restic_backup_password_parameter }}
-Environment=AWS_DEFAULT_REGION={{ restic_backup_region }}
-# One host name for every node, so the snapshots of rebuilt nodes form one group for retention.
-Environment=RESTIC_HOST=policypal
-Environment=RESTIC_CACHE_DIR=/var/cache/restic
-# k3s's own admin kubeconfig, readable by root only.
-Environment=KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+ExecStart=/usr/local/sbin/policypal-backup backup
+# The repository, how restic gets its password, and where to record a success: no secret in it.
+EnvironmentFile=/etc/policypal-backup.env

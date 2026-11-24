@@ -25,3 +25,7 @@ kubeconfig_tunnel_port: 16443
 
 common_permit_root_login: "no"
 common_motd_title: DevOps Platform - AWS Node
+
+# node_exporter reads *.prom files here; the backup writes the time of its last success
+# (roles/restic_backup: restic_backup_textfile_dir, which tests/test_restic_backup.py keeps equal).
+node_exporter_textfile_dir: /var/lib/node_exporter/textfile

@@ -11,3 +11,7 @@ node_exporter_install_dir: /opt/node_exporter
 node_exporter_args:
   - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($|/)"
   - "--collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|iso9660|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tracefs)$"
+
+# A directory for node_exporter's textfile collector (metrics other programs write as *.prom files), or "" for
+# none. Off by default, so the homelab nodes keep their flags; the AWS node sets it (inventory/group_vars/aws.yml).
+node_exporter_textfile_dir: ""

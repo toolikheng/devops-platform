@@ -10,3 +10,7 @@ restic_backup_sha256: "f415415624dcc452f2a02b8c33641791a8c6d6d3b65bbb3543fcf9a25
 restic_backup_bucket: toolikheng-devops-platform-backups
 restic_backup_password_parameter: /policypal/aws/restic-password
 restic_backup_region: ap-southeast-1
+
+# node_exporter's textfile collector directory (node_exporter_textfile_dir in inventory/group_vars/aws.yml): a
+# successful backup writes policypal_backup_last_success_timestamp_seconds there.
+restic_backup_textfile_dir: /var/lib/node_exporter/textfile
