@@ -15,12 +15,11 @@ from typing import Any
 import pytest
 import yaml
 
-from conftest import OVERLAYS, secret_refs
+from conftest import OVERLAYS, secret_catalog, secret_refs
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEPLOY_SCRIPT = REPO_ROOT / "scripts" / "deploy-policypal.sh"
 SECRET_STORE = REPO_ROOT / "k8s" / "platform" / "external-secrets" / "clustersecretstore.yaml"
-TF_SECRETS = REPO_ROOT / "terraform" / "persistent" / "policypal_secrets.tf"
 
 NAMESPACE = "policypal"
 POLICYPAL_IMAGE = re.compile(r"^ghcr\.io/toolikheng/policypal(:[0-9a-f]{40}|@sha256:[0-9a-f]{64})$")
@@ -312,15 +311,19 @@ def test_aws_secrets_are_made_by_external_secrets_with_exactly_the_keys_the_pods
     assert made == secret_refs(docs)
 
 
-def test_external_secrets_read_only_the_parameters_terraform_creates(rendered: dict) -> None:
-    # Terraform (terraform/persistent/policypal_secrets.tf) creates the parameters and lets the node read
-    # /policypal/aws/* only. Every parameter is named: dataFrom would read whatever matches a pattern.
-    created = set(re.findall(r'^\s*name\s*=\s*"(/policypal/aws/[^"]+)"', TF_SECRETS.read_text(), re.M))
-    read = set()
+def test_each_catalogued_secret_is_read_by_one_external_secret_in_its_namespace(rendered: dict) -> None:
+    # terraform/persistent/secret-catalog.yaml lists every parameter Terraform creates and who reads it. One
+    # with a namespace is read there by exactly one ExternalSecret; one without is read by the node itself,
+    # never through ESO. Nothing else is read. Every parameter is named: dataFrom would read whatever matches.
+    reads: dict[str, list[str]] = {}
     for es in external_secrets(rendered["aws"]):
         assert "dataFrom" not in es["spec"], es["metadata"]["name"]
-        read |= {d["remoteRef"]["key"] for d in es["spec"]["data"]}
-    assert created and read == created
+        for d in es["spec"]["data"]:
+            reads.setdefault(d["remoteRef"]["key"], []).append(es["metadata"]["namespace"])
+    catalog = secret_catalog()
+    expected = {f"/policypal/aws/{name}": [entry["namespace"]]
+                for name, entry in catalog.items() if entry.get("namespace")}
+    assert catalog and reads == expected
 
 
 def test_external_secrets_use_the_cluster_store_and_refresh_hourly(rendered: dict) -> None:

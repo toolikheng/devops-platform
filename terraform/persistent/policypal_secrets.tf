@@ -9,36 +9,42 @@
 # SecureString with the AWS managed key aws/ssm: encrypted at rest, no monthly key fee, and anyone allowed
 # to read a parameter can decrypt it through SSM, so the node needs no kms: permission. Standard tier: free.
 
+# The secrets, by name under /policypal/aws/: secret-catalog.yaml, which the tests also read.
+locals {
+  secrets = yamldecode(file("${path.module}/secret-catalog.yaml"))
+}
+
 # Letters and digits only (about 190 bits in 32 characters), so the password fits in DATABASE_URL without
 # escaping.
-ephemeral "random_password" "db_password" {
+ephemeral "random_password" "secret" {
+  for_each = local.secrets
+
   length  = 32
   special = false
 }
 
-ephemeral "random_password" "admin_token" {
-  length  = 32
-  special = false
-}
+resource "aws_ssm_parameter" "secret" {
+  for_each = local.secrets
 
-resource "aws_ssm_parameter" "db_password" {
-  name             = "/policypal/aws/db-password"
-  description      = "PolicyPal's Postgres password (POSTGRES_PASSWORD and DATABASE_URL). Rotation: docs/runbook.md."
+  name             = "/policypal/aws/${each.key}"
+  description      = each.value.description
   type             = "SecureString"
   tier             = "Standard"
   key_id           = "alias/aws/ssm"
-  value_wo         = ephemeral.random_password.db_password.result
-  value_wo_version = var.db_password_version
+  value_wo         = ephemeral.random_password.secret[each.key].result
+  value_wo_version = var.secret_versions[each.key]
 }
 
-resource "aws_ssm_parameter" "admin_token" {
-  name             = "/policypal/aws/admin-token"
-  description      = "PolicyPal's admin token (X-Admin-Token). Rotation: raise admin_token_version, see docs/runbook.md."
-  type             = "SecureString"
-  tier             = "Standard"
-  key_id           = "alias/aws/ssm"
-  value_wo         = ephemeral.random_password.admin_token.result
-  value_wo_version = var.admin_token_version
+# The two parameters made before the catalog keep their values: Terraform moves them in the state instead of
+# destroying and creating them. (Ephemeral values are never in the state, so there is nothing to move.)
+moved {
+  from = aws_ssm_parameter.db_password
+  to   = aws_ssm_parameter.secret["db-password"]
+}
+
+moved {
+  from = aws_ssm_parameter.admin_token
+  to   = aws_ssm_parameter.secret["admin-token"]
 }
 
 # External Secrets Operator reads each parameter by its name (GetParameter, decrypted). Nothing else in

@@ -15,6 +15,7 @@ NAMES_MODULE = REPO_ROOT / "terraform" / "modules" / "names" / "outputs.tf"
 RENDER = REPO_ROOT / "scripts" / "render-k8s.sh"
 PLATFORM = REPO_ROOT / "k8s" / "platform"
 VERSIONS_ENV = REPO_ROOT / "ci" / "versions.env"
+SECRET_CATALOG = REPO_ROOT / "terraform" / "persistent" / "secret-catalog.yaml"
 OVERLAYS = ("local", "aws")
 
 
@@ -51,6 +52,12 @@ def addon_envs() -> list[tuple[str, str]]:
 def addon_manifests(name: str) -> list[Path]:
     """The files addon.sh applies after the add-on's chart (MANIFESTS in its chart.env)."""
     return [PLATFORM / name / m for m in chart_env(name).get("MANIFESTS", "").split()]
+
+
+def secret_catalog() -> dict[str, dict[str, str]]:
+    """terraform/persistent/secret-catalog.yaml: every secret Terraform keeps in SSM Parameter Store, by its name
+    under /policypal/aws/, with the namespace whose ExternalSecret reads it (no namespace: the node reads it)."""
+    return yaml.safe_load(SECRET_CATALOG.read_text())
 
 
 def versions() -> dict[str, str]:

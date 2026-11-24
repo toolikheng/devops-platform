@@ -69,6 +69,7 @@ MUST_KEEP = [
     "k8s/platform/kube-prometheus-stack/chart.env",
     "k8s/platform/kube-prometheus-stack/values-local.yaml",
     "terraform/persistent/policypal_secrets.tf",
+    "terraform/persistent/secret-catalog.yaml",
 ]
 
 LOCAL_ONLY = ["CLAUDE.md", "CLAUDE.local.md", "planning", ".local-archive", ".claude", ".agents",

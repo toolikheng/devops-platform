@@ -27,6 +27,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO_ROOT / "scripts"
 TOOLS = ("kubectl", "curl", "docker", "k3d", "terraform", "aws", "helm", "ansible-playbook", "gh")
@@ -270,9 +272,10 @@ class Fakes:
         self._write(f"secret-{name}", "existing")
 
     def eso_synced(self) -> None:
-        """What External Secrets Operator does on AWS: both Secrets exist once the ExternalSecrets are applied."""
-        self.secret_exists("policypal-db")
-        self.secret_exists("policypal-admin")
+        """What External Secrets Operator does on AWS: once the ExternalSecrets of the aws overlay are applied,
+        the Secret each one makes exists."""
+        for path in sorted((REPO_ROOT / "k8s" / "policypal" / "overlays" / "aws").glob("externalsecret-*.yaml")):
+            self.secret_exists(yaml.safe_load(path.read_text())["spec"]["target"]["name"])
 
     def revisions(self, name: str, before: str | None, after: str | None) -> None:
         """A Deployment's rollout revision before and after `kubectl apply` (None: it doesn't exist)."""

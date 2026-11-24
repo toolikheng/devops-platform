@@ -16,7 +16,7 @@ from typing import Any
 import pytest
 import yaml
 
-from conftest import chart_env
+from conftest import chart_env, secret_catalog
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ESO_DIR = REPO_ROOT / "k8s" / "platform" / "external-secrets"
@@ -137,5 +137,9 @@ def test_store_reads_parameter_store_with_the_nodes_role() -> None:
 
 
 def test_only_the_policypal_namespace_may_use_the_store() -> None:
-    # Any ExternalSecret could otherwise read whatever the node role may read, from any namespace.
-    assert store()["spec"]["conditions"] == [{"namespaces": ["policypal"]}]
+    # Any ExternalSecret could otherwise read whatever the node role may read, from any namespace. The store
+    # allows exactly the namespaces the secret catalog names, and that is policypal alone: secrets without a
+    # namespace are read by the node itself.
+    namespaces = sorted({e["namespace"] for e in secret_catalog().values() if e.get("namespace")})
+    assert namespaces == ["policypal"]
+    assert store()["spec"]["conditions"] == [{"namespaces": namespaces}]

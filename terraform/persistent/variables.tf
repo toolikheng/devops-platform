@@ -40,24 +40,21 @@ variable "alert_thresholds_usd" {
   }
 }
 
-variable "db_password_version" {
-  description = "Version of PolicyPal's database password in SSM. Raise it by 1 to write a new random value (runbook: change it in Postgres first)."
-  type        = number
-  default     = 1
-
-  validation {
-    condition     = var.db_password_version >= 1 && floor(var.db_password_version) == var.db_password_version
-    error_message = "db_password_version must be a whole number from 1."
+variable "secret_versions" {
+  description = "Version of each secret in SSM (secret-catalog.yaml). Raise one by 1 in a commit to write a new random value: a rotation (runbook; change the database password in Postgres first)."
+  type        = map(number)
+  default = {
+    "db-password" = 1
+    "admin-token" = 2
   }
-}
-
-variable "admin_token_version" {
-  description = "Version of PolicyPal's admin token in SSM. Raise it by 1 in a commit to write a new random value: a rotation (runbook)."
-  type        = number
-  default     = 2
 
   validation {
-    condition     = var.admin_token_version >= 1 && floor(var.admin_token_version) == var.admin_token_version
-    error_message = "admin_token_version must be a whole number from 1."
+    condition     = alltrue([for v in values(var.secret_versions) : v >= 1 && floor(v) == v])
+    error_message = "Each secret version must be a whole number from 1."
+  }
+
+  validation {
+    condition     = sort(keys(var.secret_versions)) == sort(keys(local.secrets))
+    error_message = "secret_versions needs one entry for each secret in secret-catalog.yaml, and no other."
   }
 }
