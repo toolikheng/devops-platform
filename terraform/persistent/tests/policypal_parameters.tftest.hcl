@@ -36,15 +36,18 @@ run "one_securestring_per_catalog_entry_under_the_policypal_path" {
     error_message = "Secrets must be Standard-tier SecureStrings (free) encrypted with the AWS managed key aws/ssm (no key fee)."
   }
 
-  # The description comes from the catalog. The admin token's no longer names the variable that the catalog
-  # replaced (ADR 023); the database password's is unchanged.
+  # The descriptions, word for word. A write-only parameter can't change anything but its tags on its own: the
+  # AWS provider (6.73.0, resourceParameterUpdate) then writes a new parameter version with the value from the
+  # state, and the state holds no value (that is the point of value_wo). So a description changes only together
+  # with its secret's version, which sends a new random value with it. The admin token's still names the old
+  # variable until its next rotation (ADR 023).
   assert {
     condition = (
       aws_ssm_parameter.secret["db-password"].description == "PolicyPal's Postgres password (POSTGRES_PASSWORD and DATABASE_URL). Rotation: docs/runbook.md." &&
-      aws_ssm_parameter.secret["admin-token"].description == "PolicyPal's admin token (X-Admin-Token). Rotation: raise its version in secret_versions, see docs/runbook.md." &&
-      startswith(aws_ssm_parameter.secret["restic-password"].description, "The restic repository password")
+      aws_ssm_parameter.secret["admin-token"].description == "PolicyPal's admin token (X-Admin-Token). Rotation: raise admin_token_version, see docs/runbook.md." &&
+      aws_ssm_parameter.secret["restic-password"].description == "The restic repository password for PolicyPal's backups in S3. Read by the node's backup job. Not rotated: see docs/runbook.md."
     )
-    error_message = "Each parameter's description must be its catalog entry's."
+    error_message = "A description may change only together with its secret's version (a rotation): see the comment above."
   }
 }
 

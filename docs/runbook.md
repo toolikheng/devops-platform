@@ -422,7 +422,7 @@ kubectl -n external-secrets logs deploy/external-secrets | tail    # errors, wit
 
 ### Rotate the admin token
 
-1. Raise `"admin-token"` in `secret_versions` by 1 in `terraform/persistent/variables.tf` and commit it (the commit is the record; the value never appears).
+1. Raise `"admin-token"` in `secret_versions` by 1 in `terraform/persistent/variables.tf` and commit it (the commit is the record; the value never appears). A change to the secret's description in `secret-catalog.yaml` belongs in the same commit: on its own it would make the provider write a new version without a value ([ADR 023](decisions/023-one-catalog-of-secrets.md)).
 2. `cd terraform/persistent && terraform plan -out tfplan` shows one in-place change (`value_wo_version`); `terraform apply tfplan`.
 3. `make check-state-secrets`: still 0.
 4. If the node is running: `kubectl -n policypal annotate externalsecret policypal-admin force-sync="$(date +%s)" --overwrite` (otherwise ESO picks it up within the hour), then `kubectl -n policypal rollout restart deployment/policypal-api`. The API reads the token only at start; until it restarts, the old token still works.
