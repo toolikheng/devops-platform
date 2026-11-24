@@ -386,6 +386,27 @@ The Deployments allow 15 minutes without progress (`progressDeadlineSeconds: 900
 
 Harmless. `kubectl apply` replaces `volumeClaimTemplates` as a whole, and the server adds default fields to it, so apply always sends a patch. The StatefulSet's generation doesn't change and Postgres isn't restarted; `kubectl diff -f <(bash scripts/render-k8s.sh aws)` shows nothing.
 
+## Backups on AWS (restic to S3)
+
+`make cloud-config` installs the backup on the node ([ADR 025](decisions/025-restic-backups-from-the-node.md)): restic, `/usr/local/sbin/policypal-backup` and an hourly `policypal-backup.timer`. Each run backs up the Postgres dump, then the uploads, to `s3://toolikheng-devops-platform-backups/restic`, then applies the retention (7 daily, 4 weekly, 12 monthly), prunes and checks. The repository password is read from SSM Parameter Store by restic at run time and is never on disk.
+
+On the node (`aws ssm start-session --target "$(bash scripts/node-id.sh)"`, then `sudo -i`):
+
+```bash
+systemctl start policypal-backup                 # a backup now (the timer runs one every hour)
+systemctl status policypal-backup                # "failed" if the last run failed
+journalctl -u policypal-backup -n 50             # what it did
+systemctl list-timers policypal-backup.timer     # when the next one runs
+# The snapshots (the same repository and password command as the service):
+export RESTIC_REPOSITORY=s3:s3.ap-southeast-1.amazonaws.com/toolikheng-devops-platform-backups/restic
+export RESTIC_PASSWORD_COMMAND="/usr/local/sbin/ssm-parameter /policypal/aws/restic-password" AWS_DEFAULT_REGION=ap-southeast-1
+restic snapshots
+```
+
+The script was run against k3d (docs/aws-test-log.md); these commands on the node are run for the first time in the next AWS session.
+
+A failed run leaves the unit failed and does not apply retention, so older snapshots stay. The first run creates the repository; later runs refuse to continue if it can't be opened (a wrong password, a lock held by another run). Restic's `Fatal: repository does not exist` on the very first run is expected: the script then creates it.
+
 ## Secrets (SSM Parameter Store and External Secrets Operator)
 
 | Secret | Kept in | Read by | Created by | Rotation |
