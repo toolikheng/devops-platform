@@ -403,7 +403,34 @@ export RESTIC_PASSWORD_COMMAND="/usr/local/sbin/ssm-parameter /policypal/aws/res
 restic snapshots
 ```
 
-The script was run against k3d (docs/aws-test-log.md); these commands on the node are run for the first time in the next AWS session.
+A successful backup also writes `policypal_backup_last_success_timestamp_seconds` to node_exporter's textfile directory (`/var/lib/node_exporter/textfile`); the dashboard's "Since the last backup" turns red after 2 hours. A failed one changes nothing there.
+
+### Restore
+
+On the node, as root (the settings are in `/etc/policypal-backup.env`):
+
+```bash
+policypal-backup show latest                 # "<run> <database snapshot> <uploads snapshot>"
+policypal-backup restore latest              # or a run: policypal-backup restore run-20261125T020000Z
+```
+
+A restore stops `policypal-api`, recreates the database and loads the run's dump (`pg_restore`, stopping at the first error), makes the uploads directory exactly the run's (files the backup didn't have are deleted), then starts the API, whose start-up ingestion then agrees with both. If a step fails, the API is left at 0 replicas on purpose (starting it on half-restored data could delete rows): fix the cause, run the restore again, or `kubectl -n policypal scale deployment/policypal-api --replicas=1`.
+
+### Restore test across a rebuild
+
+With `make cloud-tunnel` running:
+
+```bash
+make cloud-restore-test-before      # sentinels (a question and a policy), a backup now, the run recorded in ~/.cache/devops-platform/restore-test.env
+make cloud-down                     # then a new node with empty data:
+make cloud-rebuild && make cloud-addons && make cloud-deploy
+make cloud-restore-test-after       # refuses the same node or data that has the sentinels; restores the run; checks
+make cloud-smoke
+```
+
+`after` passes only if the restore reports the recorded snapshots, the question and the policy are back, and the policy file's sha256 matches the uploaded one. Node commands go through SSM Run Command (no charge).
+
+The scripts were run against k3d (docs/aws-test-log.md); these commands on the node are run for the first time in the next AWS session.
 
 A failed run leaves the unit failed and does not apply retention, so older snapshots stay. The first run creates the repository; later runs refuse to continue if it can't be opened (a wrong password, a lock held by another run). Restic's `Fatal: repository does not exist` on the very first run is expected: the script then creates it.
 
