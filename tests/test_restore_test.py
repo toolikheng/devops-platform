@@ -187,6 +187,18 @@ def test_after_stops_when_the_restore_fails(after: tuple[Fakes, Path]) -> None:
     assert result.returncode == 1 and "restore" in output(result)
 
 
+@pytest.mark.parametrize("path", ["restore-test.env", "scripts/restore-test.env", "{repo}/restore-test.env",
+                                  "/tmp/../{repo}/planning/restore-test.env"])
+def test_the_record_is_never_written_inside_the_repository(fakes: Fakes, path: str) -> None:
+    # It holds snapshot and instance IDs: kept out of the working tree, it can't be committed by accident.
+    repo = str(Path(__file__).resolve().parent.parent).lstrip("/")
+    target = path.format(repo=repo if path.startswith("/tmp") else "/" + repo)
+    result = fakes.script("restore-test.sh", "before", target)
+    assert result.returncode == 2 and "outside the repository" in result.stderr, output(result)
+    assert not fakes.calls()
+    assert not (Path(__file__).resolve().parent.parent / "restore-test.env").exists()
+
+
 @pytest.mark.parametrize("args", [[], ["during"], ["before", "a", "b"]])
 def test_usage(fakes: Fakes, args: list[str]) -> None:
     result = fakes.script("restore-test.sh", *args)

@@ -23,6 +23,16 @@ PHASE="$1"
 STATE="${2:-$HOME/.cache/devops-platform/restore-test.env}"
 
 SCRIPTS="$(cd "$(dirname "$0")" && pwd)"
+# The record holds snapshot and instance IDs. Kept out of the working tree, it can't be committed by accident
+# (.gitignore also ignores restore-test*.env, as a second guard).
+REPO_ROOT="$(cd "$SCRIPTS/.." && pwd -P)"
+case "$(realpath -m -- "$STATE")/" in
+  "$REPO_ROOT"/*)
+    echo "restore-test.sh: keep STATE_FILE outside the repository ($REPO_ROOT), e.g. the default" \
+      "$HOME/.cache/devops-platform/restore-test.env" >&2
+    exit 2
+    ;;
+esac
 # The stacks fix their region in code.
 REGION="ap-southeast-1"
 NAMESPACE="policypal"

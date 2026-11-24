@@ -98,6 +98,10 @@ backup/local/
 restic-cache/
 *.bak
 
+# The AWS restore test's record (scripts/restore-test.sh): snapshot and instance IDs. Written to
+# ~/.cache/devops-platform and refused inside the repo; this is the second guard.
+restore-test*.env
+
 # Temporary
 tmp/
 temp/

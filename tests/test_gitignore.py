@@ -38,6 +38,10 @@ MUST_IGNORE = [
     "ansible/inventory/aws.yml",
     # ansible-lint's cache of the collections in ansible/requirements.yml.
     "ansible/.ansible/collections/ansible_collections/community/general/MANIFEST.json",
+    # The restore test's record (snapshot and instance IDs): written outside the repo, and refused inside it.
+    "restore-test.env",
+    "scripts/restore-test.env",
+    "restore-test-2026.env",
 ]
 
 MUST_KEEP = [
