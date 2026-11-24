@@ -371,8 +371,8 @@ Harmless. `kubectl apply` replaces `volumeClaimTemplates` as a whole, and the se
 
 | Secret | Kept in | Read by | Created by | Rotation |
 |---|---|---|---|---|
-| `/policypal/aws/db-password` | SSM SecureString, Standard, key `aws/ssm` | ESO → Secret `policypal-db` (`POSTGRES_PASSWORD`) → Postgres, and the API, which builds `DATABASE_URL` from it | Terraform, write-only (`terraform/persistent/policypal_secrets.tf`) | `db_password_version`, after `ALTER ROLE` (below) |
-| `/policypal/aws/admin-token` | same | ESO → Secret `policypal-admin` (`ADMIN_TOKEN`) → API; me, for the UI's admin page | same | `admin_token_version` (below) |
+| `/policypal/aws/db-password` | SSM SecureString, Standard, key `aws/ssm` | ESO → Secret `policypal-db` (`POSTGRES_PASSWORD`) → Postgres, and the API, which builds `DATABASE_URL` from it | Terraform, write-only, one entry of `terraform/persistent/secret-catalog.yaml` ([ADR 023](decisions/023-one-catalog-of-secrets.md)) | `secret_versions["db-password"]`, after `ALTER ROLE` (below) |
+| `/policypal/aws/admin-token` | same | ESO → Secret `policypal-admin` (`ADMIN_TOKEN`) → API; me, for the UI's admin page | same | `secret_versions["admin-token"]` (below) |
 | `/devops-platform/owner-cidr` | SSM String (not secret) | the ephemeral stack's plan | Terraform; `make owner-ip` sets the value | when my IP changes |
 | k3s admin kubeconfig | the node; `~/.kube/devops-aws.yaml` (600) | me | k3s | new cluster every session |
 | SSH key | `~/.ssh` | Ansible, through Session Manager | me | — |
@@ -394,9 +394,16 @@ kubectl -n policypal get externalsecret                            # STATUS Secr
 kubectl -n external-secrets logs deploy/external-secrets | tail    # errors, with the AWS message
 ```
 
+### Add a secret
+
+1. Add an entry to `terraform/persistent/secret-catalog.yaml`: its name under `/policypal/aws/`, a description, and the namespace whose ExternalSecret reads it (leave the namespace out if the node reads it itself).
+2. Add its version (1) to `secret_versions` in `terraform/persistent/variables.tf`; Terraform refuses a catalog and a version list that don't match.
+3. For a namespace: an ExternalSecret there that reads exactly that key, and a pod that references the Secret. `make test-infra` fails until each catalogued secret is read by exactly one ExternalSecret in its namespace, and the `ClusterSecretStore` serves exactly the catalog's namespaces (today `policypal` only).
+4. Plan (one parameter to add, $0), apply, `make check-state-secrets`.
+
 ### Rotate the admin token
 
-1. Raise `admin_token_version` by 1 in `terraform/persistent/variables.tf` and commit it (the commit is the record; the value never appears).
+1. Raise `"admin-token"` in `secret_versions` by 1 in `terraform/persistent/variables.tf` and commit it (the commit is the record; the value never appears).
 2. `cd terraform/persistent && terraform plan -out tfplan` shows one in-place change (`value_wo_version`); `terraform apply tfplan`.
 3. `make check-state-secrets`: still 0.
 4. If the node is running: `kubectl -n policypal annotate externalsecret policypal-admin force-sync="$(date +%s)" --overwrite` (otherwise ESO picks it up within the hour), then `kubectl -n policypal rollout restart deployment/policypal-api`. The API reads the token only at start; until it restarts, the old token still works.
@@ -405,9 +412,9 @@ The old value stays in the parameter's history: `aws ssm get-parameter --name /p
 
 ### Rotate the database password
 
-Postgres keeps the password it was initialised with, so changing only SSM would lock the API out. Every session starts a new database, so between sessions just raise `db_password_version` and apply. On a running node (written down, not yet demonstrated):
+Postgres keeps the password it was initialised with, so changing only SSM would lock the API out. Every session starts a new database, so between sessions just raise `"db-password"` in `secret_versions` and apply. On a running node (written down, not yet demonstrated):
 
-1. Raise `db_password_version`, commit, plan, apply.
+1. Raise `"db-password"` in `secret_versions`, commit, plan, apply.
 2. Set the new value in Postgres without printing it or putting it in a command line (`printf` is a shell builtin; the SQL goes to `psql` on stdin, and the password is letters and digits only):
 
    ```bash
