@@ -232,10 +232,15 @@ cluster-down:
 	fi
 	@$(ECHO) "$(GREEN)✓ Cluster removed$(NC)"
 
+# Passwords reach kubectl on stdin (printf is a shell builtin), never as arguments, which ps shows to every
+# user. A Secret that exists is left alone: the backup repository keeps the password it was made with.
 secrets-init:
 	@kubectl create namespace devops --dry-run=client -o yaml | kubectl apply -f -
-	@kubectl -n devops get secret backup-credentials >/dev/null 2>&1 || \
-		kubectl -n devops create secret generic backup-credentials --from-literal=password="$$(openssl rand -base64 24)"
+	@if ! kubectl -n devops get secret backup-credentials >/dev/null 2>&1; then \
+		password="$$(openssl rand -hex 24)"; \
+		printf 'password=%s\n' "$$password" | \
+			kubectl -n devops create secret generic backup-credentials --from-env-file=/dev/stdin; \
+	fi
 
 # Build the image, load it into k3d, apply the dev overlay, and roll out the new image.
 deploy: image secrets-init
@@ -252,9 +257,12 @@ deploy: image secrets-init
 monitoring-up:
 	@$(ECHO) "$(BLUE)Deploying monitoring stack...$(NC)"
 	@kubectl create namespace monitoring 2>/dev/null || true
-	@kubectl -n monitoring get secret grafana-admin >/dev/null 2>&1 || \
-		kubectl -n monitoring create secret generic grafana-admin \
-		--from-literal=admin-user=admin --from-literal=admin-password="$$(openssl rand -base64 18)"
+	@# Grafana's login: the password reaches kubectl on stdin, as in secrets-init; an existing one is kept.
+	@if ! kubectl -n monitoring get secret grafana-admin >/dev/null 2>&1; then \
+		password="$$(openssl rand -hex 24)"; \
+		printf 'admin-user=admin\nadmin-password=%s\n' "$$password" | \
+			kubectl -n monitoring create secret generic grafana-admin --from-env-file=/dev/stdin; \
+	fi
 	@helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
 	@helm repo update
 	@helm upgrade --install kube-prometheus-stack \
