@@ -15,7 +15,8 @@ The fake knows just enough of each real tool for the scripts here:
   set (as the real ones print the whole plan); `plan -out=FILE` writes FILE. aws: `ssm get-parameter` by name, other
   calls by `service.operation` (identity and region list by default, empty otherwise), or a sequence of answers
   for repeated calls (polling), the last one repeating.
-- docker: a kustomize render prints MANIFEST, a Helm render ESO_MANIFEST. helm, k3d, ansible-playbook, gh: log only.
+- docker: a kustomize render prints MANIFEST, a Helm render addon_manifest(release). helm, k3d, ansible-playbook,
+  gh: log only.
 Any call can be made to fail (`fail`), and a real command can be logged on its way through (`spy`).
 """
 
@@ -37,7 +38,6 @@ OWNER_IP = "203.0.113.10"  # what checkip answers
 CHECKIP = "https://checkip.amazonaws.com"
 FORWARD_PORT = "41234"  # the local port `kubectl port-forward` says it picked
 MANIFEST = "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: policypal\n"
-ESO_MANIFEST = "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: external-secrets\n"
 
 FAKE = r'''#!/usr/bin/env python3
 import json, os, sys
@@ -131,7 +131,7 @@ if tool == "docker":
     if any("kustomize" in x for x in args):
         answer("manifest")
     if any(x.startswith("alpine/helm:") for x in args):
-        answer("eso-manifest")
+        answer("addon-manifest-" + args[args.index("template") + 1])
     sys.exit(0)
 if tool == "terraform" and args[:2] == ["output", "-raw"]:
     answer(f"tf-output-{args[2]}", 1)
@@ -160,6 +160,11 @@ sys.exit(0)
 '''
 
 
+def addon_manifest(release: str) -> str:
+    """What the fake prints for `helm template RELEASE ...` in the pinned Helm image."""
+    return f"apiVersion: v1\nkind: Namespace\nmetadata:\n  name: {release}\n"
+
+
 def flag_value(args: list[str], flag: str) -> str:
     """The word after `flag` in a logged call's args."""
     return args[args.index(flag) + 1]
@@ -181,7 +186,8 @@ class Fakes:
         for tool in TOOLS:
             self._install(tool)
         self._write("manifest", MANIFEST)
-        self._write("eso-manifest", ESO_MANIFEST)
+        for addon in (REPO_ROOT / "k8s" / "platform").iterdir():
+            self._write(f"addon-manifest-{addon.name}", addon_manifest(addon.name))
         self.forward_port(FORWARD_PORT)
         self.tf_output("public_ip", NODE_IP)
         self.tf_output("instance_id", INSTANCE_ID)

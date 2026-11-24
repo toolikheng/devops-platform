@@ -61,11 +61,13 @@ MUST_KEEP = [
     ".pre-commit-config.yaml",
     ".github/workflows/secret-scan.yml",
     "k8s/platform/external-secrets/chart.env",
-    "k8s/platform/external-secrets/values.yaml",
+    "k8s/platform/external-secrets/values-aws.yaml",
     "k8s/platform/external-secrets/clustersecretstore.yaml",
     "k8s/policypal/overlays/aws/externalsecret-admin.yaml",
-    "scripts/install-eso.sh",
-    "scripts/render-eso.sh",
+    # C7: one add-on script for every Helm chart on the node
+    "scripts/addon.sh",
+    "k8s/platform/kube-prometheus-stack/chart.env",
+    "k8s/platform/kube-prometheus-stack/values-local.yaml",
     "terraform/persistent/policypal_secrets.tf",
 ]
 

@@ -48,4 +48,4 @@ def test_trivy_runs_at_the_pinned_version(fakes: Fakes, script: str) -> None:
 def test_scripts_are_found() -> None:
     # The copy rule above is only as good as the list it reads.
     names = {Path(p).name for p in SCRIPTS}
-    assert {"render-eso.sh", "k8s-checks.sh", "scan.sh", "terraform-checks.sh", "Makefile"} <= names
+    assert {"addon.sh", "k8s-checks.sh", "scan.sh", "terraform-checks.sh", "Makefile"} <= names

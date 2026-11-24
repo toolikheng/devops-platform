@@ -10,7 +10,8 @@
 - scripts/node-deploy.sh: on the AWS node (sent by CI through SSM Run Command), the deploy with the node's own
   kubeconfig and address.
 - make k8s-check, policypal-secrets-local, policypal-local, cloud-deploy, cloud-smoke.
-The External Secrets Operator scripts are tested in test_eso_scripts.py, the state check in
+The add-on script (External Secrets Operator, kube-prometheus-stack) is tested in test_addon_scripts.py, the
+state check in
 test_check_state_secrets.py.
 
 They run with the fake CLIs of tests/fakecli.py first on PATH, so no cluster, container or AWS account is
@@ -24,11 +25,10 @@ import subprocess
 import pytest
 import yaml
 
-from conftest import RENDER, REPO_ROOT, secret_refs, versions
-from fakecli import ESO_MANIFEST, FORWARD_PORT, MANIFEST, NODE_IP, Fakes, flag_value, output
+from conftest import RENDER, REPO_ROOT, addon_envs, addon_manifests, secret_refs, versions
+from fakecli import FORWARD_PORT, MANIFEST, NODE_IP, Fakes, addon_manifest, flag_value, output
 
 AWS_GROUP_VARS = REPO_ROOT / "ansible" / "inventory" / "group_vars" / "aws.yml"
-ESO_DIR = REPO_ROOT / "k8s" / "platform" / "external-secrets"
 
 G04 = "How many days of compassionate leave do I get when my grandmother passes away?"
 G41 = "How many months of bonus will we get at the end of the year?"
@@ -460,31 +460,37 @@ def test_node_deploy_needs_the_manifest_file(fakes: Fakes, args: list[str]) -> N
 
 # --- make targets ---------------------------------------------------------------------------------------
 
-def test_k8s_check_validates_policypal_and_eso_strictly_against_the_nodes_version(fakes: Fakes) -> None:
+def test_k8s_check_validates_policypal_and_every_addon_strictly_against_the_nodes_version(fakes: Fakes) -> None:
     result = fakes.make("k8s-check")
     assert result.returncode == 0, output(result)
     docker = fakes.calls("docker")
     renders = [c["args"][-1] for c in docker if any("kustomize" in a for a in c["args"])]
     assert [r.rsplit("/", 1)[-1] for r in renders] == ["local", "aws"]
-    assert [c for c in docker if any(a.startswith("alpine/helm:") for a in c["args"])], "renders the ESO chart"
+    helm = [c["args"] for c in docker if any(a.startswith("alpine/helm:") for a in c["args"])]
+    addons = addon_envs()
+    assert addons, "the add-ons must be found"
+    assert [(a[a.index("template") + 1], flag_value(a, "--values")) for a in helm] == \
+        [(name, f"/addon/values-{env}.yaml") for name, env in addons], "one render per add-on and environment"
     validations = [c for c in docker if any("kubeconform" in a for a in c["args"])]
-    assert len(validations) == 3
+    assert len(validations) == 2 + len(addons)
     catalog = re.compile(r"https://raw\.githubusercontent\.com/datreeio/CRDs-catalog/[0-9a-f]{40}/"
                          r"\{\{\.Group\}\}/\{\{\.ResourceKind\}\}_\{\{\.ResourceAPIVersion\}\}\.json")
     for call in validations:
         args = call["args"]
         assert "-strict" in args
         assert flag_value(args, "-kubernetes-version") == versions()["KUBERNETES_VERSION"]
-        # Kubernetes' own schemas, then the CRD schemas (ExternalSecret, ClusterSecretStore) at a pinned commit.
+        # Kubernetes' own schemas, then the CRD schemas (ExternalSecret, ClusterSecretStore, ServiceMonitor, ...)
+        # at a pinned commit.
         locations = [args[i + 1] for i, a in enumerate(args) if a == "-schema-location"]
         assert locations[0] == "default" and len(locations) == 2 and catalog.fullmatch(locations[1])
     assert [v["stdin"] for v in validations[:2]] == [MANIFEST, MANIFEST], "kubeconform reads the rendered YAML"
-    store = (ESO_DIR / "clustersecretstore.yaml").read_text()
-    assert ESO_MANIFEST in validations[2]["stdin"] and store in validations[2]["stdin"], "chart and store"
-    # No schema exists for the CustomResourceDefinition kind, so only the ESO run skips it, and nothing else.
+    for v, (name, _) in zip(validations[2:], addons):
+        expected = addon_manifest(name) + "".join(f"---\n{m.read_text()}" for m in addon_manifests(name))
+        assert v["stdin"] == expected, f"{name}: the chart, then its manifests"
+    # No schema exists for the CustomResourceDefinition kind, so only the add-on runs skip it, and nothing else.
     assert all("-skip" not in v["args"] for v in validations[:2])
-    eso = validations[2]["args"]
-    assert eso.count("-skip") == 1 and flag_value(eso, "-skip") == "CustomResourceDefinition"
+    for v in validations[2:]:
+        assert v["args"].count("-skip") == 1 and flag_value(v["args"], "-skip") == "CustomResourceDefinition"
 
 
 def test_policypal_secrets_local_targets_the_k3d_cluster(fakes: Fakes) -> None:

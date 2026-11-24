@@ -13,7 +13,7 @@ from fakecli import Fakes
 REPO_ROOT = Path(__file__).resolve().parent.parent
 NAMES_MODULE = REPO_ROOT / "terraform" / "modules" / "names" / "outputs.tf"
 RENDER = REPO_ROOT / "scripts" / "render-k8s.sh"
-ESO_CHART_ENV = REPO_ROOT / "k8s" / "platform" / "external-secrets" / "chart.env"
+PLATFORM = REPO_ROOT / "k8s" / "platform"
 VERSIONS_ENV = REPO_ROOT / "ci" / "versions.env"
 OVERLAYS = ("local", "aws")
 
@@ -38,10 +38,19 @@ def _env_file(path: Path) -> dict[str, str]:
     return dict(re.findall(r"^([A-Z_]+)=(\S+)$", path.read_text(), re.M))
 
 
-def chart_env() -> dict[str, str]:
-    """chart.env: the External Secrets Operator chart that install-eso.sh installs and render-eso.sh renders
-    for the checks."""
-    return _env_file(ESO_CHART_ENV)
+def chart_env(name: str) -> dict[str, str]:
+    """k8s/platform/NAME/chart.env: the add-on's pinned chart, which scripts/addon.sh installs and renders."""
+    return _env_file(PLATFORM / name / "chart.env")
+
+
+def addon_envs() -> list[tuple[str, str]]:
+    """(add-on, environment) for every values file under k8s/platform: where each add-on runs."""
+    return sorted((p.parent.name, p.stem.removeprefix("values-")) for p in PLATFORM.glob("*/values-*.yaml"))
+
+
+def addon_manifests(name: str) -> list[Path]:
+    """The files addon.sh applies after the add-on's chart (MANIFESTS in its chart.env)."""
+    return [PLATFORM / name / m for m in chart_env(name).get("MANIFESTS", "").split()]
 
 
 def versions() -> dict[str, str]:

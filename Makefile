@@ -23,8 +23,6 @@ APP_DIR := $(REPO_ROOT)/app
 K8S_DIR := $(REPO_ROOT)/k8s
 INFRA_DIR := $(REPO_ROOT)/infra
 MONITORING_DIR := $(REPO_ROOT)/monitoring
-# kube-prometheus-stack chart. Helm doesn't upgrade CRDs, so bump this deliberately.
-KPS_CHART_VERSION := 92.16.0
 BACKUP_DIR := $(REPO_ROOT)/backup
 CI_DIR := $(REPO_ROOT)/ci
 # App virtualenv with the dev dependencies (created by `make venv`; gitignored).
@@ -264,13 +262,8 @@ monitoring-up:
 		printf 'admin-user=admin\nadmin-password=%s\n' "$$password" | \
 			kubectl -n monitoring create secret generic grafana-admin --from-env-file=/dev/stdin; \
 	fi
-	@helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-	@helm repo update
-	@helm upgrade --install kube-prometheus-stack \
-		prometheus-community/kube-prometheus-stack \
-		--version $(KPS_CHART_VERSION) \
-		-n monitoring \
-		-f "$(MONITORING_DIR)/helm-values.yaml"
+	@# The chart, its version and values: k8s/platform/kube-prometheus-stack (chart.env, values-local.yaml).
+	@bash "$(REPO_ROOT)/scripts/addon.sh" install kube-prometheus-stack local
 	@kubectl apply -f "$(MONITORING_DIR)/servicemonitor.yaml" -f "$(MONITORING_DIR)/rules/alert-rules.yaml"
 	@kubectl apply -k "$(MONITORING_DIR)/dashboards"   # Grafana sidecar picks it up (label grafana_dashboard=1)
 	@$(ECHO) "$(GREEN)✓ Monitoring stack deployed$(NC)"
@@ -350,7 +343,7 @@ cloud-rebuild:
 # installs External Secrets Operator, which makes PolicyPal's Secrets from SSM Parameter Store, so it runs
 # once per new node, before cloud-deploy.
 cloud-addons:
-	@KUBECONFIG="$(AWS_KUBECONFIG)" bash "$(REPO_ROOT)/scripts/install-eso.sh"
+	@KUBECONFIG="$(AWS_KUBECONFIG)" bash "$(REPO_ROOT)/scripts/addon.sh" install external-secrets aws
 
 cloud-deploy:
 	@ip="$$(AWS_PROFILE="$(AWS_PROFILE)" bash "$(REPO_ROOT)/scripts/node-ip.sh")"; \

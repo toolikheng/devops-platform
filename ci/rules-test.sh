@@ -8,7 +8,9 @@ set -euo pipefail
 echo "=== Testing Prometheus alert rules ==="
 
 RULES_DIR="$(cd "$(dirname "$0")/../monitoring/rules" && pwd)"
-PROMETHEUS_IMAGE="prom/prometheus:v3.15.0" # same Prometheus version as kube-prometheus-stack 92.16.0
+# The image kube-prometheus-stack runs (k8s/platform/kube-prometheus-stack/chart.env); it carries promtool.
+# tests/test_monitoring_platform.py checks they are the same, so a chart bump fails until this follows it.
+PROMETHEUS_IMAGE="quay.io/prometheus/prometheus:v3.15.1-distroless"
 YQ_IMAGE="mikefarah/yq:4.54.1"
 
 WORK="$(mktemp -d)"
