@@ -215,7 +215,7 @@ def test_terraform_workflow_plans_pull_requests_and_applies_on_demand() -> None:
     assert inputs["action"]["type"] == "choice" and inputs["action"]["options"] == ["apply", "destroy"]
     assert inputs["action"]["required"] is True
     assert inputs["instance_type"]["type"] == "choice" and inputs["instance_type"]["options"] == ALLOWLIST
-    assert inputs["instance_type"]["default"] == "c7i-flex.large"
+    assert inputs["instance_type"]["default"] == "m7i-flex.large", "the stack's default (measured in C7)"
     assert inputs["use_spot"]["type"] == "boolean" and inputs["use_spot"]["default"] is True
     assert "concurrency" not in load(TERRAFORM), "a pending PR plan would cancel a pending apply or nightly destroy"
 

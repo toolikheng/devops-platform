@@ -75,16 +75,17 @@ run "owner_ip_that_is_a_range_fails_the_plan" {
   expect_failures = [data.aws_ssm_parameter.owner_cidr]
 }
 
-# From Phase C4 a session runs k3s plus PolicyPal: about 1.2 GiB at peak measured on k3d, on top of the
-# ~1.1 GiB k3s and Ubuntu used on a t3.small in C3, so the smallest allowlisted amd64 type with room is
-# c7i-flex.large (4 GiB). It runs on Spot unless asked otherwise (ADR 009):
+# From Phase C7 a session runs k3s, PolicyPal, External Secrets Operator and the monitoring. Measured on a
+# c7i-flex.large (4 GiB) on 2026-11-24: 75.9% of memory used at idle and 76.9% at the API's startup peak
+# (1 - MemAvailable/MemTotal). The rule is to stay under ~75%, so the default is m7i-flex.large (8 GiB, the
+# next allowlisted amd64 type). It runs on Spot unless asked otherwise (ADR 009):
 # `make cloud-up CLOUD_ARGS='-var use_spot=false'` for on-demand.
 run "default_node_fits_policypal_on_spot" {
   command = plan
 
   assert {
-    condition     = var.instance_type == "c7i-flex.large"
-    error_message = "The default node must be c7i-flex.large (k3s + PolicyPal need more than t3.small's 2 GiB)."
+    condition     = var.instance_type == "m7i-flex.large"
+    error_message = "The default node must be m7i-flex.large (with the monitoring, a 4 GiB node peaked at 76.9% of memory)."
   }
 
   assert {
