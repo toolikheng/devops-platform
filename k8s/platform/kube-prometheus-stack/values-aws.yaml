@@ -119,10 +119,11 @@ grafana:
         memory: 80Mi
       limits:
         memory: 160Mi
-    # The one running sidecar: it loads the project's dashboard ConfigMap from this namespace.
+    # The one running sidecar: it loads the dashboard that ships with PolicyPal (k8s/policypal/overlays/aws),
+    # from PolicyPal's namespace only.
     dashboards:
       enabled: true
-      searchNamespace: monitoring
+      searchNamespace: policypal
       resource: configmap
     # The Prometheus datasource is read once, by an init container, when Grafana starts. LIST reads once and
     # exits; the default, WATCH, never returns, so the pod would never start.

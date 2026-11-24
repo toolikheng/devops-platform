@@ -121,10 +121,14 @@ def test_aws_grafana_runs_only_what_it_needs(aws: list) -> None:
     env = {c["name"]: {e["name"]: e.get("value") for e in c.get("env", [])}
            for c in spec["containers"] + spec.get("initContainers", [])}
     # An init container must finish: LIST reads once and exits, WATCH never returns (seen on k3d: the pod
-    # stayed in PodInitializing). Both read ConfigMaps in this namespace only.
+    # stayed in PodInitializing). The datasource is the chart's, in this namespace; the dashboard ships with
+    # PolicyPal (k8s/policypal/overlays/aws), so the sidecar watches the namespace that ConfigMap is in.
     assert env["grafana-init-sc-datasources"].get("METHOD") == "LIST"
+    assert env["grafana-init-sc-datasources"].get("NAMESPACE") == "monitoring"
+    board = yaml.safe_load((REPO_ROOT / "k8s" / "policypal" / "base" / "namespace.yaml").read_text())
+    assert env["grafana-sc-dashboard"].get("NAMESPACE") == board["metadata"]["name"] == "policypal"
     for name in ("grafana-init-sc-datasources", "grafana-sc-dashboard"):
-        assert env[name].get("NAMESPACE") == "monitoring" and env[name].get("RESOURCE") == "configmap", name
+        assert env[name].get("RESOURCE") == "configmap", name
     [main] = [c for c in spec["containers"] if c["name"] == "grafana"]
     assert all(e["name"] != "GF_INSTALL_PLUGINS" for e in main.get("env", [])), "no plugins"
     assert all("plugins" not in cm.get("data", {}) for cm in of_kind(aws, "ConfigMap")), "no plugins"

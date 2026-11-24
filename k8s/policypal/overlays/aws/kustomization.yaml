@@ -10,6 +10,18 @@ resources:
 # The API alert (needs the monitoring's CRD: make cloud-addons before make cloud-deploy).
 - prometheusrule.yaml
 
+# The Grafana dashboard, wrapped in a ConfigMap Grafana's dashboard sidecar loads from this namespace
+# (k8s/platform/kube-prometheus-stack/values-aws.yaml). No hash suffix: the name stays the same across deploys.
+configMapGenerator:
+- name: policypal-dashboard
+  namespace: policypal
+  files:
+  - policypal-dashboard.json
+  options:
+    disableNameSuffixHash: true
+    labels:
+      grafana_dashboard: "1"
+
 # The PolicyPal commit to run (its CI publishes an image per commit to GHCR; public, amd64 only).
 # Quoted: a commit hash made only of digits would otherwise be a YAML number.
 images:

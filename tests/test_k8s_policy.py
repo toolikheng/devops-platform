@@ -8,6 +8,7 @@ Operator makes the Secrets from SSM Parameter Store (ExternalSecrets in overlays
 AWS identity, scripts/policypal-secrets.sh does.
 """
 
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -34,7 +35,8 @@ EXPECTED = WORKLOADS | {
     ("Ingress", "policypal"),
 }
 EXTERNAL_SECRETS = {("ExternalSecret", "policypal-db"), ("ExternalSecret", "policypal-admin")}
-ALERTS = {("PrometheusRule", "policypal-alerts")}
+# The monitoring's view of PolicyPal on AWS: its alert and its Grafana dashboard.
+ALERTS = {("PrometheusRule", "policypal-alerts"), ("ConfigMap", "policypal-dashboard")}
 EXPECTED_BY_OVERLAY = {"local": EXPECTED, "aws": EXPECTED | EXTERNAL_SECRETS | ALERTS}
 overlay_param = pytest.mark.parametrize("overlay", OVERLAYS)
 
@@ -103,7 +105,7 @@ def test_everything_lives_in_the_policypal_namespace(rendered: dict, overlay: st
 
 def test_local_overlay_deploys_the_same_objects_as_aws(rendered: dict) -> None:
     # Apart from the ExternalSecrets (k3d has no AWS identity, so there the Secrets come from a script) and the
-    # alert (the monitoring with its AWS values runs on the node only).
+    # alert and dashboard (the monitoring with its AWS values runs on the node only).
     def shape(docs: list[dict[str, Any]]) -> set[tuple[str, str]]:
         return {(d["kind"], d["metadata"]["name"]) for d in docs}
     assert shape(rendered["local"]) == shape(rendered["aws"]) - EXTERNAL_SECRETS - ALERTS
@@ -445,3 +447,43 @@ def test_the_api_alert_watches_the_api_deployment_and_its_absence(rendered: dict
 
 def test_alerts_exist_only_where_the_monitoring_runs(rendered: dict) -> None:
     assert not [d for d in rendered["local"] if d["kind"] == "PrometheusRule"]
+    assert not [d for d in rendered["local"] if "grafana_dashboard" in d["metadata"].get("labels", {})]
+
+
+def dashboard(docs: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any]]:
+    cm = get(docs, "ConfigMap", "policypal-dashboard")
+    [text] = cm["data"].values()
+    return cm, json.loads(text)
+
+
+def test_the_dashboard_is_a_configmap_grafana_loads(rendered: dict) -> None:
+    # Grafana's dashboard sidecar loads ConfigMaps labelled grafana_dashboard: "1" from the namespace it watches
+    # (k8s/platform/kube-prometheus-stack/values-aws.yaml; tests/test_monitoring_platform.py checks it is this one).
+    cm, board = dashboard(rendered["aws"])
+    assert cm["metadata"]["namespace"] == NAMESPACE and cm["metadata"]["labels"] == {"grafana_dashboard": "1"}
+    assert board["uid"] == "policypal" and board["title"] == "PolicyPal on AWS"
+    assert len(board["panels"]) >= 5
+
+
+def test_every_dashboard_query_reads_policypal_from_the_prometheus_datasource(rendered: dict) -> None:
+    # The datasource uid is the one the chart provisions (Grafana logged uid=prometheus on k3d and AWS). PolicyPal
+    # has no /metrics endpoint, so the panels use kube-state-metrics, the kubelet's container figures, node_exporter
+    # and the alert's own state.
+    _, board = dashboard(rendered["aws"])
+    api = get(rendered["aws"], "Deployment", "policypal-api")["metadata"]["name"]
+    for panel in board["panels"]:
+        assert panel["datasource"] == {"type": "prometheus", "uid": "prometheus"}, panel["title"]
+        assert panel["targets"], panel["title"]
+        for target in panel["targets"]:
+            assert target["datasource"] == {"type": "prometheus", "uid": "prometheus"}, panel["title"]
+            namespaces = set(re.findall(r'namespace="([^"]*)"', target["expr"]))
+            deployments = set(re.findall(r'deployment="([^"]*)"', target["expr"]))
+            assert namespaces <= {NAMESPACE} and deployments <= {api}, (panel["title"], target["expr"])
+
+
+def test_the_dashboard_shows_the_node_memory_line_of_adr_024(rendered: dict) -> None:
+    # The node size was chosen to keep its memory peak under ~75% (docs/decisions/024-...): the panel marks it.
+    _, board = dashboard(rendered["aws"])
+    [panel] = [p for p in board["panels"] if "MemAvailable" in p["targets"][0]["expr"]]
+    steps = panel["fieldConfig"]["defaults"]["thresholds"]["steps"]
+    assert [s["value"] for s in steps] == [None, 0.75] and panel["fieldConfig"]["defaults"]["unit"] == "percentunit"
