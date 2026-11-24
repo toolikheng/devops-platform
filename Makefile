@@ -1,7 +1,7 @@
 .PHONY: help check install \
         infra-up infra-down provision \
         venv test lint run-app image build \
-        cluster-up cluster-down deploy \
+        cluster-up cluster-down secrets-init deploy \
         monitoring-up monitoring-down \
         backup restore-test \
         test-infra cost-check tf-check ansible-check owner-ip cloud-up cloud-down \
@@ -90,6 +90,7 @@ help:
 	@$(ECHO) "$(BLUE)Phase 4 - Kubernetes:$(NC)"
 	@$(ECHO) "  $(GREEN)make cluster-up$(NC)    Create k3d cluster"
 	@$(ECHO) "  $(GREEN)make cluster-down$(NC)  Destroy k3d cluster"
+	@$(ECHO) "  $(GREEN)make secrets-init$(NC)  Create the backup's restic password in the cluster, once (part of deploy)"
 	@$(ECHO) "  $(GREEN)make deploy$(NC)        Deploy app to cluster"
 	@$(ECHO) "  $(GREEN)make policypal-local$(NC) Deploy PolicyPal to k3d and smoke-test it (http://policypal.localhost:8080)"
 	@$(ECHO) "  $(GREEN)make policypal-secrets-local$(NC) Create PolicyPal's random Secrets in k3d (once; never printed)"
