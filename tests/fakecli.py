@@ -69,7 +69,10 @@ with open(os.environ["FAKE_LOG"], "a") as log:
                           "ssh_key": bool(os.environ.get("TF_VAR_ssh_public_key")),
                           "restic_repository": os.environ.get("RESTIC_REPOSITORY", ""),
                           "restic_password_command": os.environ.get("RESTIC_PASSWORD_COMMAND", ""),
-                          "restic_password_set": "RESTIC_PASSWORD" in os.environ or "RESTIC_PASSWORD_FILE" in os.environ}) + "\n")
+                          "restic_password_set": "RESTIC_PASSWORD" in os.environ or "RESTIC_PASSWORD_FILE" in os.environ,
+                          # curl -F name=@path: the bytes of the file it uploads
+                          "upload": next((Path(a.split("=@", 1)[1].split(";")[0]).read_text() for a in args
+                                          if "=@" in a), "")}) + "\n")
 
 def load(name, default):
     f = d / name
@@ -133,6 +136,13 @@ if tool == "curl":
     if not rules:
         sys.exit(7)  # could not connect
     rule = max(rules, key=lambda r: bool(r["when"]))
+    if rule.get("bodies"):  # successive answers, the last one repeating
+        all_rules = load("http.json", [])
+        stored = next(r for r in all_rules if (r["url"], r["when"]) == (rule["url"], rule["when"]))
+        rule["body"] = stored["bodies"][0]
+        if len(stored["bodies"]) > 1:
+            stored["bodies"] = stored["bodies"][1:]
+            (d / "http.json").write_text(json.dumps(all_rules))
     if "-w" in args and args[args.index("-w") + 1] == "%{http_code}":
         print(rule.get("status") or 200, end="")
         sys.exit(0)
@@ -261,6 +271,13 @@ class Fakes:
             rules = [r for r in rules if (r["url"], r["when"]) != (url, when)]
             return rules + ([{"url": url, "when": when, "body": body, "rc": rc, "status": status}]
                             if body is not None else [])
+        self._update("http.json", change)
+
+    def http_sequence(self, url: str, bodies: list[str], when: str | None = None) -> None:
+        """curl of `url` answers each body in turn (the last one repeating), e.g. a list before and after a restore."""
+        def change(rules: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            rules = [r for r in rules if (r["url"], r["when"]) != (url, when)]
+            return rules + [{"url": url, "when": when, "body": bodies[0], "bodies": bodies, "rc": None, "status": None}]
         self._update("http.json", change)
 
     def tf_output(self, name: str, value: str | None) -> None:

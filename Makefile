@@ -8,6 +8,7 @@
         cloud-config cloud-tunnel cloud-rebuild \
         k8s-check policypal-secrets-local policypal-local cloud-deploy cloud-smoke \
         cloud-addons check-state-secrets skip-nightly-destroy \
+        cloud-restore-test-before cloud-restore-test-after \
         destroy all clean
 
 SHELL := /bin/bash
@@ -119,6 +120,8 @@ help:
 	@$(ECHO) "  $(GREEN)make cloud-deploy$(NC)  Deploy PolicyPal to the node and smoke-test it (needs make cloud-tunnel running)"
 	@$(ECHO) "  $(GREEN)make cloud-smoke$(NC)   Smoke-test PolicyPal on the node only (needs make cloud-tunnel running)"
 	@$(ECHO) "  $(GREEN)make check-state-secrets$(NC) Read-only: show that no secret value is in the persistent Terraform state"
+	@$(ECHO) "  $(GREEN)make cloud-restore-test-before$(NC) Restore test, step 1: sentinels, a backup, the run recorded (needs make cloud-tunnel)"
+	@$(ECHO) "  $(GREEN)make cloud-restore-test-after$(NC)  Restore test, step 2 on a rebuilt node: restore the run, check the sentinels came back"
 	@$(ECHO) "  $(GREEN)make skip-nightly-destroy$(NC) Hold off the 02:17 MYT nightly destroy for 8 hours (GitHub setting; UNTIL=... for longer, 7 days max)"
 	@$(ECHO) ""
 	@$(ECHO) "$(BLUE)Utilities:$(NC)"
@@ -353,6 +356,14 @@ cloud-deploy:
 cloud-smoke:
 	@ip="$$(AWS_PROFILE="$(AWS_PROFILE)" bash "$(REPO_ROOT)/scripts/node-ip.sh")"; \
 		KUBECONFIG="$(AWS_KUBECONFIG)" bash "$(REPO_ROOT)/scripts/smoke-test.sh" "http://$$ip"
+
+# The restore test across a rebuild (ADR 025): before, on the running node; then make cloud-down, cloud-rebuild,
+# cloud-addons and cloud-deploy; then after, on the new node. Needs make cloud-tunnel. SSM Run Command: no charge.
+cloud-restore-test-before:
+	@KUBECONFIG="$(AWS_KUBECONFIG)" AWS_PROFILE="$(AWS_PROFILE)" bash "$(REPO_ROOT)/scripts/restore-test.sh" before
+
+cloud-restore-test-after:
+	@KUBECONFIG="$(AWS_KUBECONFIG)" AWS_PROFILE="$(AWS_PROFILE)" bash "$(REPO_ROOT)/scripts/restore-test.sh" after
 
 # A GitHub repository variable, not an AWS change: nightly-destroy.yml skips while UNTIL is in the future.
 skip-nightly-destroy:
