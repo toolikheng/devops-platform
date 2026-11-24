@@ -1,0 +1,72 @@
+---
+# Hourly backups of PolicyPal to S3 with restic, on the node itself: only host processes can get the node role's
+# credentials (IMDSv2 hop limit 1), and the policypal namespace allows no host-network pod (ADR 017).
+
+# bzip2 unpacks the restic release; python3-boto3 (Ubuntu's own package) lets ssm-parameter read the password.
+- name: Install bzip2 and boto3
+  ansible.builtin.apt:
+    name:
+      - bzip2
+      - python3-boto3
+    state: present
+
+- name: Create the restic directory
+  ansible.builtin.file:
+    path: /opt/restic
+    state: directory
+    mode: "0755"
+
+# Pinned to the release and checked against a recorded sha256, so a changed file never runs.
+- name: Download restic {{ restic_backup_version }}
+  ansible.builtin.get_url:
+    url: "https://github.com/restic/restic/releases/download/v{{ restic_backup_version }}/restic_{{ restic_backup_version }}_linux_amd64.bz2"
+    dest: "/opt/restic/restic_{{ restic_backup_version }}_linux_amd64.bz2"
+    checksum: "sha256:{{ restic_backup_sha256 }}"
+    mode: "0644"
+
+- name: Unpack restic {{ restic_backup_version }}
+  ansible.builtin.command:
+    cmd: bunzip2 --keep /opt/restic/restic_{{ restic_backup_version }}_linux_amd64.bz2
+    creates: /opt/restic/restic_{{ restic_backup_version }}_linux_amd64
+
+- name: Set the mode of restic {{ restic_backup_version }}
+  ansible.builtin.file:
+    path: /opt/restic/restic_{{ restic_backup_version }}_linux_amd64
+    mode: "0755"
+
+- name: Point /usr/local/bin/restic at that version
+  ansible.builtin.file:
+    src: /opt/restic/restic_{{ restic_backup_version }}_linux_amd64
+    dest: /usr/local/bin/restic
+    state: link
+
+- name: Install the backup script
+  ansible.builtin.copy:
+    src: policypal-backup.sh
+    dest: /usr/local/sbin/policypal-backup
+    mode: "0750"
+
+- name: Install the SSM parameter reader
+  ansible.builtin.copy:
+    src: ssm-parameter
+    dest: /usr/local/sbin/ssm-parameter
+    mode: "0750"
+
+- name: Install the backup service and its timer
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    mode: "0644"
+  loop:
+    - policypal-backup.service
+    - policypal-backup.timer
+  notify: Reload systemd
+
+- name: Reload systemd now if a unit changed
+  ansible.builtin.meta: flush_handlers
+
+- name: Start the hourly backup timer
+  ansible.builtin.systemd_service:
+    name: policypal-backup.timer
+    enabled: true
+    state: started

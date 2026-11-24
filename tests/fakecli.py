@@ -16,7 +16,8 @@ The fake knows just enough of each real tool for the scripts here:
   calls by `service.operation` (identity and region list by default, empty otherwise), or a sequence of answers
   for repeated calls (polling), the last one repeating.
 - docker: a kustomize render prints MANIFEST, a Helm render addon_manifest(release). helm, k3d, ansible-playbook,
-  gh: log only.
+  gh, restic: log only (restic's environment is logged too: the password command, and whether a password is set).
+- kubectl also answers `get pvc` and `get pv` with what the test set (pvc_volume, pv_path).
 Any call can be made to fail (`fail`), and a real command can be logged on its way through (`spy`).
 """
 
@@ -31,7 +32,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO_ROOT / "scripts"
-TOOLS = ("kubectl", "curl", "docker", "k3d", "terraform", "aws", "helm", "ansible-playbook", "gh")
+TOOLS = ("kubectl", "curl", "docker", "k3d", "terraform", "aws", "helm", "ansible-playbook", "gh", "restic")
 
 PUBLIC_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleExampleExampleExampleExampleExample test@example"
 INSTANCE_ID = "i-0123456789abcdef0"
@@ -63,7 +64,10 @@ stdin = sys.stdin.read() if "-" in args or any(a.endswith("/dev/stdin") for a in
 with open(os.environ["FAKE_LOG"], "a") as log:
     log.write(json.dumps({"tool": tool, "args": args, "ns": ns, "kubeconfig": os.environ.get("KUBECONFIG", ""),
                           "profile": os.environ.get("AWS_PROFILE", ""), "cwd": os.getcwd(), "stdin": stdin,
-                          "ssh_key": bool(os.environ.get("TF_VAR_ssh_public_key"))}) + "\n")
+                          "ssh_key": bool(os.environ.get("TF_VAR_ssh_public_key")),
+                          "restic_repository": os.environ.get("RESTIC_REPOSITORY", ""),
+                          "restic_password_command": os.environ.get("RESTIC_PASSWORD_COMMAND", ""),
+                          "restic_password_set": "RESTIC_PASSWORD" in os.environ or "RESTIC_PASSWORD_FILE" in os.environ}) + "\n")
 
 def load(name, default):
     f = d / name
@@ -74,10 +78,10 @@ if spy.exists():
     real = spy.read_text()
     os.execv(real, [real] + args)
 
-for failing in load("fail.json", []):
-    if failing[0] == tool and args[:len(failing) - 1] == failing[1:]:
+for failing_tool, rc, *prefix in load("fail.json", []):
+    if failing_tool == tool and args[:len(prefix)] == prefix:
         print(f"fake {tool}: {' '.join(args)} failed", file=sys.stderr)
-        sys.exit(1)
+        sys.exit(rc)
 
 def answer(name, default_rc=0):
     f = d / name
@@ -90,6 +94,10 @@ if tool == "kubectl":
     a = args
     if a[:2] == ["get", "namespace"]:
         sys.exit(0 if (d / "namespace-exists").exists() else 1)
+    if a[:2] == ["get", "pvc"]:
+        answer("pvc-volume")
+    if a[:2] == ["get", "pv"]:
+        answer("pv-path")
     if a[:2] == ["get", "secret"]:
         sys.exit(0 if all((d / f"secret-{n}").exists() for n in a[2:] if not n.startswith("-")) else 1)
     if a[:3] == ["create", "secret", "generic"]:
@@ -211,9 +219,17 @@ class Fakes:
         path.write_text(json.dumps(change(data)))
 
     # --- what the scripts find ------------------------------------------------------------------------
-    def fail(self, tool: str, *args: str) -> None:
-        """Every call of `tool` whose args start with `args` fails (exit 1)."""
-        self._update("fail.json", lambda rules: rules + [[tool, *args]])
+    def fail(self, tool: str, *args: str, rc: int = 1) -> None:
+        """Every call of `tool` whose args start with `args` fails (exit `rc`, 1 by default)."""
+        self._update("fail.json", lambda rules: rules + [[tool, rc, *args]])
+
+    def pvc_volume(self, name: str) -> None:
+        """What `kubectl get pvc ... -o jsonpath={.spec.volumeName}` prints: the bound PersistentVolume."""
+        self._write("pvc-volume", name)
+
+    def pv_path(self, path: str) -> None:
+        """What `kubectl get pv ... -o jsonpath=...` prints: the volume's directory on the node."""
+        self._write("pv-path", path)
 
     def spy(self, command: str) -> None:
         """Log every call of the real `command`, then run it."""

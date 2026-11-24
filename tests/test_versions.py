@@ -30,7 +30,7 @@ def test_ci_installs_the_pinned_trivy_version() -> None:
     assert steps and all(s["with"]["version"] == f"v{versions()['TRIVY_VERSION']}" for s in steps)
 
 
-@pytest.mark.parametrize("name", ["KUBERNETES_VERSION", "TRIVY_VERSION"])
+@pytest.mark.parametrize("name", ["KUBERNETES_VERSION", "TRIVY_VERSION", "RESTIC_VERSION"])
 def test_only_the_pin_file_writes_a_pinned_version(name: str) -> None:
     value = versions()[name]
     copies = [str(p.relative_to(REPO_ROOT)) for p in SCRIPTS if value in p.read_text()]

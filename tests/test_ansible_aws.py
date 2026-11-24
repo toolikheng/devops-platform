@@ -84,13 +84,13 @@ def test_homelab_keeps_its_root_login_setting() -> None:
     assert defaults["common_permit_root_login"] == "without-password"
 
 
-def test_aws_playbook_configures_the_aws_group_with_the_three_roles() -> None:
+def test_aws_playbook_configures_the_aws_group_with_its_roles() -> None:
     plays = load(ANSIBLE / "playbooks" / "aws-node.yml")
     assert len(plays) == 1
     play = plays[0]
     assert play["hosts"] == "aws"
     roles = [r["role"] if isinstance(r, dict) else r for r in play["roles"]]
-    assert roles == ["common", "node_exporter", "k3s"]
+    assert roles == ["common", "node_exporter", "k3s", "restic_backup"]
 
 
 # --- k3s ---------------------------------------------------------------------------------------------------

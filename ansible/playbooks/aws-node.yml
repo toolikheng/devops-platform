@@ -1,5 +1,5 @@
 ---
-# Configures the AWS node (make cloud-config): the homelab's common and node_exporter roles, then k3s,
+# Configures the AWS node (make cloud-config): the homelab's common and node_exporter roles, then k3s and the backup,
 # then copies the k3s admin kubeconfig to this laptop. Ansible connects through Session Manager
 # (inventory/group_vars/aws.yml).
 - name: Configure the AWS node
@@ -36,6 +36,10 @@
     - role: k3s
       tags:
         - k3s
+    # Hourly restic backups of PolicyPal to S3 (needs k3s: it reaches Postgres and the uploads through it).
+    - role: restic_backup
+      tags:
+        - backup
 
   # kubectl on this laptop talks to the node through make cloud-tunnel, never through an open port.
   # slurp + copy rather than fetch: the laptop copy is edited (tunnel port), so fetch would see a difference
