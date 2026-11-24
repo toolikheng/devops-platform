@@ -97,7 +97,7 @@ Check http://localhost:9090/targets (job `devops-app` and job `docker-nodes`) an
 | HighLatency | p95 latency is above 0.5 s for 3 minutes |
 | NodeExporterDown | a node's node_exporter can't be scraped for 1 minute |
 
-The rules are unit-tested with `bash ci/rules-test.sh` (Docker only); CI runs the same script.
+The rules are unit-tested with `bash ci/rules-test.sh` (Docker only); CI runs the same script. It uses the Prometheus image the chart runs; after a chart bump, `tests/test_monitoring_platform.py` fails until `PROMETHEUS_IMAGE` in that script follows.
 
 ## Infrastructure nodes
 
@@ -386,7 +386,7 @@ The values are never in Git, the Terraform plan or its state. To check the state
 make check-state-secrets   # every count must be 0
 ```
 
-ESO is installed once per new node, before the first deploy: `make cloud-addons` (needs `make cloud-tunnel`). It runs the pinned chart from `k8s/platform/external-secrets/chart.env` with `values.yaml`, then applies the `ClusterSecretStore`. Running it again upgrades in place. Its controller runs on the host network to reach the node's credentials ([ADR 017](decisions/017-imds-hop-limit-and-host-network.md)).
+ESO is installed once per new node, before the first deploy: `make cloud-addons` (needs `make cloud-tunnel`). It runs `scripts/addon.sh install external-secrets aws`: the pinned chart from `k8s/platform/external-secrets/chart.env` with `values-aws.yaml`, then the `ClusterSecretStore`. Running it again upgrades in place. Its controller runs on the host network to reach the node's credentials ([ADR 017](decisions/017-imds-hop-limit-and-host-network.md)).
 
 ```bash
 kubectl get clustersecretstore aws-parameter-store                 # READY True
@@ -425,7 +425,7 @@ Postgres keeps the password it was initialised with, so changing only SSM would 
 
 ### `make cloud-addons` fails with "context deadline exceeded" and a Pending controller pod
 
-`kubectl -n external-secrets describe pod` says "didn't have free ports for the requested pod ports": a rolling update tried to start the new controller next to the old one, and on one node both need the same host ports. `values.yaml` sets `strategy: Recreate` to prevent this. If it happens anyway, `kubectl -n external-secrets delete pod <old controller pod>` lets the new one start; the Secrets stay.
+`kubectl -n external-secrets describe pod` says "didn't have free ports for the requested pod ports": a rolling update tried to start the new controller next to the old one, and on one node both need the same host ports. `values-aws.yaml` sets `strategy: Recreate` to prevent this. If it happens anyway, `kubectl -n external-secrets delete pod <old controller pod>` lets the new one start; the Secrets stay.
 
 ## CI/CD on AWS (GitHub Actions with OIDC)
 

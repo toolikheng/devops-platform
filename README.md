@@ -87,8 +87,8 @@ make destroy        # delete the cluster and the nodes
 - kustomize overlays: `dev` (deployed locally) and `prod` (3 replicas, pinned GHCR image tag; a template, not deployed anywhere).
 
 ### Monitoring (kube-prometheus-stack)
-- Helm chart pinned to 92.16.0, scraping the app (ServiceMonitor) and the three nodes' node_exporter.
-- Alert rules: AppDown (scrape failing or no pods at all), HighErrorRate (5xx share of requests above 5%), HighLatency (p95 above 0.5 s), NodeExporterDown. Each has promtool unit tests except NodeExporterDown.
+- Helm chart pinned to 92.16.0 (`k8s/platform/kube-prometheus-stack/chart.env`), scraping the app (ServiceMonitor) and the three nodes' node_exporter.
+- Alert rules: AppDown (scrape failing or no pods at all), HighErrorRate (5xx share of requests above 5%), HighLatency (p95 above 0.5 s), NodeExporterDown. Each has promtool unit tests except NodeExporterDown, run with the Prometheus image the chart runs (a test keeps the two the same).
 - Grafana dashboard loaded automatically: request rate by route and status, p95/p99 latency, and success / client error / server error shares.
 
 ### Backup and recovery (restic)
@@ -271,11 +271,11 @@ kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:909
 - `ansible/` — inventories (`docker-nodes.yml`; `aws.yml` is generated per session), playbooks (`site.yml` for the homelab, `aws-node.yml` for EC2), roles `common`, `node_exporter` and `k3s`, and `requirements.yml` for the one collection used
 - `infra/nodes/` — node image, startup script, Docker Compose file
 - `app/` — FastAPI service, tests, Dockerfile
-- `k8s/` — the v1 app's kustomize base and `dev` / `prod` overlays; `k8s/policypal/` — PolicyPal's base (namespace, Postgres, API, UI, ingress) and `local` / `aws` overlays (`aws` adds the ExternalSecrets); `k8s/platform/external-secrets/` — External Secrets Operator's pinned chart (`chart.env`), values and ClusterSecretStore
-- `monitoring/` — Helm values, ServiceMonitor, alert rules and their tests, dashboard
+- `k8s/` — the v1 app's kustomize base and `dev` / `prod` overlays; `k8s/policypal/` — PolicyPal's base (namespace, Postgres, API, UI, ingress) and `local` / `aws` overlays (`aws` adds the ExternalSecrets); `k8s/platform/` — the platform add-ons, each a pinned Helm chart (`chart.env`) with one values file per environment it runs in: External Secrets Operator (AWS, plus its ClusterSecretStore) and kube-prometheus-stack (k3d)
+- `monitoring/` — what is monitored: ServiceMonitor, alert rules and their tests, dashboard
 - `backup/` — backup CronJob, restore Job, restore test
 - `ci/` — scripts shared by the Makefile and GitHub Actions (lint, test, rule tests, build, scan, ShellCheck, gitleaks, Terraform, Kubernetes and Ansible checks), and those of the AWS workflows: `ephemeral-stack.sh` (every Terraform run they make), `plan-summary.sh`, `nightly-skip.sh`, `deploy-render.sh`, `deploy-over-ssm.sh`, `kubeconform.sh`
-- `scripts/` — toolchain check (`bootstrap.sh`), the read-only AWS cost check (`cost-check.sh`), `owner-ip.sh`, `ephemeral-tf.sh` (the Terraform run behind `make cloud-up` / `cloud-down`), `node-id.sh` and `aws-inventory.sh` (behind `make cloud-config`), `cloud-tunnel.sh`, and for PolicyPal `render-k8s.sh`, `policypal-secrets.sh` (k3d only), `deploy-policypal.sh`, `smoke-test.sh` and `node-ip.sh`; for secrets `render-eso.sh`, `install-eso.sh` and `check-state-secrets.sh`; for CI on AWS `node-deploy.sh` (runs on the node) and `skip-nightly-destroy.sh`
+- `scripts/` — toolchain check (`bootstrap.sh`), the read-only AWS cost check (`cost-check.sh`), `owner-ip.sh`, `ephemeral-tf.sh` (the Terraform run behind `make cloud-up` / `cloud-down`), `node-id.sh` and `aws-inventory.sh` (behind `make cloud-config`), `cloud-tunnel.sh`, and for PolicyPal `render-k8s.sh`, `policypal-secrets.sh` (k3d only), `deploy-policypal.sh`, `smoke-test.sh` and `node-ip.sh`; `addon.sh` (installs or renders a platform add-on: `make cloud-addons`, `make monitoring-up`, the checks), for secrets `check-state-secrets.sh`; for CI on AWS `node-deploy.sh` (runs on the node) and `skip-nightly-destroy.sh`
 - `tests/` — repo-level tests: the cost check (against its own fake `aws` CLI), the AWS session Make targets and the PolicyPal, ESO and state-check scripts and the AWS workflows' scripts (against the fake CLIs in `tests/fakecli.py`: `kubectl`, `curl`, `docker`, `k3d`, `helm`, `terraform`, `aws`, `ansible-playbook`, `gh`), the workflows' roles checked against the Terraform trust policies, the rules for the AWS node's Ansible code, the rules for the rendered PolicyPal manifests and the rendered ESO chart, Terraform's secret handling, the gitleaks rule and hook, the workflows, the scripts' copies of shared Terraform names, the shared tool versions (`ci/versions.env`), and the `.gitignore` rules
 - `.gitleaks.toml`, `.gitleaksignore`, `.pre-commit-config.yaml` — secret scanning: the extra rule, the two known findings, the pre-commit hook
 - `.github/workflows/` — CI on every push, the secret scan, manual CD, and for AWS `terraform.yml`, `deploy.yml` and `nightly-destroy.yml`
