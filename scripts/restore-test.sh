@@ -57,11 +57,13 @@ connect() {
   [ -z "$forward" ] || kill "$forward" 2>/dev/null || true
   kubectl -n "$NAMESPACE" port-forward svc/policypal-api :8000 >"$work/forward.log" 2>&1 &
   forward=$!
-  local port=""
+  local port="" exited
   for _ in $(seq 20); do
+    # Checked before reading the log, so a kubectl that has exited has also finished writing it.
+    exited=""
+    kill -0 "$forward" 2>/dev/null || exited=yes
     port="$(sed -n 's/^Forwarding from 127\.0\.0\.1:\([0-9]*\) .*/\1/p' "$work/forward.log")"
-    [ -n "$port" ] && break
-    kill -0 "$forward" 2>/dev/null || break
+    if [ -n "$port" ] || [ -n "$exited" ]; then break; fi
     sleep 0.5
   done
   [ -n "$port" ] || fail "kubectl port-forward to the API did not start: $(head -c 300 "$work/forward.log")"
