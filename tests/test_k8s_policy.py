@@ -34,7 +34,8 @@ EXPECTED = WORKLOADS | {
     ("Ingress", "policypal"),
 }
 EXTERNAL_SECRETS = {("ExternalSecret", "policypal-db"), ("ExternalSecret", "policypal-admin")}
-EXPECTED_BY_OVERLAY = {"local": EXPECTED, "aws": EXPECTED | EXTERNAL_SECRETS}
+ALERTS = {("PrometheusRule", "policypal-alerts")}
+EXPECTED_BY_OVERLAY = {"local": EXPECTED, "aws": EXPECTED | EXTERNAL_SECRETS | ALERTS}
 overlay_param = pytest.mark.parametrize("overlay", OVERLAYS)
 
 
@@ -101,10 +102,11 @@ def test_everything_lives_in_the_policypal_namespace(rendered: dict, overlay: st
 
 
 def test_local_overlay_deploys_the_same_objects_as_aws(rendered: dict) -> None:
-    # Apart from the ExternalSecrets: k3d has no AWS identity, so there the Secrets come from a script.
+    # Apart from the ExternalSecrets (k3d has no AWS identity, so there the Secrets come from a script) and the
+    # alert (the monitoring with its AWS values runs on the node only).
     def shape(docs: list[dict[str, Any]]) -> set[tuple[str, str]]:
         return {(d["kind"], d["metadata"]["name"]) for d in docs}
-    assert shape(rendered["local"]) == shape(rendered["aws"]) - EXTERNAL_SECRETS
+    assert shape(rendered["local"]) == shape(rendered["aws"]) - EXTERNAL_SECRETS - ALERTS
 
 
 @overlay_param
@@ -422,3 +424,24 @@ def test_containers_run_unprivileged(rendered: dict, overlay: str) -> None:
             sc = c.get("securityContext", {})
             assert sc.get("allowPrivilegeEscalation") is False, f"{name}/{c['name']}"
             assert sc.get("capabilities", {}).get("drop") == ["ALL"], f"{name}/{c['name']}"
+
+
+# --- the alert on AWS (the monitoring runs there only) ---------------------------------------------------
+
+def test_the_api_alert_watches_the_api_deployment_and_its_absence(rendered: dict) -> None:
+    # kube-state-metrics counts the available replicas per Deployment. The alert fires when that number is 0
+    # for 2 minutes, or when there is no number at all (Deployment gone, or kube-state-metrics can't see it).
+    # A normal restart (Recreate: the old pod stops first) is shorter than 2 minutes.
+    docs = rendered["aws"]
+    api = get(docs, "Deployment", "policypal-api")
+    [rule] = [r for g in get(docs, "PrometheusRule", "policypal-alerts")["spec"]["groups"] for r in g["rules"]]
+    assert rule["alert"] == "PolicyPalApiUnavailable" and rule["for"] == "2m"
+    selector = (f'kube_deployment_status_replicas_available{{namespace="{api["metadata"]["namespace"]}", '
+                f'deployment="{api["metadata"]["name"]}"}}')
+    expr = " ".join(rule["expr"].split())
+    assert expr == f"{selector} == 0 or absent({selector})", expr
+    assert rule["labels"] == {"severity": "critical"}
+
+
+def test_alerts_exist_only_where_the_monitoring_runs(rendered: dict) -> None:
+    assert not [d for d in rendered["local"] if d["kind"] == "PrometheusRule"]

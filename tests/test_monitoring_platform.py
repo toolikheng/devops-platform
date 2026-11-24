@@ -167,3 +167,17 @@ def test_aws_every_container_has_requests_and_a_memory_limit(aws: list) -> None:
     [prometheus] = of_kind(aws, "Prometheus")
     res = prometheus["spec"].get("resources", {})
     assert {"cpu", "memory"} <= set(res.get("requests", {})) and "memory" in res.get("limits", {}), "Prometheus"
+
+
+
+# --- every alert rule is unit-tested ---------------------------------------------------------------------
+
+def test_ci_rules_test_covers_every_prometheus_rule_in_the_repo() -> None:
+    # ci/rules-test.sh extracts each PrometheusRule's groups and runs its promtool tests; a rule file it doesn't
+    # name would be deployed untested.
+    script = RULES_TEST.read_text()
+    found = [p for p in REPO_ROOT.rglob("*.yaml") if ".git" not in p.parts and "planning" not in p.parts
+             and re.search(r"^kind: PrometheusRule$", p.read_text(errors="ignore"), re.M)]
+    assert len(found) >= 2, "the homelab rules and PolicyPal's"
+    for path in found:
+        assert str(path.relative_to(REPO_ROOT)) in script, path

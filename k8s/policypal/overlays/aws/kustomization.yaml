@@ -7,6 +7,8 @@ resources:
 - ../../base
 - externalsecret-db.yaml
 - externalsecret-admin.yaml
+# The API alert (needs the monitoring's CRD: make cloud-addons before make cloud-deploy).
+- prometheusrule.yaml
 
 # The PolicyPal commit to run (its CI publishes an image per commit to GHCR; public, amd64 only).
 # Quoted: a commit hash made only of digits would otherwise be a YAML number.
