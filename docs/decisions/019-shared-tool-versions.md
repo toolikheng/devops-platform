@@ -26,3 +26,13 @@ A bump meant finding every copy, and a missed copy passed silently. The ESO char
 - `ci/scan.sh` and `ci/terraform-checks.sh` now run in the tests too, with fake `docker` and `terraform`, to show they pass the pinned Trivy image.
 - The scripts need ShellCheck's `-x` to follow the `source` (already on since C5).
 - The copy rule matches the version string anywhere in a script, comments included, so a comment must name the file, not the number.
+
+## Python tools (2026-11-24)
+
+The same question came up for Python. The Makefile has two near-identical venv recipes (`app/.venv` from `app/pyproject.toml`, `tests/.venv` from `tests/requirements.txt`), and CI installs the same tools its own way. A review before Phase C7 proposed that each check script build its own venv from one pinned requirements file, so that `make` and CI run the same command.
+
+Kept as it is:
+
+- The two recipes are four lines each and changed twice since Phase C0. A Make macro that merges them would be harder to read than the copy, and the larger change isn't worth it at that rate.
+- One exception: CI pins `ruff` and `mypy` in the lint job (checked by `tests/test_workflows.py`). Unpinned, a release with new rules could fail CI overnight with no change in the repo. Each is written once, in the workflow, so they don't go in `ci/versions.env`.
+- The app's `[dev]` extra keeps its `>=` ranges, so a local venv can be newer or older than CI. Revisit if that difference ever hides a failure.
