@@ -315,3 +315,12 @@ About USD 0.002 before tax (11 minutes of t3.micro Spot).
 Both scheduled runs so far were hours late: 5 h 30 min with the cron on the hour, 9 h 40 min off the hour. Moving off the hour didn't help in this sample. The nightly destroy is a safety net for a forgotten session; `make cloud-down` at the end of every session is the cleanup. The budget alerts and `make cost-check` stay as the backup for both.
 
 Record each run here, including failures and what was changed.
+
+## Observability, backup and demo (Phase C7)
+
+### Local first (k3d and offline, free)
+
+- **One add-on script for every chart ([ADR 022](decisions/022-one-addon-script-for-every-chart.md)), on k3d (2026-11-24, 3 nodes, k3s v1.35.5):** `make monitoring-up` from `master` installed kube-prometheus-stack 92.16.0 the old way (revision 1; on a fresh cluster it stops at the ServiceMonitor until `make deploy` has created the `devops` namespace, the order `make all` uses). `make deploy` from the branch created `backup-credentials` from stdin (one key, 48 characters, not printed). `make monitoring-up` from the branch then upgraded the release in place: revision 3, same chart, `--wait` returned in 17 s, the existing `grafana-admin` Secret kept (same uid), the ServiceMonitor unchanged (generation 1; kubectl said `configured`, the cosmetic message also seen for Postgres). Prometheus ran `quay.io/prometheus/prometheus:v3.15.1-distroless`, the image `ci/rules-test.sh` now uses, had loaded the `devops-app` group (AppDown, HighErrorRate, HighLatency, NodeExporterDown) and scraped the app (`up`).
+- **ESO through the same script on k3d:** `scripts/addon.sh install external-secrets aws` in 49 s, controller, webhook and cert-controller Running, the `ClusterSecretStore` created and `Ready=False` (`InvalidProviderConfig`): k3d has no AWS identity. `Ready=True` is checked on the AWS node.
+- **Memory of the homelab monitoring (v1 values, no limits), about 4 minutes after the install:** Grafana 762 MiB, Prometheus 376 MiB, Alertmanager 54 MiB, operator 48 MiB, kube-state-metrics 46 MiB, node-exporter 12–13 MiB on each of 3 nodes: 1,324 MiB in all. This is above the 0.6–0.9 GB the plan estimated for the trimmed AWS stack, so the AWS values are measured on k3d before the instance size is chosen.
+- kube-prometheus-stack rendered and checked with kubeconform for the first time: 127 objects, all valid.
