@@ -90,6 +90,7 @@ make destroy        # delete the cluster and the nodes
 - Helm chart pinned to 92.16.0 (`k8s/platform/kube-prometheus-stack/chart.env`), scraping the app (ServiceMonitor) and the three nodes' node_exporter.
 - Alert rules: AppDown (scrape failing or no pods at all), HighErrorRate (5xx share of requests above 5%), HighLatency (p95 above 0.5 s), NodeExporterDown. Each has promtool unit tests except NodeExporterDown, run with the Prometheus image the chart runs (a test keeps the two the same).
 - Grafana dashboard loaded automatically: request rate by route and status, p95/p99 latency, and success / client error / server error shares.
+- On AWS the same chart runs with its own values (one day in memory, no Alertmanager, node_exporter scraped from the node itself, every container sized), installed by `make cloud-addons` through `scripts/addon.sh` ([ADR 022](docs/decisions/022-one-addon-script-for-every-chart.md)). PolicyPal ships one alert, PolicyPalApiUnavailable (no available API replica, or no count for it, for 2 minutes; promtool-tested), and a Grafana dashboard. On k3d with the AWS values the alert fired 3 minutes after the API was scaled to 0.
 
 ### Backup and recovery (restic)
 - Daily CronJob. An init container takes a SQLite online backup (safe while the app is writing) and checks it; restic 0.19.1 then backs up that copy, runs `restic check`, and applies 7 daily / 4 weekly / 12 monthly retention.

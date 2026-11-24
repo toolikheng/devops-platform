@@ -99,6 +99,25 @@ Check http://localhost:9090/targets (job `devops-app` and job `docker-nodes`) an
 
 The rules are unit-tested with `bash ci/rules-test.sh` (Docker only); CI runs the same script. It uses the Prometheus image the chart runs; after a chart bump, `tests/test_monitoring_platform.py` fails until `PROMETHEUS_IMAGE` in that script follows.
 
+### Monitoring on AWS
+
+`make cloud-addons` installs the monitoring after External Secrets Operator (`k8s/platform/kube-prometheus-stack/values-aws.yaml`: one day of metrics in memory, no Alertmanager, Prometheus scrapes the node's own node_exporter on 9100). PolicyPal's alert and dashboard ship with its aws overlay, so `make cloud-addons` must run before `make cloud-deploy` (the PrometheusRule needs the chart's CRD). With `make cloud-tunnel` running in another terminal:
+
+```bash
+export KUBECONFIG=~/.kube/devops-aws.yaml
+kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80      # http://localhost:3000/d/policypal
+kubectl -n monitoring get secret kube-prometheus-stack-grafana -o jsonpath='{.data.admin-password}' | base64 -d; echo   # user: admin
+kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:9090 # http://localhost:9090/alerts
+```
+
+The Grafana password is random, made by the chart in the cluster on its first install; a new node has a new one. The dashboard "PolicyPal on AWS" shows the API's available replicas, the alert, container restarts, node memory with the 75% line ([ADR 024](decisions/024-m7i-flex-node-for-monitoring.md)), and memory and CPU per PolicyPal container. Grafana's dashboard sidecar reads ConfigMaps labelled `grafana_dashboard: "1"` in the `policypal` namespace only.
+
+| Alert | Fires when |
+|-------|------------|
+| PolicyPalApiUnavailable | `policypal-api` has had no available replica for 2 minutes, or kube-state-metrics has no count for it |
+
+To see it fire: `kubectl -n policypal scale deployment/policypal-api --replicas=0`. On k3d it was pending after 31 s and firing after 3 minutes (the 2 minutes plus the 30-second scrape and evaluation intervals); with the API back, it cleared within a minute. Scale it back with `--replicas=1`.
+
 ## Infrastructure nodes
 
 ```bash
