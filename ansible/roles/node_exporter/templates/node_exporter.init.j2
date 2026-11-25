@@ -1,5 +1,4 @@
 #!/bin/sh
-{% set args = node_exporter_args + (['--collector.textfile.directory=' ~ node_exporter_textfile_dir] if node_exporter_textfile_dir else []) %}
 ### BEGIN INIT INFO
 # Provides:          node_exporter
 # Required-Start:    $network $remote_fs
@@ -18,7 +17,7 @@ USER={{ node_exporter_user }}
 start() {
   start-stop-daemon --start --quiet --oknodo --background --make-pidfile --pidfile "$PIDFILE" \
     --chuid "$USER" --output "$LOGFILE" --exec "$DAEMON" -- \
-{% for arg in args %}
+{% for arg in node_exporter_command_args %}
     '{{ arg }}'{% if not loop.last %} \{% endif %}
 
 {% endfor %}

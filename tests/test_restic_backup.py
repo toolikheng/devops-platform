@@ -312,9 +312,13 @@ def test_node_exporter_reads_the_textfile_directory_on_aws_only() -> None:
     # The homelab nodes keep their flags: the option is off unless a directory is set.
     node_defaults = yaml.safe_load((NODE_EXPORTER / "defaults" / "main.yml").read_text())
     assert node_defaults["node_exporter_textfile_dir"] == ""
+    # One list of flags, built once in the role's vars, starts node_exporter in both service templates (systemd and
+    # SysV init); neither template builds a flag of its own.
+    command = yaml.safe_load((NODE_EXPORTER / "vars" / "main.yml").read_text())["node_exporter_command_args"]
+    assert "--collector.textfile.directory=" in command and "if node_exporter_textfile_dir" in command
     for template in ("node_exporter.service.j2", "node_exporter.init.j2"):
         text = (NODE_EXPORTER / "templates" / template).read_text()
-        assert "--collector.textfile.directory=" in text and "if node_exporter_textfile_dir" in text, template
+        assert "for arg in node_exporter_command_args" in text and "--collector" not in text, template
     node_tasks = yaml.safe_load((NODE_EXPORTER / "tasks" / "main.yml").read_text())
     [create] = [t for t in node_tasks if t.get("ansible.builtin.file", {}).get("path") == "{{ node_exporter_textfile_dir }}"]
     assert create["when"] == "node_exporter_textfile_dir | length > 0"

@@ -1,5 +1,4 @@
 # Managed by Ansible (role node_exporter)
-{% set args = node_exporter_args + (['--collector.textfile.directory=' ~ node_exporter_textfile_dir] if node_exporter_textfile_dir else []) %}
 [Unit]
 Description=Prometheus Node Exporter
 Documentation=https://github.com/prometheus/node_exporter
@@ -10,7 +9,7 @@ Wants=network-online.target
 Type=simple
 User={{ node_exporter_user }}
 Group={{ node_exporter_user }}
-ExecStart=/usr/local/bin/node_exporter{% for arg in args %} \
+ExecStart=/usr/local/bin/node_exporter{% for arg in node_exporter_command_args %} \
   {{ arg | replace('$', '$$') }}{% endfor %}
 
 Restart=always
