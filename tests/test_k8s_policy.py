@@ -212,6 +212,12 @@ def test_api_and_ui_run_the_same_pinned_policypal_image(rendered: dict, overlay:
     assert POLICYPAL_IMAGE.match(images.pop())
 
 
+def test_both_overlays_run_the_same_policypal_commit(rendered: dict) -> None:
+    # A new PolicyPal image is tried on k3d first, so the local overlay must pin exactly what AWS deploys.
+    images = {overlay: container(api(rendered[overlay]), "api")["image"] for overlay in ("local", "aws")}
+    assert images["local"] == images["aws"], images
+
+
 @overlay_param
 def test_postgres_runs_pgvector_as_in_policypals_compose_file(rendered: dict, overlay: str) -> None:
     for c in containers(get(rendered[overlay], "StatefulSet", "postgres")):

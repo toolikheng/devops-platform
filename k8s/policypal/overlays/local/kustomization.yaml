@@ -10,7 +10,7 @@ resources:
 # Quoted: a commit hash made only of digits would otherwise be a YAML number.
 images:
 - name: ghcr.io/toolikheng/policypal
-  newTag: "16d4edb48b0508a75680831c186d435ae565bccf"
+  newTag: "5e6ecf1e9beae18ccddc20fe0895cf0790b70553"
 
 patches:
 - target:
