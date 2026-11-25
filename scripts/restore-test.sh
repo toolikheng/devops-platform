@@ -36,8 +36,6 @@ esac
 # The stacks fix their region in code.
 REGION="ap-southeast-1"
 NAMESPACE="policypal"
-# Seconds between polls of a node command (the tests set 0).
-POLL_SECONDS="${POLL_SECONDS:-5}"
 
 fail() {
   echo "restore-test: FAIL $*" >&2
@@ -75,24 +73,10 @@ admin() {
   printf 'header = "X-Admin-Token: %s"\n' "$token" | curl -fsS --max-time 60 --config - "$@"
 }
 
-# on_node COMMAND - run COMMAND as root on the node through SSM Run Command; prints its output and fails unless it
-# exited 0. Polls the invocation until it has finished (a restore restarts the API: up to 20 minutes).
+# on_node COMMAND - run COMMAND as root on the node (SSM Run Command, scripts/ssm-run.sh): prints its output, and
+# fails if it failed there or AWS refused (ssm-run.sh shows why).
 on_node() {
-  local id command status="" result=""
-  id="$(bash "$SCRIPTS/node-id.sh")"
-  command="$(aws ssm send-command --region "$REGION" --instance-ids "$id" --document-name AWS-RunShellScript \
-    --parameters "$(jq -cn --arg c "$1" '{commands: [$c]}')" --query Command.CommandId --output text)"
-  for _ in $(seq 240); do
-    sleep "$POLL_SECONDS"
-    # Just after sending, the invocation may not exist yet: treat that as pending.
-    result="$(aws ssm get-command-invocation --region "$REGION" --command-id "$command" --instance-id "$id" \
-      --output json 2>/dev/null || echo '{"Status": "Pending"}')"
-    status="$(jq -r .Status <<<"$result")"
-    case "$status" in Pending | InProgress | Delayed) ;; *) break ;; esac
-  done
-  jq -r '.StandardOutputContent // ""' <<<"$result"
-  [ "$status" = Success ] && [ "$(jq -r .ResponseCode <<<"$result")" = 0 ] ||
-    fail "on the node, '$1' ended $status: $(jq -r '.StandardErrorContent // ""' <<<"$result" | tail -c 500)"
+  bash "$SCRIPTS/ssm-run.sh" "$(bash "$SCRIPTS/node-id.sh")" "$1" || fail "on the node: '$1'"
 }
 
 # The sentinels as the API shows them: is the policy listed, and is the question in the history?

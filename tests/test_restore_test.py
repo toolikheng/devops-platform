@@ -32,7 +32,8 @@ def invocation(stdout: str = "", status: str = "Success", rc: int = 0) -> tuple[
 
 
 def restore_test(fakes: Fakes, phase: str, state: Path) -> object:
-    return fakes.script("restore-test.sh", phase, str(state), env={"POLL_SECONDS": "0"})
+    # scripts/ssm-run.sh reads both: no pause between polls, and a short limit, so a wrong wait can't hang a test.
+    return fakes.script("restore-test.sh", phase, str(state), env={"POLL_SECONDS": "0", "MAX_WAIT_SECONDS": "5"})
 
 
 def node_commands(fakes: Fakes) -> list[str]:
@@ -105,6 +106,16 @@ def test_before_stops_when_the_backup_fails(before: Fakes, tmp_path: Path) -> No
     result = restore_test(before, "before", state)
     assert result.returncode != 0 and "systemctl start policypal-backup" in output(result)
     assert not state.exists()
+
+
+def test_an_aws_error_stops_it_at_once_and_is_shown(before: Fakes, tmp_path: Path) -> None:
+    # An expired login, for example: it used to be read as "pending" for 20 minutes, then reported as Pending.
+    before.aws_sequence("ssm.get-command-invocation", [
+        (254, "An error occurred (AccessDeniedException) when calling the GetCommandInvocation operation\n")])
+    result = restore_test(before, "before", tmp_path / "s.env")
+    assert result.returncode != 0
+    assert len(before.calls("aws", "ssm", "get-command-invocation")) == 1
+    assert "AccessDeniedException" in output(result)
 
 
 # --- after -------------------------------------------------------------------------------------------------
