@@ -139,6 +139,8 @@ jobs:
           type=sha,prefix=sha-,suffix=
           type=ref,event=branch
 
+    # The runtime stage (apt-get upgrade) is never taken from the cache, so the gate scans today's Debian
+    # packages; a cached layer once kept a vulnerable libzstd1. Its fresh layers go to the cache for the push below.
     - name: Build image (local)
       uses: docker/build-push-action@v7
       with:
@@ -146,6 +148,7 @@ jobs:
         file: app/Dockerfile
         load: true
         tags: devops-app:${{ github.sha }}
+        no-cache-filters: runtime
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
