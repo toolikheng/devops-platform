@@ -13,9 +13,9 @@
 #
 # The dump and the uploads go together: PolicyPal deletes database rows whose upload file is missing, so both
 # snapshots of a run carry the same run-<time> tag and a restore takes the pair. restic's retention decides what is
-# deleted; the bucket never expires current objects. Any failure
-# exits non-zero, so systemd marks the run failed (systemctl status policypal-backup), and only a successful backup
-# records its time for node_exporter (policypal_backup_last_success_timestamp_seconds).
+# deleted; the bucket never expires current objects. Any failure exits non-zero, so systemd marks the run failed
+# (systemctl status policypal-backup), and only a successful backup records its time for node_exporter
+# (policypal_backup_last_success_timestamp_seconds).
 #
 # Settings (no secret) are in /etc/policypal-backup.env. restic gets the repository password by running
 # RESTIC_PASSWORD_COMMAND (ssm-parameter, SSM Parameter Store with the node's role): never on disk or a command line.
