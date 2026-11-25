@@ -1,6 +1,6 @@
 # Demo script (about 2 minutes 45 seconds)
 
-A short walkthrough of the AWS environment for a recording or a live call. Each step comes from a real session ([test log](aws-test-log.md)), with two exceptions to try once before recording: `policypal-backup enable`, added after the last AWS session, and an m7i-flex.large on-demand (on-demand was tested on a t3.micro). The slow parts (building the node, the add-ons, the alert's 2-minute wait, the restore across a rebuild) are done before recording, so the recording shows their results instead of waiting for them.
+A short walkthrough of the AWS environment for a recording or a live call. Each step comes from a real session ([test log](aws-test-log.md)), with one exception to try once before recording: `policypal-backup enable` on its own (on AWS the backups have been turned on through a restore, which ends with the same step). The slow parts (building the node, the add-ons, the alert's 2-minute wait, the restore across a rebuild) are done before recording, so the recording shows their results instead of waiting for them.
 
 ## Before recording (about 30 minutes, about USD 0.07)
 
@@ -42,7 +42,7 @@ kubectl -n policypal scale deployment/policypal-api --replicas=0
 | 1:10–1:35 | Terminal: `kubectl -n policypal get externalsecrets` (SecretSynced) | "The database password and the admin token are in SSM Parameter Store. Terraform writes them with write-only arguments, so they're not even in its state, and External Secrets Operator copies them into the cluster with the node's instance role. There are no AWS keys anywhere: GitHub Actions gets one-hour credentials through OIDC, one role per job." |
 | 1:35–2:00 | Grafana, the dashboard: "API replicas available" at 0, the alert panel firing. Then `kubectl -n policypal scale deployment/policypal-api --replicas=1` | "Prometheus and Grafana run on the node, sized by measurement: with them, a 4 GB instance peaked at 77% of its memory, over my 75% line, so it's an 8 GB one. I scaled the API to zero a few minutes ago; the alert went pending, then firing after two minutes. Scaling it back clears it." |
 | 2:00–2:25 | The `make cloud-restore-test-after` PASS output | "Backups run hourly on the node with restic, to S3, with the node's role. To prove they work I destroyed the whole environment and restored onto a brand-new node: the test checks the exact snapshot, the data and the file's checksum. That test also found a real bug: a new node's first backup could have pushed the good one out of the repository, so on a new node backups now start only after a restore, or when I turn them on." |
-| 2:25–2:45 | `make cloud-down`: the plan (9 to destroy), "yes", then the cost check "No billable leftovers" | "At the end of every session I destroy everything billed by the hour and a read-only scan checks nothing is left. The whole AWS build so far cost about 34 cents, with budgets and a nightly destroy as the backstop." |
+| 2:25–2:45 | `make cloud-down`: the plan (9 to destroy), "yes", then the cost check "No billable leftovers" | "At the end of every session I destroy everything billed by the hour and a read-only scan checks nothing is left. The whole AWS build so far cost about half a dollar, with budgets and a nightly destroy as the backstop." |
 
 ## After recording
 
