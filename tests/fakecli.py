@@ -25,6 +25,7 @@ The fake knows just enough of each real tool for the scripts here:
 Any call can be made to fail (`fail`), and a real command can be logged on its way through (`spy`).
 """
 
+import hashlib
 import json
 import os
 import shutil
@@ -80,6 +81,16 @@ with open(os.environ["FAKE_LOG"], "a") as log:
 def load(name, default):
     f = d / name
     return json.loads(f.read_text()) if f.exists() else default
+
+def next_of(name, default):
+    """The next of the successive answers in file `name` (a JSON list), the last one repeating; `default` if none."""
+    f = d / name
+    if not f.exists():
+        return default
+    answers = json.loads(f.read_text())
+    if len(answers) > 1:
+        f.write_text(json.dumps(answers[1:]))
+    return answers[0]
 
 spy = d / f"spy-{tool}"
 if spy.exists():
@@ -139,17 +150,11 @@ if tool == "curl":
     if not rules:
         sys.exit(7)  # could not connect
     rule = max(rules, key=lambda r: bool(r["when"]))
-    if rule.get("bodies"):  # successive answers, the last one repeating
-        all_rules = load("http.json", [])
-        stored = next(r for r in all_rules if (r["url"], r["when"]) == (rule["url"], rule["when"]))
-        rule["body"] = stored["bodies"][0]
-        if len(stored["bodies"]) > 1:
-            stored["bodies"] = stored["bodies"][1:]
-            (d / "http.json").write_text(json.dumps(all_rules))
+    body = next_of(rule["sequence"], rule["body"]) if rule.get("sequence") else rule["body"]
     if "-w" in args and args[args.index("-w") + 1] == "%{http_code}":
         print(rule.get("status") or 200, end="")
         sys.exit(0)
-    sys.stdout.write(rule["body"])
+    sys.stdout.write(body)
     # Like curl: an HTTP error status is an error exit only with -f (--fail).
     sys.exit(rule["rc"] if rule["rc"] and any(x.startswith("-f") for x in args) else 0)
 if tool == "docker":
@@ -163,13 +168,10 @@ if tool == "restic" and args[:1] == ["snapshots"]:
 if tool == "restic" and args[:1] == ["dump"]:
     answer("restic-dump")
 if tool == "systemctl" and args[:1] == ["is-active"]:
-    seq = d / f"unit-states-{args[-1]}"
-    states = json.loads(seq.read_text()) if seq.exists() else ["inactive"]
-    if len(states) > 1:
-        seq.write_text(json.dumps(states[1:]))
+    state = next_of(f"unit-states-{args[-1]}", "inactive")
     if "--quiet" not in args:
-        print(states[0])
-    sys.exit(0 if states[0] == "active" else 3)
+        print(state)
+    sys.exit(0 if state == "active" else 3)
 if tool == "terraform" and args[:2] == ["output", "-raw"]:
     answer(f"tf-output-{args[2]}", 1)
 if tool == "terraform" and args[:2] == ["state", "pull"]:
@@ -184,12 +186,9 @@ if tool == "terraform" and args[:1] in (["plan"], ["apply"]) and (d / "tf-says")
 if tool == "aws" and args[:2] == ["ssm", "get-parameter"]:
     answer("ssm" + args[args.index("--name") + 1].replace("/", "_"), 254)
 if tool == "aws" and len(args) > 1:
-    seq = d / f"aws-{args[0]}.{args[1]}.seq"
-    if seq.exists():
-        answers = json.loads(seq.read_text())
-        rc, text = answers[0]
-        if len(answers) > 1:
-            seq.write_text(json.dumps(answers[1:]))
+    sequenced = next_of(f"aws-{args[0]}.{args[1]}.seq", None)
+    if sequenced:
+        rc, text = sequenced
         (sys.stdout if rc == 0 else sys.stderr).write(text)
         sys.exit(rc)
     answer(f"aws-{args[0]}.{args[1]}")
@@ -245,6 +244,10 @@ class Fakes:
         data = json.loads(path.read_text()) if path.exists() else []
         path.write_text(json.dumps(change(data)))
 
+    def _sequence(self, name: str, answers: list[Any]) -> None:
+        """Successive answers of a repeated call, the last one repeating: the fake takes them with next_of(name)."""
+        self._write(name, json.dumps(answers))
+
     # --- what the scripts find ------------------------------------------------------------------------
     def fail(self, tool: str, *args: str, rc: int = 1) -> None:
         """Every call of `tool` whose args start with `args` fails (exit `rc`, 1 by default)."""
@@ -261,7 +264,7 @@ class Fakes:
     def unit_states(self, unit: str, states: list[str]) -> None:
         """Successive answers of `systemctl is-active UNIT`, the last one repeating (e.g. a backup that is
         "activating", then "inactive" once it has finished)."""
-        self._write(f"unit-states-{unit}", json.dumps(states))
+        self._sequence(f"unit-states-{unit}", states)
 
     def pvc_volume(self, name: str) -> None:
         """What `kubectl get pvc ... -o jsonpath={.spec.volumeName}` prints: the bound PersistentVolume."""
@@ -291,9 +294,13 @@ class Fakes:
 
     def http_sequence(self, url: str, bodies: list[str], when: str | None = None) -> None:
         """curl of `url` answers each body in turn (the last one repeating), e.g. a list before and after a restore."""
+        sequence = "http-sequence-" + hashlib.sha256(f"{url} {when}".encode()).hexdigest()[:12]
+        self._sequence(sequence, bodies)
+
         def change(rules: list[dict[str, Any]]) -> list[dict[str, Any]]:
             rules = [r for r in rules if (r["url"], r["when"]) != (url, when)]
-            return rules + [{"url": url, "when": when, "body": bodies[0], "bodies": bodies, "rc": None, "status": None}]
+            return rules + [{"url": url, "when": when, "body": bodies[-1], "sequence": sequence, "rc": None,
+                             "status": None}]
         self._update("http.json", change)
 
     def tf_output(self, name: str, value: str | None) -> None:
@@ -322,7 +329,7 @@ class Fakes:
     def aws_sequence(self, call: str, answers: list[tuple[int, str]]) -> None:
         """Successive answers (exit code, text) of a repeated `aws service operation` call; the last repeats.
         Text goes to stdout on exit 0, to stderr otherwise."""
-        self._write(f"aws-{call}.seq", json.dumps(answers))
+        self._sequence(f"aws-{call}.seq", answers)
 
     def parameter(self, name: str, value: str) -> None:
         """An SSM parameter `aws ssm get-parameter --name name` returns."""
