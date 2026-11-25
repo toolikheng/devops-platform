@@ -16,6 +16,7 @@ RENDER = REPO_ROOT / "scripts" / "render-k8s.sh"
 PLATFORM = REPO_ROOT / "k8s" / "platform"
 VERSIONS_ENV = REPO_ROOT / "ci" / "versions.env"
 SECRET_CATALOG = REPO_ROOT / "terraform" / "persistent" / "secret-catalog.yaml"
+RESTIC_BACKUP_TASKS = REPO_ROOT / "ansible" / "roles" / "restic_backup" / "tasks" / "main.yml"
 OVERLAYS = ("local", "aws")
 
 
@@ -63,6 +64,13 @@ def secret_catalog() -> dict[str, dict[str, str]]:
 def versions() -> dict[str, str]:
     """ci/versions.env: the tool versions more than one script uses."""
     return _env_file(VERSIONS_ENV)
+
+
+def backup_timer_tasks() -> list[dict[str, Any]]:
+    """The tasks of the AWS node's restic_backup role that do anything with policypal-backup.timer other than
+    install its unit file: any of them would decide whether a node fresh from `make cloud-config` backs up hourly."""
+    tasks = yaml.safe_load(RESTIC_BACKUP_TASKS.read_text())
+    return [t for t in tasks if "policypal-backup.timer" in yaml.safe_dump(t) and "ansible.builtin.template" not in t]
 
 
 @pytest.fixture

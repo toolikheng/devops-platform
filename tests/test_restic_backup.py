@@ -2,11 +2,13 @@
 
 - restic is pinned (ci/versions.env, shared with the homelab backup's image) and its download is checked against a
   recorded sha256.
-- /usr/local/sbin/policypal-backup (files/policypal-backup.sh) has three verbs. `backup`, run every hour by a
+- /usr/local/sbin/policypal-backup (files/policypal-backup.sh) has four verbs. `backup`, run every hour by a
   systemd timer: the Postgres dump first, then the uploads directory, then restic's retention; any failure exits
   non-zero, so systemd marks the run failed, and a success writes the time for node_exporter's textfile collector.
   `show RUN|latest`: a run's two snapshots. `restore RUN|latest`: the database and the uploads of one run, with the
-  API stopped meanwhile.
+  API stopped meanwhile, then the hourly timer on. `enable`: the hourly timer on, for a node with nothing to restore.
+- A new node leaves the timer off: its first backup would push the last good one out of the repository
+  (test_backup_retention.py shows it with restic itself).
 - The settings (no secrets) are in /etc/policypal-backup.env, read by the service and by a restore by hand. The
   repository password comes from SSM Parameter Store at run time through RESTIC_PASSWORD_COMMAND: never on disk,
   in a log or on a command line.
@@ -22,7 +24,7 @@ from typing import Any
 import pytest
 import yaml
 
-from conftest import REPO_ROOT, secret_catalog, versions
+from conftest import REPO_ROOT, backup_timer_tasks, secret_catalog, versions
 from fakecli import Fakes, output
 
 ROLE = REPO_ROOT / "ansible" / "roles" / "restic_backup"
@@ -130,12 +132,15 @@ def test_the_settings_point_restic_at_the_bucket_and_the_password_command() -> N
     assert task["ansible.builtin.template"]["mode"] == "0644", "no secret in it, only how to fetch one"
 
 
-def test_the_timer_starts_the_service_every_hour_and_is_enabled() -> None:
+def test_the_timer_runs_a_backup_every_hour_but_a_new_node_leaves_it_off() -> None:
+    # A new node's PolicyPal is empty until a restore. Retention keeps only the newest snapshot of each day, so the
+    # new node's first hourly backup would push the last good one out (test_backup_retention.py). A successful
+    # restore or `policypal-backup enable` turns the timer on. The role doesn't turn it off either: a second
+    # cloud-config must not stop the backups a restore started.
     timer = unit(TIMER)
     assert timer["OnCalendar"] == ["hourly"] and timer["Unit"] == ["policypal-backup.service"]
-    [enable] = [t for t in tasks() if t.get("ansible.builtin.systemd_service", {}).get("name") == "policypal-backup.timer"]
-    assert enable["ansible.builtin.systemd_service"]["enabled"] is True
-    assert enable["ansible.builtin.systemd_service"]["state"] == "started"
+    assert timer["WantedBy"] == ["timers.target"], "systemctl enable needs the [Install] section"
+    assert not backup_timer_tasks(), backup_timer_tasks()
 
 
 def test_the_ssm_helper_prints_only_the_decrypted_value(tmp_path: Path) -> None:
@@ -192,6 +197,21 @@ def test_the_settings_file_sets_everything_the_script_requires() -> None:
 
 def restic(fakes: Fakes) -> list[list[str]]:
     return [c["args"] for c in fakes.calls("restic")]
+
+
+def systemctl(fakes: Fakes) -> list[list[str]]:
+    return [c["args"] for c in fakes.calls("systemctl")]
+
+
+TIMER_ON = ["enable", "--now", "policypal-backup.timer"]
+
+
+def test_enable_turns_the_hourly_backups_on(fakes: Fakes) -> None:
+    # A new environment, nothing to restore: the owner starts the hourly backups by hand, once.
+    result = run(fakes, "enable")
+    assert result.returncode == 0, output(result)
+    assert systemctl(fakes) == [TIMER_ON]
+    assert not fakes.calls("restic") and not fakes.calls("kubectl")
 
 
 def test_backup_dumps_the_database_first_then_the_uploads_then_applies_retention(node: tuple[Fakes, Path]) -> None:
@@ -408,7 +428,7 @@ def test_restore_stops_the_api_restores_the_database_then_the_uploads_then_start
 def test_a_failed_restore_leaves_the_api_stopped_and_says_so(backups: tuple[Fakes, Path],
                                                             failing: tuple[str, ...]) -> None:
     # Starting PolicyPal on half-restored data could delete database rows (ingestion removes rows whose upload is
-    # missing), so the API stays at 0 replicas until someone looks.
+    # missing), so the API stays at 0 replicas until someone looks. Backups stay off too: they would save that.
     fakes, _ = backups
     fakes.fail(*failing)
     result = run(fakes, "restore", "run-20261125T020000Z")
@@ -416,6 +436,33 @@ def test_a_failed_restore_leaves_the_api_stopped_and_says_so(backups: tuple[Fake
     assert [c for c in fakes.calls(failing[0]) if c["args"][:len(failing) - 1] == list(failing[1:])], "it ran"
     assert not [c for c in fakes.calls("kubectl") if c["args"][:1] == ["scale"] and "--replicas=1" in c["args"]]
     assert "0 replicas" in output(result)
+    assert not systemctl(fakes)
+
+
+def test_a_successful_restore_turns_the_hourly_backups_on_last(backups: tuple[Fakes, Path]) -> None:
+    # Only once the API runs on the restored data: from then on, a backup saves that data.
+    fakes, _ = backups
+    result = run(fakes, "restore", "latest")
+    assert result.returncode == 0, output(result)
+    steps = [(c["tool"], c["args"][0]) for c in fakes.calls() if c["tool"] in ("kubectl", "restic", "systemctl")]
+    assert steps[-2:] == [("kubectl", "rollout"), ("systemctl", "enable")]
+    assert systemctl(fakes) == [TIMER_ON]
+
+
+def test_a_restore_whose_api_does_not_come_back_leaves_the_backups_off(backups: tuple[Fakes, Path]) -> None:
+    fakes, _ = backups
+    fakes.fail("kubectl", "rollout")
+    result = run(fakes, "restore", "latest")
+    assert result.returncode != 0
+    assert fakes.calls("kubectl", "rollout"), "it got that far"
+    assert not systemctl(fakes)
+
+
+def test_backup_and_show_leave_the_timer_alone(backups: tuple[Fakes, Path]) -> None:
+    fakes, _ = backups
+    assert run(fakes, "show", "latest").returncode == 0
+    assert backup(fakes).returncode == 0
+    assert not systemctl(fakes)
 
 
 def test_restore_checks_the_uploads_directory_before_stopping_anything(backups: tuple[Fakes, Path]) -> None:
@@ -432,8 +479,8 @@ def test_restore_never_backs_up_or_deletes_snapshots(backups: tuple[Fakes, Path]
     assert not [c for c in restic(fakes) if c[:1] in (["backup"], ["forget"], ["prune"], ["init"])]
 
 
-@pytest.mark.parametrize("args", [[], ["restore"], ["show"], ["delete", "latest"]])
+@pytest.mark.parametrize("args", [[], ["restore"], ["show"], ["delete", "latest"], ["enable", "now"]])
 def test_usage(fakes: Fakes, args: list[str]) -> None:
     result = run(fakes, *args)
     assert result.returncode == 2 and "usage:" in result.stderr
-    assert not fakes.calls("restic") and not fakes.calls("kubectl")
+    assert not fakes.calls("restic") and not fakes.calls("kubectl") and not fakes.calls("systemctl")

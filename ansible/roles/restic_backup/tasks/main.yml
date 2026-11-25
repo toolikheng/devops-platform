@@ -69,11 +69,10 @@
     - policypal-backup.timer
   notify: Reload systemd
 
+# The timer is not turned on here, or off. A new node's PolicyPal is empty until a restore, and retention keeps
+# only the newest snapshot of each day, so its first hourly backup would push the last good one out of the
+# repository. `policypal-backup restore` turns the timer on once the API runs on the restored data, and
+# `policypal-backup enable` does it for a node with nothing to restore (ADR 025). Leaving it alone also keeps a
+# second cloud-config from stopping backups a restore started.
 - name: Reload systemd now if a unit changed
   ansible.builtin.meta: flush_handlers
-
-- name: Start the hourly backup timer
-  ansible.builtin.systemd_service:
-    name: policypal-backup.timer
-    enabled: true
-    state: started

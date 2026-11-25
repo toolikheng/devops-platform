@@ -3,11 +3,17 @@
 #
 #   policypal-backup backup                     the Postgres dump first, then the uploads, then retention
 #   policypal-backup show latest|run-<time>     a run's two snapshots: "<run> <database snapshot> <uploads snapshot>"
-#   policypal-backup restore latest|run-<time>  that run's database and uploads, with the API stopped meanwhile
+#   policypal-backup restore latest|run-<time>  that run's database and uploads, with the API stopped meanwhile,
+#                                               then the hourly backups on
+#   policypal-backup enable                     the hourly backups on, for a node with nothing to restore
 #
-# policypal-backup.service runs `backup` every hour (timer). The dump and the uploads go together: PolicyPal deletes
-# database rows whose upload file is missing, so both snapshots of a run carry the same run-<time> tag and a restore
-# takes the pair. restic's retention decides what is deleted; the bucket never expires current objects. Any failure
+# policypal-backup.service runs `backup` every hour once policypal-backup.timer is on. A new node leaves it off:
+# retention keeps the newest snapshot of each day, so a backup of a new node's empty PolicyPal would push the last
+# good one out of the repository.
+#
+# The dump and the uploads go together: PolicyPal deletes database rows whose upload file is missing, so both
+# snapshots of a run carry the same run-<time> tag and a restore takes the pair. restic's retention decides what is
+# deleted; the bucket never expires current objects. Any failure
 # exits non-zero, so systemd marks the run failed (systemctl status policypal-backup), and only a successful backup
 # records its time for node_exporter (policypal_backup_last_success_timestamp_seconds).
 #
@@ -16,12 +22,12 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: policypal-backup backup | show latest|run-<time> | restore latest|run-<time>" >&2
+  echo "usage: policypal-backup backup | show latest|run-<time> | restore latest|run-<time> | enable" >&2
   exit 2
 }
 
 case "${1:-}" in
-  backup) [ "$#" -eq 1 ] || usage ;;
+  backup | enable) [ "$#" -eq 1 ] || usage ;;
   show | restore) [ "$#" -eq 2 ] && [[ "$2" =~ ^(latest|run-[0-9]{8}T[0-9]{6}Z)$ ]] || usage ;;
   *) usage ;;
 esac
@@ -175,6 +181,13 @@ restore() {
   kubectl -n "$NAMESPACE" scale "deployment/$API" --replicas=1
   kubectl -n "$NAMESPACE" rollout status "deployment/$API" --timeout=10m
   echo "policypal-backup: restored $run: database $db_id, uploads $up_id"
+  # Only now: from here on, a backup saves the restored data.
+  enable
+}
+
+enable() {
+  systemctl enable --now policypal-backup.timer
+  echo "policypal-backup: hourly backups on (systemctl list-timers policypal-backup.timer)"
 }
 
 "$@"

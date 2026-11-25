@@ -16,7 +16,8 @@ The fake knows just enough of each real tool for the scripts here:
   calls by `service.operation` (identity and region list by default, empty otherwise), or a sequence of answers
   for repeated calls (polling), the last one repeating.
 - docker: a kustomize render prints MANIFEST, a Helm render addon_manifest(release). helm, k3d, ansible-playbook,
-  gh, restic: log only (restic's environment is logged too: the password command, and whether a password is set).
+  gh, restic, systemctl: log only (restic's environment is logged too: the password command, and whether a password
+  is set).
 - kubectl also answers `get pvc` and `get pv` with what the test set (pvc_volume, pv_path); `exec -i` logs its stdin.
 - restic answers `snapshots --tag TAG` and `dump` with what the test set (restic_snapshots, restic_dump).
 Any call can be made to fail (`fail`), and a real command can be logged on its way through (`spy`).
@@ -33,7 +34,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO_ROOT / "scripts"
-TOOLS = ("kubectl", "curl", "docker", "k3d", "terraform", "aws", "helm", "ansible-playbook", "gh", "restic")
+TOOLS = ("kubectl", "curl", "docker", "k3d", "terraform", "aws", "helm", "ansible-playbook", "gh", "restic", "systemctl")
 
 PUBLIC_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleExampleExampleExampleExampleExample test@example"
 INSTANCE_ID = "i-0123456789abcdef0"

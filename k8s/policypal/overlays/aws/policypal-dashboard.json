@@ -183,7 +183,7 @@
       "id": 7,
       "type": "stat",
       "title": "Since the last backup",
-      "description": "Time since the node's last successful restic backup to S3 (policypal-backup, hourly; ADR 025). Red after 2 hours: two runs missed or failed (systemctl status policypal-backup on the node).",
+      "description": "Time since the node's last successful restic backup to S3 (policypal-backup, hourly; ADR 025). Red after 2 hours: two runs missed or failed (systemctl status policypal-backup on the node). No value on a new node until a restore or policypal-backup enable turns the backups on.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"

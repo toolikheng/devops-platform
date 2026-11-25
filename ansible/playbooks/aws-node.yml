@@ -36,7 +36,8 @@
     - role: k3s
       tags:
         - k3s
-    # Hourly restic backups of PolicyPal to S3 (needs k3s: it reaches Postgres and the uploads through it).
+    # Hourly restic backups of PolicyPal to S3 (needs k3s: it reaches Postgres and the uploads through it). The timer
+    # stays off on a new node until policypal-backup restore or enable turns it on (ADR 025).
     - role: restic_backup
       tags:
         - backup
