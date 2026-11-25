@@ -439,7 +439,7 @@ make cloud-restore-test-after       # refuses the same node or data that has the
 make cloud-smoke
 ```
 
-`after` passes only if the restore reports the recorded snapshots, the question and the policy are back, and the policy file's sha256 matches the uploaded one. Node commands go through SSM Run Command (no charge). `before` backs up by hand (its node's timer stays off); after a pass, the restore has turned the new node's timer on.
+`after` passes only if the restore reports the recorded snapshots, the question and the policy are back, and the policy file's sha256 matches the uploaded one. Node commands go through SSM Run Command (no charge), with `scripts/ssm-run.sh`: an AWS error such as an expired login stops the test at once and is printed. `before` backs up by hand (its node's timer stays off); after a pass, the restore has turned the new node's timer on.
 
 The scripts were run against k3d first, then on AWS on 2026-11-25: the backup, `restic snapshots`, `show`, and the restore test across a rebuild passed ([test log](aws-test-log.md)).
 
