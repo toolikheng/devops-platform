@@ -13,6 +13,7 @@ The node runs only during working sessions of a few hours and is destroyed after
 | t3.micro | USD 0.0132/h | about USD 0.0043–0.0047/h | 5–10% |
 | t3.small | USD 0.0264/h | about USD 0.011/h | 5–10% |
 | c7i-flex.large | USD 0.0978/h | about USD 0.053/h | 5–10% |
+| m7i-flex.large (default from C7, [ADR 024](024-m7i-flex-node-for-monitoring.md)) | USD 0.1197/h | about USD 0.053–0.058/h | under 5% |
 
 A public IPv4 (USD 0.005/h) and the volume (about USD 0.0026/h for 20 GB) cost the same either way, so on the smallest type Spot saves less in proportion than the instance price suggests.
 

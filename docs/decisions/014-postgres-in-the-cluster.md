@@ -25,8 +25,15 @@ On Spot the node costs about USD 0.053/h, so RDS would add almost half again to 
 ## Consequences
 
 - No extra cost, and nothing extra to create or wait for: on a rebuilt node the API ingested all 8 policies (119 chunks) by itself and passed the smoke test 4 minutes after `terraform apply` started.
-- No managed backups, patching or failover. The database lives and dies with the node. Phase C7 adds a restic backup of the database and the uploads volume to S3 with a tested restore; until then anything uploaded during a session is lost at `make cloud-down`.
+- No managed backups, patching or failover. The database lives and dies with the node. Phase C7 added an hourly restic backup of the database and the uploads volume to S3, with a restore tested on a rebuilt node ([ADR 025](025-restic-backups-from-the-node.md)); without it, anything uploaded during a session is lost at `make cloud-down`.
 - The `local-path` volume is a folder on the node's root disk, so it shares the 20 GB volume with the images (6.7 GB used with PolicyPal running).
 - The application user is the database superuser. In production I'd create the extension once as an admin and give the app a role that owns only its own tables.
 - `kubectl apply` reports `statefulset.apps/postgres configured` on every run even when nothing changed: it replaces `volumeClaimTemplates` as a whole, and the server adds default fields to it. The StatefulSet's generation stays the same and the pod isn't restarted (`kubectl diff` shows nothing).
 - If the data ever had to outlive the node, RDS (or at least an EBS volume kept outside the ephemeral stack) would be the next step, and this ADR would be revisited with the measured cost.
+
+## Accepted known finding: `gosu` in the pgvector image (2026-11-25)
+
+- **What:** an image scan of `pgvector/pgvector:0.8.7-pg17` (digest `sha256:b513c485…`) with the image gate's settings (Trivy 0.75.0, HIGH and CRITICAL with a fix available) reports 26 findings, 1 CRITICAL (CVE-2025-68121) and 25 HIGH, **all in `/usr/local/bin/gosu`**, built with Go 1.24.6: they are in its Go standard library. The image's Debian 12 packages have none.
+- **Why it isn't executed here:** the image's entrypoint runs `gosu` only when the container starts as root, to switch to the `postgres` user. Postgres runs as uid 999 (`runAsNonRoot`), and the API's `wait-for-postgres` init container replaces the entrypoint with `pg_isready`. Verified on k3d: PID 1 is `postgres`, running as uid 999.
+- **Not checked:** whether any of the 26 is reachable from `gosu`'s own code.
+- **Accepted, not fixed:** the vulnerable file is never run, and the tag is the one PolicyPal's compose file uses (`tests/test_k8s_policy.py` pins that same tag here). Revisit when pgvector publishes an image with a rebuilt `gosu`: scan it with the same settings, then change the tag in PolicyPal first and here after.

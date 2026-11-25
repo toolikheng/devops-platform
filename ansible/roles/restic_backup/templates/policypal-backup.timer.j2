@@ -1,0 +1,12 @@
+# Starts policypal-backup.service every hour while the node runs. A run missed while the node was off is not
+# caught up (Persistent=false): every session starts a new node.
+[Unit]
+Description=Back up PolicyPal every hour
+
+[Timer]
+OnCalendar=hourly
+Unit=policypal-backup.service
+Persistent=false
+
+[Install]
+WantedBy=timers.target

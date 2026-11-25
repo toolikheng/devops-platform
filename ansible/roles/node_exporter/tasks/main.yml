@@ -36,6 +36,14 @@
     state: link
   notify: Restart node_exporter
 
+# Only when node_exporter_textfile_dir is set: root writes the files (the AWS node's backup), node_exporter reads them.
+- name: Create the textfile collector directory
+  ansible.builtin.file:
+    path: "{{ node_exporter_textfile_dir }}"
+    state: directory
+    mode: "0755"
+  when: node_exporter_textfile_dir | length > 0
+
 # Real VMs use systemd; the Docker nodes have no systemd (sshd is PID 1), so they get a SysV init script.
 - name: Run node_exporter under the host's service manager
   ansible.builtin.include_tasks:

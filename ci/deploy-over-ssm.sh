@@ -7,7 +7,7 @@
 # repository at this commit, unpack the manifests (gzip + base64, inside the command), and run
 # scripts/node-deploy.sh with them. The deploy, the smoke test and, if either fails, the rollback all run on
 # the node with its own kubeconfig: nothing connects to the node (its SSM agent fetches the command) and no
-# cluster credential leaves it. Then waits for the result and prints the node's output.
+# cluster credential leaves it. scripts/ssm-run.sh sends it, waits for the result and prints the node's output.
 #
 # The manifests are the bytes ci/deploy-render.sh validated. No AWS quota is documented for Run Command
 # parameters, so a payload over MAX_PAYLOAD (half the 64 KB document size limit) is refused here, before any
@@ -61,46 +61,11 @@ commands=(
   "printf '%s' '$payload' | base64 -d | gunzip >\"\$work/policypal.yaml\""
   'bash "$work/repo/scripts/node-deploy.sh" "$work/policypal.yaml"'
 )
-parameters="$(jq -cn --arg timeout "$EXECUTION_TIMEOUT" \
-  '{commands: $ARGS.positional, executionTimeout: [$timeout]}' --args "${commands[@]}")"
 
-command_id="$(aws ssm send-command --region "$REGION" --instance-ids "$node" \
-  --document-name AWS-RunShellScript --comment "deploy PolicyPal manifests, devops-platform ${sha:0:12}" \
-  --timeout-seconds 300 --parameters "$parameters" --query Command.CommandId --output text)"
-echo "deploy-over-ssm: sent command $command_id to $node; waiting for the deploy on the node"
-
-err="$(mktemp)"
-trap 'rm -f "$err"' EXIT
-start=$SECONDS
-status=""
-while :; do
-  if invocation="$(aws ssm get-command-invocation --region "$REGION" --command-id "$command_id" \
-    --instance-id "$node" --output json 2>"$err")"; then
-    status="$(jq -r .Status <<<"$invocation")"
-    case "$status" in
-      Success | Failed | TimedOut | Cancelled) break ;;
-    esac
-  elif ! grep -q InvocationDoesNotExist "$err"; then
-    # Right after SendCommand the invocation may not exist for a moment; anything else is an error.
-    cat "$err" >&2
-    exit 1
-  fi
-  if [ $((SECONDS - start)) -ge "$MAX_WAIT_SECONDS" ]; then
-    echo "deploy-over-ssm: gave up after ${MAX_WAIT_SECONDS}s (status ${status:-unknown}). Check it with:" \
-      "aws ssm get-command-invocation --command-id $command_id --instance-id $node" >&2
-    exit 1
-  fi
-  sleep "$POLL_SECONDS"
-done
-
-echo "--- output on the node ($status)"
-jq -r .StandardOutputContent <<<"$invocation"
-node_errors="$(jq -r .StandardErrorContent <<<"$invocation")"
-if [ -n "$node_errors" ]; then
-  echo "--- errors on the node" >&2
-  printf '%s\n' "$node_errors" >&2
-fi
-if [ "$status" != Success ]; then
-  echo "deploy-over-ssm: the deploy on the node ended with $status" >&2
+echo "deploy-over-ssm: deploying ${sha:0:12} on $node through SSM Run Command; the node's output follows when it ends"
+if ! SSM_COMMENT="deploy PolicyPal manifests, devops-platform ${sha:0:12}" SSM_EXECUTION_TIMEOUT="$EXECUTION_TIMEOUT" \
+  POLL_SECONDS="$POLL_SECONDS" MAX_WAIT_SECONDS="$MAX_WAIT_SECONDS" \
+  bash "$(dirname "$0")/../scripts/ssm-run.sh" "$node" "${commands[@]}"; then
+  echo "deploy-over-ssm: the deploy on the node failed (its output and errors are above)" >&2
   exit 1
 fi

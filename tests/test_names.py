@@ -7,7 +7,7 @@ from conftest import REPO_ROOT
 
 
 def test_names_module_defines_the_shared_names(terraform_names: dict[str, str]) -> None:
-    assert set(terraform_names) == {"node", "owner_cidr_parameter"}
+    assert set(terraform_names) == {"node", "owner_cidr_parameter", "backups_bucket"}
 
 
 def test_owner_ip_script_writes_the_parameter_the_stacks_read(terraform_names: dict[str, str]) -> None:

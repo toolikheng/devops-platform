@@ -30,7 +30,7 @@ def test_ci_installs_the_pinned_trivy_version() -> None:
     assert steps and all(s["with"]["version"] == f"v{versions()['TRIVY_VERSION']}" for s in steps)
 
 
-@pytest.mark.parametrize("name", ["KUBERNETES_VERSION", "TRIVY_VERSION"])
+@pytest.mark.parametrize("name", ["KUBERNETES_VERSION", "TRIVY_VERSION", "RESTIC_VERSION"])
 def test_only_the_pin_file_writes_a_pinned_version(name: str) -> None:
     value = versions()[name]
     copies = [str(p.relative_to(REPO_ROOT)) for p in SCRIPTS if value in p.read_text()]
@@ -48,4 +48,4 @@ def test_trivy_runs_at_the_pinned_version(fakes: Fakes, script: str) -> None:
 def test_scripts_are_found() -> None:
     # The copy rule above is only as good as the list it reads.
     names = {Path(p).name for p in SCRIPTS}
-    assert {"render-eso.sh", "k8s-checks.sh", "scan.sh", "terraform-checks.sh", "Makefile"} <= names
+    assert {"addon.sh", "k8s-checks.sh", "scan.sh", "terraform-checks.sh", "Makefile"} <= names

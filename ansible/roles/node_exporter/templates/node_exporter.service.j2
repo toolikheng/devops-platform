@@ -9,7 +9,7 @@ Wants=network-online.target
 Type=simple
 User={{ node_exporter_user }}
 Group={{ node_exporter_user }}
-ExecStart=/usr/local/bin/node_exporter{% for arg in node_exporter_args %} \
+ExecStart=/usr/local/bin/node_exporter{% for arg in node_exporter_command_args %} \
   {{ arg | replace('$', '$$') }}{% endfor %}
 
 Restart=always

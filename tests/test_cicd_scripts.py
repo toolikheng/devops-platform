@@ -587,6 +587,15 @@ def test_deploy_waits_while_the_command_is_not_registered_yet(fakes: Fakes, node
     assert deploy(fakes, node).returncode == 0
 
 
+def test_an_aws_error_while_waiting_fails_the_deploy_at_once_and_is_shown(fakes: Fakes, node: Path) -> None:
+    fakes.aws_sequence("ssm.get-command-invocation", [
+        (254, "An error occurred (AccessDeniedException) when calling the GetCommandInvocation operation\n")])
+    result = deploy(fakes, node, MAX_WAIT_SECONDS="5")  # bounded even if the error were waited on
+    assert result.returncode == 1
+    assert len(fakes.calls("aws", "ssm", "get-command-invocation")) == 1
+    assert "AccessDeniedException" in output(result)
+
+
 @pytest.mark.parametrize("status", ["Failed", "TimedOut", "Cancelled"])
 def test_a_failed_deploy_on_the_node_fails_the_job_and_shows_why(fakes: Fakes, node: Path, status: str) -> None:
     fakes.aws_sequence("ssm.get-command-invocation", [

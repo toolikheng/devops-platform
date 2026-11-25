@@ -8,6 +8,7 @@ Operator makes the Secrets from SSM Parameter Store (ExternalSecrets in overlays
 AWS identity, scripts/policypal-secrets.sh does.
 """
 
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -15,12 +16,11 @@ from typing import Any
 import pytest
 import yaml
 
-from conftest import OVERLAYS, secret_refs
+from conftest import OVERLAYS, secret_catalog, secret_refs
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEPLOY_SCRIPT = REPO_ROOT / "scripts" / "deploy-policypal.sh"
 SECRET_STORE = REPO_ROOT / "k8s" / "platform" / "external-secrets" / "clustersecretstore.yaml"
-TF_SECRETS = REPO_ROOT / "terraform" / "persistent" / "policypal_secrets.tf"
 
 NAMESPACE = "policypal"
 POLICYPAL_IMAGE = re.compile(r"^ghcr\.io/toolikheng/policypal(:[0-9a-f]{40}|@sha256:[0-9a-f]{64})$")
@@ -35,7 +35,9 @@ EXPECTED = WORKLOADS | {
     ("Ingress", "policypal"),
 }
 EXTERNAL_SECRETS = {("ExternalSecret", "policypal-db"), ("ExternalSecret", "policypal-admin")}
-EXPECTED_BY_OVERLAY = {"local": EXPECTED, "aws": EXPECTED | EXTERNAL_SECRETS}
+# The monitoring's view of PolicyPal on AWS: its alert and its Grafana dashboard.
+ALERTS = {("PrometheusRule", "policypal-alerts"), ("ConfigMap", "policypal-dashboard")}
+EXPECTED_BY_OVERLAY = {"local": EXPECTED, "aws": EXPECTED | EXTERNAL_SECRETS | ALERTS}
 overlay_param = pytest.mark.parametrize("overlay", OVERLAYS)
 
 
@@ -102,10 +104,11 @@ def test_everything_lives_in_the_policypal_namespace(rendered: dict, overlay: st
 
 
 def test_local_overlay_deploys_the_same_objects_as_aws(rendered: dict) -> None:
-    # Apart from the ExternalSecrets: k3d has no AWS identity, so there the Secrets come from a script.
+    # Apart from the ExternalSecrets (k3d has no AWS identity, so there the Secrets come from a script) and the
+    # alert and dashboard (the monitoring with its AWS values runs on the node only).
     def shape(docs: list[dict[str, Any]]) -> set[tuple[str, str]]:
         return {(d["kind"], d["metadata"]["name"]) for d in docs}
-    assert shape(rendered["local"]) == shape(rendered["aws"]) - EXTERNAL_SECRETS
+    assert shape(rendered["local"]) == shape(rendered["aws"]) - EXTERNAL_SECRETS - ALERTS
 
 
 @overlay_param
@@ -207,6 +210,12 @@ def test_api_and_ui_run_the_same_pinned_policypal_image(rendered: dict, overlay:
               container(get(rendered[overlay], "Deployment", "policypal-ui"), "ui")["image"]}
     assert len(images) == 1
     assert POLICYPAL_IMAGE.match(images.pop())
+
+
+def test_both_overlays_run_the_same_policypal_commit(rendered: dict) -> None:
+    # A new PolicyPal image is tried on k3d first, so the local overlay must pin exactly what AWS deploys.
+    images = {overlay: container(api(rendered[overlay]), "api")["image"] for overlay in ("local", "aws")}
+    assert images["local"] == images["aws"], images
 
 
 @overlay_param
@@ -312,15 +321,19 @@ def test_aws_secrets_are_made_by_external_secrets_with_exactly_the_keys_the_pods
     assert made == secret_refs(docs)
 
 
-def test_external_secrets_read_only_the_parameters_terraform_creates(rendered: dict) -> None:
-    # Terraform (terraform/persistent/policypal_secrets.tf) creates the parameters and lets the node read
-    # /policypal/aws/* only. Every parameter is named: dataFrom would read whatever matches a pattern.
-    created = set(re.findall(r'^\s*name\s*=\s*"(/policypal/aws/[^"]+)"', TF_SECRETS.read_text(), re.M))
-    read = set()
+def test_each_catalogued_secret_is_read_by_one_external_secret_in_its_namespace(rendered: dict) -> None:
+    # terraform/persistent/secret-catalog.yaml lists every parameter Terraform creates and who reads it. One
+    # with a namespace is read there by exactly one ExternalSecret; one without is read by the node itself,
+    # never through ESO. Nothing else is read. Every parameter is named: dataFrom would read whatever matches.
+    reads: dict[str, list[str]] = {}
     for es in external_secrets(rendered["aws"]):
         assert "dataFrom" not in es["spec"], es["metadata"]["name"]
-        read |= {d["remoteRef"]["key"] for d in es["spec"]["data"]}
-    assert created and read == created
+        for d in es["spec"]["data"]:
+            reads.setdefault(d["remoteRef"]["key"], []).append(es["metadata"]["namespace"])
+    catalog = secret_catalog()
+    expected = {f"/policypal/aws/{name}": [entry["namespace"]]
+                for name, entry in catalog.items() if entry.get("namespace")}
+    assert catalog and reads == expected
 
 
 def test_external_secrets_use_the_cluster_store_and_refresh_hourly(rendered: dict) -> None:
@@ -419,3 +432,64 @@ def test_containers_run_unprivileged(rendered: dict, overlay: str) -> None:
             sc = c.get("securityContext", {})
             assert sc.get("allowPrivilegeEscalation") is False, f"{name}/{c['name']}"
             assert sc.get("capabilities", {}).get("drop") == ["ALL"], f"{name}/{c['name']}"
+
+
+# --- the alert on AWS (the monitoring runs there only) ---------------------------------------------------
+
+def test_the_api_alert_watches_the_api_deployment_and_its_absence(rendered: dict) -> None:
+    # kube-state-metrics counts the available replicas per Deployment. The alert fires when that number is 0
+    # for 2 minutes, or when there is no number at all (Deployment gone, or kube-state-metrics can't see it).
+    # A normal restart (Recreate: the old pod stops first) is shorter than 2 minutes.
+    docs = rendered["aws"]
+    api = get(docs, "Deployment", "policypal-api")
+    [rule] = [r for g in get(docs, "PrometheusRule", "policypal-alerts")["spec"]["groups"] for r in g["rules"]]
+    assert rule["alert"] == "PolicyPalApiUnavailable" and rule["for"] == "2m"
+    selector = (f'kube_deployment_status_replicas_available{{namespace="{api["metadata"]["namespace"]}", '
+                f'deployment="{api["metadata"]["name"]}"}}')
+    expr = " ".join(rule["expr"].split())
+    assert expr == f"{selector} == 0 or absent({selector})", expr
+    assert rule["labels"] == {"severity": "critical"}
+
+
+def test_alerts_exist_only_where_the_monitoring_runs(rendered: dict) -> None:
+    assert not [d for d in rendered["local"] if d["kind"] == "PrometheusRule"]
+    assert not [d for d in rendered["local"] if "grafana_dashboard" in d["metadata"].get("labels", {})]
+
+
+def dashboard(docs: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any]]:
+    cm = get(docs, "ConfigMap", "policypal-dashboard")
+    [text] = cm["data"].values()
+    return cm, json.loads(text)
+
+
+def test_the_dashboard_is_a_configmap_grafana_loads(rendered: dict) -> None:
+    # Grafana's dashboard sidecar loads ConfigMaps labelled grafana_dashboard: "1" from the namespace it watches
+    # (k8s/platform/kube-prometheus-stack/values-aws.yaml; tests/test_monitoring_platform.py checks it is this one).
+    cm, board = dashboard(rendered["aws"])
+    assert cm["metadata"]["namespace"] == NAMESPACE and cm["metadata"]["labels"] == {"grafana_dashboard": "1"}
+    assert board["uid"] == "policypal" and board["title"] == "PolicyPal on AWS"
+    assert len(board["panels"]) >= 5
+
+
+def test_every_dashboard_query_reads_policypal_from_the_prometheus_datasource(rendered: dict) -> None:
+    # The datasource uid is the one the chart provisions (Grafana logged uid=prometheus on k3d and AWS). PolicyPal
+    # has no /metrics endpoint, so the panels use kube-state-metrics, the kubelet's container figures, node_exporter
+    # and the alert's own state.
+    _, board = dashboard(rendered["aws"])
+    api = get(rendered["aws"], "Deployment", "policypal-api")["metadata"]["name"]
+    for panel in board["panels"]:
+        assert panel["datasource"] == {"type": "prometheus", "uid": "prometheus"}, panel["title"]
+        assert panel["targets"], panel["title"]
+        for target in panel["targets"]:
+            assert target["datasource"] == {"type": "prometheus", "uid": "prometheus"}, panel["title"]
+            namespaces = set(re.findall(r'namespace="([^"]*)"', target["expr"]))
+            deployments = set(re.findall(r'deployment="([^"]*)"', target["expr"]))
+            assert namespaces <= {NAMESPACE} and deployments <= {api}, (panel["title"], target["expr"])
+
+
+def test_the_dashboard_shows_the_node_memory_line_of_adr_024(rendered: dict) -> None:
+    # The node size was chosen to keep its memory peak under ~75% (docs/decisions/024-...): the panel marks it.
+    _, board = dashboard(rendered["aws"])
+    [panel] = [p for p in board["panels"] if "MemAvailable" in p["targets"][0]["expr"]]
+    steps = panel["fieldConfig"]["defaults"]["thresholds"]["steps"]
+    assert [s["value"] for s in steps] == [None, 0.75] and panel["fieldConfig"]["defaults"]["unit"] == "percentunit"

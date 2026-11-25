@@ -87,6 +87,15 @@ def test_actions_are_pinned(path: Path) -> None:
         assert re.search(r"@(v\d+(\.\d+){0,2}|[0-9a-f]{40})$", ref), f"{path.name}: {ref}"
 
 
+def test_ci_pins_the_linters() -> None:
+    # An unpinned ruff or mypy installs whatever is newest, so a release with new rules can fail CI overnight
+    # with no change in the repo. (The app's own dev extra and the local venv are not pinned: ADR 019.)
+    words = [w for line in runs(load(CI)["jobs"]["lint"]) if line.startswith("pip install") for w in line.split()]
+    for tool in ("ruff", "mypy"):
+        named = [w for w in words if re.split(r"[=<>~!]", w)[0] == tool]
+        assert len(named) == 1 and re.fullmatch(rf"{tool}==\d+\.\d+\.\d+", named[0]), f"{tool}: {named}"
+
+
 # --- C6: the AWS workflows ------------------------------------------------------------------------------
 
 def jobs_of(path: Path) -> dict[str, dict[str, Any]]:
@@ -206,7 +215,7 @@ def test_terraform_workflow_plans_pull_requests_and_applies_on_demand() -> None:
     assert inputs["action"]["type"] == "choice" and inputs["action"]["options"] == ["apply", "destroy"]
     assert inputs["action"]["required"] is True
     assert inputs["instance_type"]["type"] == "choice" and inputs["instance_type"]["options"] == ALLOWLIST
-    assert inputs["instance_type"]["default"] == "c7i-flex.large"
+    assert inputs["instance_type"]["default"] == "m7i-flex.large", "the stack's default (measured in C7)"
     assert inputs["use_spot"]["type"] == "boolean" and inputs["use_spot"]["default"] is True
     assert "concurrency" not in load(TERRAFORM), "a pending PR plan would cancel a pending apply or nightly destroy"
 

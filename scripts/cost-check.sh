@@ -160,4 +160,4 @@ fi
 [ "$found" -gt 0 ] && exit 1
 [ "$errors" -gt 0 ] && exit 2
 echo "✓ No billable leftovers."
-echo "  Not listed: \$0-at-rest persistent resources (S3 state bucket, budgets, IAM, SSM Standard parameters)."
+echo "  Not listed: \$0-at-rest persistent resources (S3 state and backups buckets, budgets, IAM, SSM Standard parameters)."

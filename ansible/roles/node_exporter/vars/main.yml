@@ -1,0 +1,6 @@
+---
+# Every flag node_exporter starts with, built once for both service templates (systemd and SysV init):
+# node_exporter_args, plus the textfile collector when node_exporter_textfile_dir is set (the AWS node).
+node_exporter_command_args: >-
+  {{ node_exporter_args
+  + (['--collector.textfile.directory=' ~ node_exporter_textfile_dir] if node_exporter_textfile_dir else []) }}

@@ -1,0 +1,83 @@
+# promtool unit tests for PolicyPal's alert on AWS (k8s/policypal/overlays/aws/prometheusrule.yaml). Run with:
+# bash ci/rules-test.sh (the script extracts the rule groups into a plain policypal-alerts.yaml next to this file).
+# alert_rule_test lists firing alerts only, so the pending state is read from Prometheus's own ALERTS series.
+rule_files: [policypal-alerts.yaml]
+evaluation_interval: 1m
+
+tests:
+  # No available replica from the start: pending after 1 minute, firing once 2 minutes have passed.
+  - interval: 1m
+    input_series:
+      - series: 'kube_deployment_status_replicas_available{namespace="policypal",deployment="policypal-api"}'
+        values: '0x5'
+    promql_expr_test:
+      - expr: ALERTS{alertname="PolicyPalApiUnavailable"}
+        eval_time: 1m
+        exp_samples:
+          - labels: 'ALERTS{alertname="PolicyPalApiUnavailable",alertstate="pending",namespace="policypal",deployment="policypal-api",severity="critical"}'
+            value: 1
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: PolicyPalApiUnavailable
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: PolicyPalApiUnavailable
+        exp_alerts:
+          - exp_labels: {severity: critical, namespace: policypal, deployment: policypal-api}
+            exp_annotations:
+              summary: "PolicyPal API unavailable"
+              description: "The policypal-api Deployment has had no available replica for 2 minutes, or kube-state-metrics has no count for it."
+
+  # One available replica all the time: never pending, never firing.
+  - interval: 1m
+    input_series:
+      - series: 'kube_deployment_status_replicas_available{namespace="policypal",deployment="policypal-api"}'
+        values: '1x10'
+    promql_expr_test:
+      - expr: ALERTS{alertname="PolicyPalApiUnavailable"}
+        eval_time: 1m
+        exp_samples: []
+      - expr: ALERTS{alertname="PolicyPalApiUnavailable"}
+        eval_time: 10m
+        exp_samples: []
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: PolicyPalApiUnavailable
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: PolicyPalApiUnavailable
+        exp_alerts: []
+
+  # A restart: one minute without a replica (Recreate stops the old pod first) is not an alert.
+  - interval: 1m
+    input_series:
+      - series: 'kube_deployment_status_replicas_available{namespace="policypal",deployment="policypal-api"}'
+        values: '1 1 0 1 1 1'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: PolicyPalApiUnavailable
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: PolicyPalApiUnavailable
+        exp_alerts: []
+
+  # No count at all for the API (the Deployment is gone, or kube-state-metrics can't see it), while other
+  # Deployments are counted: pending after 1 minute, firing at 3.
+  - interval: 1m
+    input_series:
+      - series: 'kube_deployment_status_replicas_available{namespace="policypal",deployment="policypal-ui"}'
+        values: '1x5'
+    promql_expr_test:
+      - expr: ALERTS{alertname="PolicyPalApiUnavailable"}
+        eval_time: 1m
+        exp_samples:
+          - labels: 'ALERTS{alertname="PolicyPalApiUnavailable",alertstate="pending",namespace="policypal",deployment="policypal-api",severity="critical"}'
+            value: 1
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: PolicyPalApiUnavailable
+        exp_alerts:
+          - exp_labels: {severity: critical, namespace: policypal, deployment: policypal-api}
+            exp_annotations:
+              summary: "PolicyPal API unavailable"
+              description: "The policypal-api Deployment has had no available replica for 2 minutes, or kube-state-metrics has no count for it."

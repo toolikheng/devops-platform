@@ -1,0 +1,12 @@
+#!/usr/bin/python3
+"""ssm-parameter NAME - print one SSM parameter's decrypted value, for restic's RESTIC_PASSWORD_COMMAND.
+
+boto3 (Ubuntu's python3-boto3) uses the node's role through IMDSv2 and the region in AWS_DEFAULT_REGION. The value
+goes to standard output only, which restic reads through a pipe: it is never written to disk or logged.
+"""
+
+import sys
+
+import boto3
+
+print(boto3.client("ssm").get_parameter(Name=sys.argv[1], WithDecryption=True)["Parameter"]["Value"])

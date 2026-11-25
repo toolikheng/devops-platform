@@ -1,0 +1,12 @@
+# Backs PolicyPal up to S3 with restic (files/policypal-backup.sh). Started every hour by policypal-backup.timer,
+# or by hand: systemctl start policypal-backup. A failed run leaves the unit failed: systemctl status policypal-backup.
+[Unit]
+Description=Back up PolicyPal (Postgres dump and uploads) to S3 with restic
+After=k3s.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/policypal-backup backup
+# The repository, how restic gets its password, and where to record a success: no secret in it.
+EnvironmentFile=/etc/policypal-backup.env

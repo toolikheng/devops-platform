@@ -30,7 +30,7 @@ on:
         description: EC2 instance type (the cost rules' allowlist; t3.micro is enough without PolicyPal)
         type: choice
         options: [t3.micro, t3.small, t4g.micro, t4g.small, c7i-flex.large, m7i-flex.large]
-        default: c7i-flex.large
+        default: m7i-flex.large
       use_spot:
         description: Spot (cheaper, can be interrupted) instead of on-demand
         type: boolean

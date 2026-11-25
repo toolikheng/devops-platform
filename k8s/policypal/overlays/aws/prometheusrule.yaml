@@ -1,0 +1,25 @@
+# PolicyPal's alert on AWS: the API has had no available replica for 2 minutes, or kube-state-metrics has no
+# count for it at all (the Deployment is gone, or the monitoring can't see it). A normal restart is shorter:
+# Recreate stops the old pod first, and the new one was ready in 32-43 s on the node.
+# Prometheus loads every PrometheusRule in the cluster (k8s/platform/kube-prometheus-stack/values-aws.yaml) and
+# shows firing alerts on its Alerts page (there is no Alertmanager). Its CRD comes with make cloud-addons.
+# promtool tests: monitoring/rules/policypal-alerts.test.yaml (bash ci/rules-test.sh).
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: policypal-alerts
+  namespace: policypal
+spec:
+  groups:
+  - name: policypal
+    rules:
+    - alert: PolicyPalApiUnavailable
+      expr: |-
+        kube_deployment_status_replicas_available{namespace="policypal", deployment="policypal-api"} == 0
+        or absent(kube_deployment_status_replicas_available{namespace="policypal", deployment="policypal-api"})
+      for: 2m
+      labels:
+        severity: critical
+      annotations:
+        summary: PolicyPal API unavailable
+        description: The policypal-api Deployment has had no available replica for 2 minutes, or kube-state-metrics has no count for it.

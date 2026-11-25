@@ -17,7 +17,7 @@ USER={{ node_exporter_user }}
 start() {
   start-stop-daemon --start --quiet --oknodo --background --make-pidfile --pidfile "$PIDFILE" \
     --chuid "$USER" --output "$LOGFILE" --exec "$DAEMON" -- \
-{% for arg in node_exporter_args %}
+{% for arg in node_exporter_command_args %}
     '{{ arg }}'{% if not loop.last %} \{% endif %}
 
 {% endfor %}

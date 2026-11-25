@@ -38,6 +38,10 @@ MUST_IGNORE = [
     "ansible/inventory/aws.yml",
     # ansible-lint's cache of the collections in ansible/requirements.yml.
     "ansible/.ansible/collections/ansible_collections/community/general/MANIFEST.json",
+    # The restore test's record (snapshot and instance IDs): written outside the repo, and refused inside it.
+    "restore-test.env",
+    "scripts/restore-test.env",
+    "restore-test-2026.env",
 ]
 
 MUST_KEEP = [
@@ -61,12 +65,15 @@ MUST_KEEP = [
     ".pre-commit-config.yaml",
     ".github/workflows/secret-scan.yml",
     "k8s/platform/external-secrets/chart.env",
-    "k8s/platform/external-secrets/values.yaml",
+    "k8s/platform/external-secrets/values-aws.yaml",
     "k8s/platform/external-secrets/clustersecretstore.yaml",
     "k8s/policypal/overlays/aws/externalsecret-admin.yaml",
-    "scripts/install-eso.sh",
-    "scripts/render-eso.sh",
+    # C7: one add-on script for every Helm chart on the node
+    "scripts/addon.sh",
+    "k8s/platform/kube-prometheus-stack/chart.env",
+    "k8s/platform/kube-prometheus-stack/values-local.yaml",
     "terraform/persistent/policypal_secrets.tf",
+    "terraform/persistent/secret-catalog.yaml",
 ]
 
 LOCAL_ONLY = ["CLAUDE.md", "CLAUDE.local.md", "planning", ".local-archive", ".claude", ".agents",

@@ -1,6 +1,6 @@
 """Secrets never reach Terraform state: rules over every .tf file under terraform/.
 
-terraform/persistent/tests/policypal_parameters.tftest.hcl checks the two PolicyPal parameters in detail.
+terraform/persistent/tests/policypal_parameters.tftest.hcl checks the catalogued parameters in detail.
 These text checks cover every stack and module, including parameters added later (C7):
 
 - a random value is only ever an `ephemeral` resource: a `resource "random_password"` keeps its result in
@@ -12,6 +12,8 @@ These text checks cover every stack and module, including parameters added later
 
 import re
 from pathlib import Path
+
+from conftest import secret_catalog
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TF_FILES = sorted(p for p in (REPO_ROOT / "terraform").rglob("*.tf") if ".terraform" not in p.parts)
@@ -37,4 +39,26 @@ def test_every_securestring_is_written_with_value_wo() -> None:
             assert re.search(r"^\s*value_wo\s*=\s*ephemeral\.", body, re.M), f"{path}: value_wo from an ephemeral"
             assert re.search(r"^\s*value_wo_version\s*=", body, re.M), path
             assert not re.search(r"^\s*(insecure_)?value\s*=", body, re.M), path
-    assert found >= 2, "the PolicyPal parameters must be among them"
+    assert found >= 1, "the catalogued parameters (one for_each block) must be among them"
+
+
+PERSISTENT = REPO_ROOT / "terraform" / "persistent"
+
+
+def test_the_secret_catalog_names_each_secret_and_who_reads_it() -> None:
+    # terraform/persistent/secret-catalog.yaml: Terraform makes one parameter per entry, the checks read who
+    # reads it. A namespace means an ExternalSecret there; none means the node reads it itself.
+    catalog = secret_catalog()
+    assert catalog, "the catalog lists the secrets"
+    for name, entry in catalog.items():
+        assert re.fullmatch(r"[a-z][a-z0-9-]*", name), f"{name}: a plain parameter name"
+        assert set(entry) <= {"description", "namespace"} and entry.get("description"), name
+        assert re.fullmatch(r"[a-z][a-z0-9-]*", entry.get("namespace", "node-reads-it")), name
+
+
+def test_the_parameters_made_before_the_catalog_are_moved_not_replaced() -> None:
+    # Without these, Terraform would destroy the two live parameters and create new ones with new values.
+    text = (PERSISTENT / "policypal_secrets.tf").read_text()
+    moved = set(re.findall(r'moved \{\s*from\s*=\s*([\w.]+)\s*to\s*=\s*([\w.]+\["[^"]+"\])\s*\}', text))
+    assert moved == {("aws_ssm_parameter.db_password", 'aws_ssm_parameter.secret["db-password"]'),
+                     ("aws_ssm_parameter.admin_token", 'aws_ssm_parameter.secret["admin-token"]')}

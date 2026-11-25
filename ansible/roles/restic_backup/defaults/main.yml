@@ -1,0 +1,16 @@
+---
+# restic on the AWS node. The version is pinned in ci/versions.env (shared with the homelab backup's image);
+# the sha256 is the release's own SHA256SUMS entry for restic_0.19.1_linux_amd64.bz2, matched against a fresh
+# download when pinned. tests/test_restic_backup.py checks both.
+restic_backup_version: "0.19.1"
+restic_backup_sha256: "f415415624dcc452f2a02b8c33641791a8c6d6d3b65bbb3543fcf9a25151585c"
+
+# Where the backups go and the repository password, both made by terraform/persistent: the bucket is named in
+# terraform/modules/names, the password is the restic-password entry of secret-catalog.yaml (checked by tests).
+restic_backup_bucket: toolikheng-devops-platform-backups
+restic_backup_password_parameter: /policypal/aws/restic-password
+restic_backup_region: ap-southeast-1
+
+# node_exporter's textfile collector directory (node_exporter_textfile_dir in inventory/group_vars/aws.yml): a
+# successful backup writes policypal_backup_last_success_timestamp_seconds there.
+restic_backup_textfile_dir: /var/lib/node_exporter/textfile

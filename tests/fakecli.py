@@ -15,10 +15,19 @@ The fake knows just enough of each real tool for the scripts here:
   set (as the real ones print the whole plan); `plan -out=FILE` writes FILE. aws: `ssm get-parameter` by name, other
   calls by `service.operation` (identity and region list by default, empty otherwise), or a sequence of answers
   for repeated calls (polling), the last one repeating.
-- docker: a kustomize render prints MANIFEST, a Helm render ESO_MANIFEST. helm, k3d, ansible-playbook, gh: log only.
-Any call can be made to fail (`fail`), and a real command can be logged on its way through (`spy`).
+- docker: a kustomize render prints MANIFEST, a Helm render addon_manifest(release). helm, k3d, ansible-playbook,
+  gh, restic, systemctl: log only (restic's environment is logged too: the password command, and whether a password
+  is set).
+- kubectl also answers `get pvc`, `get pv` and `get pods` with what the test set (pvc_volume, pv_path, pods);
+  `exec -i` logs its stdin.
+- restic answers `snapshots --tag TAG` and `dump` with what the test set (restic_snapshots, restic_dump).
+- systemctl answers `is-active UNIT` like systemd: the state on stdout (none with --quiet), exit 0 only for "active"
+  (a running oneshot service is "activating", exit 3); "inactive" unless the test set states (unit_states).
+Any call can be made to fail (`fail`), and a real command can be logged on its way through (`spy`), or another
+program run in a tool's place (`instead`).
 """
 
+import hashlib
 import json
 import os
 import shutil
@@ -26,9 +35,11 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO_ROOT / "scripts"
-TOOLS = ("kubectl", "curl", "docker", "k3d", "terraform", "aws", "helm", "ansible-playbook", "gh")
+TOOLS = ("kubectl", "curl", "docker", "k3d", "terraform", "aws", "helm", "ansible-playbook", "gh", "restic", "systemctl")
 
 PUBLIC_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleExampleExampleExampleExampleExample test@example"
 INSTANCE_ID = "i-0123456789abcdef0"
@@ -37,7 +48,6 @@ OWNER_IP = "203.0.113.10"  # what checkip answers
 CHECKIP = "https://checkip.amazonaws.com"
 FORWARD_PORT = "41234"  # the local port `kubectl port-forward` says it picked
 MANIFEST = "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: policypal\n"
-ESO_MANIFEST = "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: external-secrets\n"
 
 FAKE = r'''#!/usr/bin/env python3
 import json, os, sys
@@ -57,25 +67,42 @@ if tool == "kubectl":
         else:
             rest.append(x)
     args = rest
-stdin = sys.stdin.read() if "-" in args or any(a.endswith("/dev/stdin") for a in args) or tool == "docker" and "-i" in args else ""
+stdin = sys.stdin.read() if ("-" in args or any(a.endswith("/dev/stdin") for a in args)
+                            or tool in ("docker", "kubectl") and "-i" in args) else ""
 with open(os.environ["FAKE_LOG"], "a") as log:
     log.write(json.dumps({"tool": tool, "args": args, "ns": ns, "kubeconfig": os.environ.get("KUBECONFIG", ""),
                           "profile": os.environ.get("AWS_PROFILE", ""), "cwd": os.getcwd(), "stdin": stdin,
-                          "ssh_key": bool(os.environ.get("TF_VAR_ssh_public_key"))}) + "\n")
+                          "ssh_key": bool(os.environ.get("TF_VAR_ssh_public_key")),
+                          "restic_repository": os.environ.get("RESTIC_REPOSITORY", ""),
+                          "restic_password_command": os.environ.get("RESTIC_PASSWORD_COMMAND", ""),
+                          "restic_password_set": "RESTIC_PASSWORD" in os.environ or "RESTIC_PASSWORD_FILE" in os.environ,
+                          # curl -F name=@path: the bytes of the file it uploads
+                          "upload": next((Path(a.split("=@", 1)[1].split(";")[0]).read_text() for a in args
+                                          if "=@" in a), "")}) + "\n")
 
 def load(name, default):
     f = d / name
     return json.loads(f.read_text()) if f.exists() else default
+
+def next_of(name, default):
+    """The next of the successive answers in file `name` (a JSON list), the last one repeating; `default` if none."""
+    f = d / name
+    if not f.exists():
+        return default
+    answers = json.loads(f.read_text())
+    if len(answers) > 1:
+        f.write_text(json.dumps(answers[1:]))
+    return answers[0]
 
 spy = d / f"spy-{tool}"
 if spy.exists():
     real = spy.read_text()
     os.execv(real, [real] + args)
 
-for failing in load("fail.json", []):
-    if failing[0] == tool and args[:len(failing) - 1] == failing[1:]:
+for failing_tool, rc, *prefix in load("fail.json", []):
+    if failing_tool == tool and args[:len(prefix)] == prefix:
         print(f"fake {tool}: {' '.join(args)} failed", file=sys.stderr)
-        sys.exit(1)
+        sys.exit(rc)
 
 def answer(name, default_rc=0):
     f = d / name
@@ -88,6 +115,13 @@ if tool == "kubectl":
     a = args
     if a[:2] == ["get", "namespace"]:
         sys.exit(0 if (d / "namespace-exists").exists() else 1)
+    if a[:2] == ["get", "pvc"]:
+        answer("pvc-volume")
+    if a[:2] == ["get", "pv"]:
+        answer("pv-path")
+    if a[:2] == ["get", "pods"]:
+        print(next_of("kubectl-get-pods", ""), end="")
+        sys.exit(0)
     if a[:2] == ["get", "secret"]:
         sys.exit(0 if all((d / f"secret-{n}").exists() for n in a[2:] if not n.startswith("-")) else 1)
     if a[:3] == ["create", "secret", "generic"]:
@@ -121,18 +155,28 @@ if tool == "curl":
     if not rules:
         sys.exit(7)  # could not connect
     rule = max(rules, key=lambda r: bool(r["when"]))
+    body = next_of(rule["sequence"], rule["body"]) if rule.get("sequence") else rule["body"]
     if "-w" in args and args[args.index("-w") + 1] == "%{http_code}":
         print(rule.get("status") or 200, end="")
         sys.exit(0)
-    sys.stdout.write(rule["body"])
+    sys.stdout.write(body)
     # Like curl: an HTTP error status is an error exit only with -f (--fail).
     sys.exit(rule["rc"] if rule["rc"] and any(x.startswith("-f") for x in args) else 0)
 if tool == "docker":
     if any("kustomize" in x for x in args):
         answer("manifest")
     if any(x.startswith("alpine/helm:") for x in args):
-        answer("eso-manifest")
+        answer("addon-manifest-" + args[args.index("template") + 1])
     sys.exit(0)
+if tool == "restic" and args[:1] == ["snapshots"]:
+    answer("restic-snapshots-" + (args[args.index("--tag") + 1] if "--tag" in args else ""))
+if tool == "restic" and args[:1] == ["dump"]:
+    answer("restic-dump")
+if tool == "systemctl" and args[:1] == ["is-active"]:
+    state = next_of(f"unit-states-{args[-1]}", "inactive")
+    if "--quiet" not in args:
+        print(state)
+    sys.exit(0 if state == "active" else 3)
 if tool == "terraform" and args[:2] == ["output", "-raw"]:
     answer(f"tf-output-{args[2]}", 1)
 if tool == "terraform" and args[:2] == ["state", "pull"]:
@@ -147,17 +191,19 @@ if tool == "terraform" and args[:1] in (["plan"], ["apply"]) and (d / "tf-says")
 if tool == "aws" and args[:2] == ["ssm", "get-parameter"]:
     answer("ssm" + args[args.index("--name") + 1].replace("/", "_"), 254)
 if tool == "aws" and len(args) > 1:
-    seq = d / f"aws-{args[0]}.{args[1]}.seq"
-    if seq.exists():
-        answers = json.loads(seq.read_text())
-        rc, text = answers[0]
-        if len(answers) > 1:
-            seq.write_text(json.dumps(answers[1:]))
+    sequenced = next_of(f"aws-{args[0]}.{args[1]}.seq", None)
+    if sequenced:
+        rc, text = sequenced
         (sys.stdout if rc == 0 else sys.stderr).write(text)
         sys.exit(rc)
     answer(f"aws-{args[0]}.{args[1]}")
 sys.exit(0)
 '''
+
+
+def addon_manifest(release: str) -> str:
+    """What the fake prints for `helm template RELEASE ...` in the pinned Helm image."""
+    return f"apiVersion: v1\nkind: Namespace\nmetadata:\n  name: {release}\n"
 
 
 def flag_value(args: list[str], flag: str) -> str:
@@ -181,7 +227,8 @@ class Fakes:
         for tool in TOOLS:
             self._install(tool)
         self._write("manifest", MANIFEST)
-        self._write("eso-manifest", ESO_MANIFEST)
+        for addon in (REPO_ROOT / "k8s" / "platform").iterdir():
+            self._write(f"addon-manifest-{addon.name}", addon_manifest(addon.name))
         self.forward_port(FORWARD_PORT)
         self.tf_output("public_ip", NODE_IP)
         self.tf_output("instance_id", INSTANCE_ID)
@@ -202,17 +249,50 @@ class Fakes:
         data = json.loads(path.read_text()) if path.exists() else []
         path.write_text(json.dumps(change(data)))
 
+    def _sequence(self, name: str, answers: list[Any]) -> None:
+        """Successive answers of a repeated call, the last one repeating: the fake takes them with next_of(name)."""
+        self._write(name, json.dumps(answers))
+
     # --- what the scripts find ------------------------------------------------------------------------
-    def fail(self, tool: str, *args: str) -> None:
-        """Every call of `tool` whose args start with `args` fails (exit 1)."""
-        self._update("fail.json", lambda rules: rules + [[tool, *args]])
+    def fail(self, tool: str, *args: str, rc: int = 1) -> None:
+        """Every call of `tool` whose args start with `args` fails (exit `rc`, 1 by default)."""
+        self._update("fail.json", lambda rules: rules + [[tool, rc, *args]])
+
+    def restic_snapshots(self, tag: str, snapshots: list[dict[str, Any]]) -> None:
+        """What `restic snapshots --json --tag TAG` prints (restic's JSON: id, time, tags, paths)."""
+        self._write(f"restic-snapshots-{tag}", json.dumps(snapshots))
+
+    def restic_dump(self, data: str) -> None:
+        """What `restic dump ...` prints."""
+        self._write("restic-dump", data)
+
+    def unit_states(self, unit: str, states: list[str]) -> None:
+        """Successive answers of `systemctl is-active UNIT`, the last one repeating (e.g. a backup that is
+        "activating", then "inactive" once it has finished)."""
+        self._sequence(f"unit-states-{unit}", states)
+
+    def pods(self, answers: list[str]) -> None:
+        """Successive answers of `kubectl get pods ...` (the last one repeating); none set: no pods."""
+        self._sequence("kubectl-get-pods", answers)
+
+    def pvc_volume(self, name: str) -> None:
+        """What `kubectl get pvc ... -o jsonpath={.spec.volumeName}` prints: the bound PersistentVolume."""
+        self._write("pvc-volume", name)
+
+    def pv_path(self, path: str) -> None:
+        """What `kubectl get pv ... -o jsonpath=...` prints: the volume's directory on the node."""
+        self._write("pv-path", path)
 
     def spy(self, command: str) -> None:
         """Log every call of the real `command`, then run it."""
         real = shutil.which(command)
         assert real, f"{command} not installed"
-        self._install(command)
-        self._write(f"spy-{command}", real)
+        self.instead(command, real)
+
+    def instead(self, tool: str, program: str) -> None:
+        """Log every call of `tool`, then run `program` with the same arguments in its place."""
+        self._install(tool)
+        self._write(f"spy-{tool}", program)
 
     def http(self, url: str, body: str | None, rc: int | None = None, when: str | None = None,
              status: int | None = None) -> None:
@@ -223,6 +303,17 @@ class Fakes:
             rules = [r for r in rules if (r["url"], r["when"]) != (url, when)]
             return rules + ([{"url": url, "when": when, "body": body, "rc": rc, "status": status}]
                             if body is not None else [])
+        self._update("http.json", change)
+
+    def http_sequence(self, url: str, bodies: list[str], when: str | None = None) -> None:
+        """curl of `url` answers each body in turn (the last one repeating), e.g. a list before and after a restore."""
+        sequence = "http-sequence-" + hashlib.sha256(f"{url} {when}".encode()).hexdigest()[:12]
+        self._sequence(sequence, bodies)
+
+        def change(rules: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            rules = [r for r in rules if (r["url"], r["when"]) != (url, when)]
+            return rules + [{"url": url, "when": when, "body": bodies[-1], "sequence": sequence, "rc": None,
+                             "status": None}]
         self._update("http.json", change)
 
     def tf_output(self, name: str, value: str | None) -> None:
@@ -251,7 +342,7 @@ class Fakes:
     def aws_sequence(self, call: str, answers: list[tuple[int, str]]) -> None:
         """Successive answers (exit code, text) of a repeated `aws service operation` call; the last repeats.
         Text goes to stdout on exit 0, to stderr otherwise."""
-        self._write(f"aws-{call}.seq", json.dumps(answers))
+        self._sequence(f"aws-{call}.seq", answers)
 
     def parameter(self, name: str, value: str) -> None:
         """An SSM parameter `aws ssm get-parameter --name name` returns."""
@@ -264,9 +355,10 @@ class Fakes:
         self._write(f"secret-{name}", "existing")
 
     def eso_synced(self) -> None:
-        """What External Secrets Operator does on AWS: both Secrets exist once the ExternalSecrets are applied."""
-        self.secret_exists("policypal-db")
-        self.secret_exists("policypal-admin")
+        """What External Secrets Operator does on AWS: once the ExternalSecrets of the aws overlay are applied,
+        the Secret each one makes exists."""
+        for path in sorted((REPO_ROOT / "k8s" / "policypal" / "overlays" / "aws").glob("externalsecret-*.yaml")):
+            self.secret_exists(yaml.safe_load(path.read_text())["spec"]["target"]["name"])
 
     def revisions(self, name: str, before: str | None, after: str | None) -> None:
         """A Deployment's rollout revision before and after `kubectl apply` (None: it doesn't exist)."""

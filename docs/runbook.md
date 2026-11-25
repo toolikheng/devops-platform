@@ -97,7 +97,26 @@ Check http://localhost:9090/targets (job `devops-app` and job `docker-nodes`) an
 | HighLatency | p95 latency is above 0.5 s for 3 minutes |
 | NodeExporterDown | a node's node_exporter can't be scraped for 1 minute |
 
-The rules are unit-tested with `bash ci/rules-test.sh` (Docker only); CI runs the same script.
+The rules are unit-tested with `bash ci/rules-test.sh` (Docker only); CI runs the same script. It uses the Prometheus image the chart runs; after a chart bump, `tests/test_monitoring_platform.py` fails until `PROMETHEUS_IMAGE` in that script follows.
+
+### Monitoring on AWS
+
+`make cloud-addons` installs the monitoring after External Secrets Operator (`k8s/platform/kube-prometheus-stack/values-aws.yaml`: one day of metrics in memory, no Alertmanager, Prometheus scrapes the node's own node_exporter on 9100). PolicyPal's alert and dashboard ship with its aws overlay, so `make cloud-addons` must run before `make cloud-deploy` (the PrometheusRule needs the chart's CRD). With `make cloud-tunnel` running in another terminal:
+
+```bash
+export KUBECONFIG=~/.kube/devops-aws.yaml
+kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80      # http://localhost:3000/d/policypal
+kubectl -n monitoring get secret kube-prometheus-stack-grafana -o jsonpath='{.data.admin-password}' | base64 -d; echo   # user: admin
+kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:9090 # http://localhost:9090/alerts
+```
+
+The Grafana password is random, made by the chart in the cluster on its first install; a new node has a new one. The dashboard "PolicyPal on AWS" shows the API's available replicas, the alert, container restarts, node memory with the 75% line ([ADR 024](decisions/024-m7i-flex-node-for-monitoring.md)), the time since the last backup (red after 2 hours; no value until the node's backups are on), and memory and CPU per PolicyPal container. Grafana's dashboard sidecar reads ConfigMaps labelled `grafana_dashboard: "1"` in the `policypal` namespace only.
+
+| Alert | Fires when |
+|-------|------------|
+| PolicyPalApiUnavailable | `policypal-api` has had no available replica for 2 minutes, or kube-state-metrics has no count for it |
+
+To see it fire: `kubectl -n policypal scale deployment/policypal-api --replicas=0`. On k3d it was pending after 31 s and firing after 3 minutes (the 2 minutes plus the 30-second scrape and evaluation intervals); with the API back, it cleared within a minute. Scale it back with `--replicas=1`.
 
 ## Infrastructure nodes
 
@@ -201,7 +220,7 @@ At USD 15 actual spend in a month, AWS Budgets attaches `devops-platform-deny-ne
 
 ## AWS working session (ephemeral stack)
 
-Everything billed by the hour lives in `terraform/envs/aws` and exists only during a session. The default node is a c7i-flex.large on Spot: about USD 0.061/h, or USD 0.105/h on-demand (instance, public IPv4 and volume together).
+Everything billed by the hour lives in `terraform/envs/aws` and exists only during a session. The default node is an m7i-flex.large on Spot: about USD 0.060/h, or USD 0.127/h on-demand (instance, public IPv4 and volume together; [ADR 024](decisions/024-m7i-flex-node-for-monitoring.md)). To change the type of a running node, replace it: `terraform apply -replace=module.compute.aws_instance.node` (a one-time Spot instance can't be stopped, so an in-place change fails), then `make cloud-config`, `cloud-addons` and `cloud-deploy`.
 
 ```bash
 aws login --profile devops
@@ -367,12 +386,71 @@ The Deployments allow 15 minutes without progress (`progressDeadlineSeconds: 900
 
 Harmless. `kubectl apply` replaces `volumeClaimTemplates` as a whole, and the server adds default fields to it, so apply always sends a patch. The StatefulSet's generation doesn't change and Postgres isn't restarted; `kubectl diff -f <(bash scripts/render-k8s.sh aws)` shows nothing.
 
+## Backups on AWS (restic to S3)
+
+`make cloud-config` installs the backup on the node ([ADR 025](decisions/025-restic-backups-from-the-node.md)): restic, `/usr/local/sbin/policypal-backup` and an hourly `policypal-backup.timer`, **which stays off on a new node** (below). Each run backs up the Postgres dump, then the uploads, to `s3://toolikheng-devops-platform-backups/restic`, then applies the retention (7 daily, 4 weekly, 12 monthly), prunes and checks. The repository password is read from SSM Parameter Store by restic at run time and is never on disk.
+
+On the node (`aws ssm start-session --target "$(bash scripts/node-id.sh)"`, then `sudo -i`):
+
+```bash
+systemctl start policypal-backup                 # a backup now (the timer runs one every hour)
+systemctl status policypal-backup                # "failed" if the last run failed
+journalctl -u policypal-backup -n 50             # what it did
+systemctl list-timers policypal-backup.timer     # when the next one runs (nothing listed: the timer is off)
+# The snapshots (the same repository and password command as the service):
+export RESTIC_REPOSITORY=s3:s3.ap-southeast-1.amazonaws.com/toolikheng-devops-platform-backups/restic
+export RESTIC_PASSWORD_COMMAND="/usr/local/sbin/ssm-parameter /policypal/aws/restic-password" AWS_DEFAULT_REGION=ap-southeast-1
+restic snapshots
+```
+
+A successful backup also writes `policypal_backup_last_success_timestamp_seconds` to node_exporter's textfile directory (`/var/lib/node_exporter/textfile`); the dashboard's "Since the last backup" turns red after 2 hours. A failed one changes nothing there.
+
+### Turning the hourly backups on
+
+A new node's PolicyPal holds none of the old data until it is restored, and retention keeps only the newest snapshot of each day: a backup of the new node would push the last good one out of the repository. So after `make cloud-deploy` on a new node, as root on the node, do one of these:
+
+```bash
+policypal-backup restore latest   # there is data to bring back: restores it, then turns the hourly backups on
+policypal-backup enable           # a new environment with nothing to restore: turns them on
+```
+
+Don't run `systemctl start policypal-backup` on a new node before restoring: a backup by hand pushes the good run out the same way. `make cloud-config` never turns the timer on or off, so running it again doesn't change this.
+
+### Restore
+
+On the node, as root (the settings are in `/etc/policypal-backup.env`):
+
+```bash
+policypal-backup show latest                 # "<run> <database snapshot> <uploads snapshot>"
+policypal-backup restore latest              # or a run: policypal-backup restore run-20261125T020000Z
+```
+
+A restore first turns the hourly timer off and lets a backup that is already running finish (it gives up after 15 minutes, having changed nothing but the timer). Only then does it look the run up, because that backup's retention may have deleted it: a run that isn't there stops the restore with nothing touched and the backups off (`policypal-backup enable` turns them back on). Then it stops `policypal-api`, recreates the database and loads the run's dump (`pg_restore`, stopping at the first error), makes the uploads directory exactly the run's (files the backup didn't have are deleted), then starts the API, whose start-up ingestion then agrees with both, and turns the hourly backups on. If a step fails, the API is left at 0 replicas and the backups off on purpose (starting it on half-restored data could delete rows): fix the cause, run the restore again, or `kubectl -n policypal scale deployment/policypal-api --replicas=1`.
+
+### Restore test across a rebuild
+
+With `make cloud-tunnel` running:
+
+```bash
+make cloud-restore-test-before      # sentinels (a question and a policy), a backup now, the run recorded in ~/.cache/devops-platform/restore-test.env
+make cloud-down                     # then a new node with empty data:
+make cloud-rebuild && make cloud-addons && make cloud-deploy
+make cloud-restore-test-after       # refuses the same node or data that has the sentinels; restores the run; checks
+make cloud-smoke
+```
+
+`after` passes only if the restore reports the recorded snapshots, the question and the policy are back, and the policy file's sha256 matches the uploaded one. Node commands go through SSM Run Command (no charge), with `scripts/ssm-run.sh`: an AWS error such as an expired login stops the test at once and is printed. `before` backs up by hand (its node's timer stays off); after a pass, the restore has turned the new node's timer on.
+
+The scripts were run against k3d first, then on AWS on 2026-11-25: the backup, `restic snapshots`, `show`, and the restore test across a rebuild passed ([test log](aws-test-log.md)).
+
+A failed run leaves the unit failed and does not apply retention, so older snapshots stay. The first run creates the repository; later runs refuse to continue if it can't be opened (a wrong password, a lock held by another run). Restic's `Fatal: repository does not exist` on the very first run is expected: the script then creates it.
+
 ## Secrets (SSM Parameter Store and External Secrets Operator)
 
 | Secret | Kept in | Read by | Created by | Rotation |
 |---|---|---|---|---|
-| `/policypal/aws/db-password` | SSM SecureString, Standard, key `aws/ssm` | ESO → Secret `policypal-db` (`POSTGRES_PASSWORD`) → Postgres, and the API, which builds `DATABASE_URL` from it | Terraform, write-only (`terraform/persistent/policypal_secrets.tf`) | `db_password_version`, after `ALTER ROLE` (below) |
-| `/policypal/aws/admin-token` | same | ESO → Secret `policypal-admin` (`ADMIN_TOKEN`) → API; me, for the UI's admin page | same | `admin_token_version` (below) |
+| `/policypal/aws/db-password` | SSM SecureString, Standard, key `aws/ssm` | ESO → Secret `policypal-db` (`POSTGRES_PASSWORD`) → Postgres, and the API, which builds `DATABASE_URL` from it | Terraform, write-only, one entry of `terraform/persistent/secret-catalog.yaml` ([ADR 023](decisions/023-one-catalog-of-secrets.md)) | `secret_versions["db-password"]`, after `ALTER ROLE` (below) |
+| `/policypal/aws/admin-token` | same | ESO → Secret `policypal-admin` (`ADMIN_TOKEN`) → API; me, for the UI's admin page | same | `secret_versions["admin-token"]` (below) |
 | `/devops-platform/owner-cidr` | SSM String (not secret) | the ephemeral stack's plan | Terraform; `make owner-ip` sets the value | when my IP changes |
 | k3s admin kubeconfig | the node; `~/.kube/devops-aws.yaml` (600) | me | k3s | new cluster every session |
 | SSH key | `~/.ssh` | Ansible, through Session Manager | me | — |
@@ -386,7 +464,7 @@ The values are never in Git, the Terraform plan or its state. To check the state
 make check-state-secrets   # every count must be 0
 ```
 
-ESO is installed once per new node, before the first deploy: `make cloud-addons` (needs `make cloud-tunnel`). It runs the pinned chart from `k8s/platform/external-secrets/chart.env` with `values.yaml`, then applies the `ClusterSecretStore`. Running it again upgrades in place. Its controller runs on the host network to reach the node's credentials ([ADR 017](decisions/017-imds-hop-limit-and-host-network.md)).
+ESO is installed once per new node, before the first deploy: `make cloud-addons` (needs `make cloud-tunnel`). It runs `scripts/addon.sh install external-secrets aws`: the pinned chart from `k8s/platform/external-secrets/chart.env` with `values-aws.yaml`, then the `ClusterSecretStore`. Running it again upgrades in place. Its controller runs on the host network to reach the node's credentials ([ADR 017](decisions/017-imds-hop-limit-and-host-network.md)).
 
 ```bash
 kubectl get clustersecretstore aws-parameter-store                 # READY True
@@ -394,9 +472,16 @@ kubectl -n policypal get externalsecret                            # STATUS Secr
 kubectl -n external-secrets logs deploy/external-secrets | tail    # errors, with the AWS message
 ```
 
+### Add a secret
+
+1. Add an entry to `terraform/persistent/secret-catalog.yaml`: its name under `/policypal/aws/`, a description, and the namespace whose ExternalSecret reads it (leave the namespace out if the node reads it itself).
+2. Add its version (1) to `secret_versions` in `terraform/persistent/variables.tf`; Terraform refuses a catalog and a version list that don't match.
+3. For a namespace: an ExternalSecret there that reads exactly that key, and a pod that references the Secret. `make test-infra` fails until each catalogued secret is read by exactly one ExternalSecret in its namespace, and the `ClusterSecretStore` serves exactly the catalog's namespaces (today `policypal` only).
+4. Plan (one parameter to add, $0), apply, `make check-state-secrets`.
+
 ### Rotate the admin token
 
-1. Raise `admin_token_version` by 1 in `terraform/persistent/variables.tf` and commit it (the commit is the record; the value never appears).
+1. Raise `"admin-token"` in `secret_versions` by 1 in `terraform/persistent/variables.tf` and commit it (the commit is the record; the value never appears). A change to the secret's description in `secret-catalog.yaml` belongs in the same commit: on its own it would make the provider write a new version without a value ([ADR 023](decisions/023-one-catalog-of-secrets.md)).
 2. `cd terraform/persistent && terraform plan -out tfplan` shows one in-place change (`value_wo_version`); `terraform apply tfplan`.
 3. `make check-state-secrets`: still 0.
 4. If the node is running: `kubectl -n policypal annotate externalsecret policypal-admin force-sync="$(date +%s)" --overwrite` (otherwise ESO picks it up within the hour), then `kubectl -n policypal rollout restart deployment/policypal-api`. The API reads the token only at start; until it restarts, the old token still works.
@@ -405,9 +490,9 @@ The old value stays in the parameter's history: `aws ssm get-parameter --name /p
 
 ### Rotate the database password
 
-Postgres keeps the password it was initialised with, so changing only SSM would lock the API out. Every session starts a new database, so between sessions just raise `db_password_version` and apply. On a running node (written down, not yet demonstrated):
+Postgres keeps the password it was initialised with, so changing only SSM would lock the API out. Every session starts a new database, so between sessions just raise `"db-password"` in `secret_versions` and apply. On a running node (written down, not yet demonstrated):
 
-1. Raise `db_password_version`, commit, plan, apply.
+1. Raise `"db-password"` in `secret_versions`, commit, plan, apply.
 2. Set the new value in Postgres without printing it or putting it in a command line (`printf` is a shell builtin; the SQL goes to `psql` on stdin, and the password is letters and digits only):
 
    ```bash
@@ -425,7 +510,7 @@ Postgres keeps the password it was initialised with, so changing only SSM would 
 
 ### `make cloud-addons` fails with "context deadline exceeded" and a Pending controller pod
 
-`kubectl -n external-secrets describe pod` says "didn't have free ports for the requested pod ports": a rolling update tried to start the new controller next to the old one, and on one node both need the same host ports. `values.yaml` sets `strategy: Recreate` to prevent this. If it happens anyway, `kubectl -n external-secrets delete pod <old controller pod>` lets the new one start; the Secrets stay.
+`kubectl -n external-secrets describe pod` says "didn't have free ports for the requested pod ports": a rolling update tried to start the new controller next to the old one, and on one node both need the same host ports. `values-aws.yaml` sets `strategy: Recreate` to prevent this. If it happens anyway, `kubectl -n external-secrets delete pod <old controller pod>` lets the new one start; the Secrets stay.
 
 ## CI/CD on AWS (GitHub Actions with OIDC)
 
@@ -574,6 +659,7 @@ A clean result means no *known pattern* was found, not that there are no secrets
 |---------|-------|-----|
 | `curl localhost:8080` returns `404 page not found` | The ingress matches on host name | Add `-H "Host: devops-app.localhost"` |
 | `make check` fails on "Docker daemon reachable" | Docker Desktop is stopped, or WSL integration is off | Start Docker Desktop and enable integration for this distro |
+| CI's `build` job fails at the Trivy gate on a Debian package of the image (e.g. `libzstd1`, fixed version listed) | Debian published a security fix after `python:3.11-slim` was built. The runtime stage's `apt-get upgrade` installs it only because that stage is never taken from a build cache (`no-cache-filters: runtime` in CI, `--no-cache-filter runtime` in `ci/build.sh`); a cached layer kept an old `libzstd1` once | Re-run the job. If it still fails, check that the fix has reached the mirror: `docker run --rm python:3.11-slim sh -c 'apt-get update -qq && apt-cache policy <package>'` must list the fixed version from `trixie-security`. Locally, `make build` builds and scans the same way |
 | `make infra-up` fails on the bind mount | `~/.ssh/id_ed25519.pub` doesn't exist | `make install` generates the key |
 | Ansible reports `Permission denied (publickey)` | The nodes were started with a different key | `make infra-down && make infra-up` to remount the current key |
 | `make cluster-up` fails with "port is already allocated" | Something else uses host port 8080 | Stop whatever holds port 8080 |

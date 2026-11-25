@@ -1,13 +1,14 @@
 .PHONY: help check install \
         infra-up infra-down provision \
         venv test lint run-app image build \
-        cluster-up cluster-down deploy \
+        cluster-up cluster-down secrets-init deploy \
         monitoring-up monitoring-down \
         backup restore-test \
         test-infra cost-check tf-check ansible-check owner-ip cloud-up cloud-down \
         cloud-config cloud-tunnel cloud-rebuild \
         k8s-check policypal-secrets-local policypal-local cloud-deploy cloud-smoke \
         cloud-addons check-state-secrets skip-nightly-destroy \
+        cloud-restore-test-before cloud-restore-test-after \
         destroy all clean
 
 SHELL := /bin/bash
@@ -23,8 +24,6 @@ APP_DIR := $(REPO_ROOT)/app
 K8S_DIR := $(REPO_ROOT)/k8s
 INFRA_DIR := $(REPO_ROOT)/infra
 MONITORING_DIR := $(REPO_ROOT)/monitoring
-# kube-prometheus-stack chart. Helm doesn't upgrade CRDs, so bump this deliberately.
-KPS_CHART_VERSION := 92.16.0
 BACKUP_DIR := $(REPO_ROOT)/backup
 CI_DIR := $(REPO_ROOT)/ci
 # App virtualenv with the dev dependencies (created by `make venv`; gitignored).
@@ -90,6 +89,7 @@ help:
 	@$(ECHO) "$(BLUE)Phase 4 - Kubernetes:$(NC)"
 	@$(ECHO) "  $(GREEN)make cluster-up$(NC)    Create k3d cluster"
 	@$(ECHO) "  $(GREEN)make cluster-down$(NC)  Destroy k3d cluster"
+	@$(ECHO) "  $(GREEN)make secrets-init$(NC)  Create the backup's restic password in the cluster, once (part of deploy)"
 	@$(ECHO) "  $(GREEN)make deploy$(NC)        Deploy app to cluster"
 	@$(ECHO) "  $(GREEN)make policypal-local$(NC) Deploy PolicyPal to k3d and smoke-test it (http://policypal.localhost:8080)"
 	@$(ECHO) "  $(GREEN)make policypal-secrets-local$(NC) Create PolicyPal's random Secrets in k3d (once; never printed)"
@@ -116,10 +116,12 @@ help:
 	@$(ECHO) "  $(GREEN)make cloud-config$(NC)  Configure the running node with Ansible over Session Manager (common, node_exporter, k3s)"
 	@$(ECHO) "  $(GREEN)make cloud-tunnel$(NC)  Forward the node's Kubernetes API to localhost:16443 (foreground; Ctrl-C stops it)"
 	@$(ECHO) "  $(GREEN)make cloud-rebuild$(NC) cloud-up, then cloud-config: from nothing to a Ready k3s node"
-	@$(ECHO) "  $(GREEN)make cloud-addons$(NC)  Install External Secrets Operator on the node (needs make cloud-tunnel running)"
+	@$(ECHO) "  $(GREEN)make cloud-addons$(NC)  Install External Secrets Operator, then the monitoring, on the node (needs make cloud-tunnel running)"
 	@$(ECHO) "  $(GREEN)make cloud-deploy$(NC)  Deploy PolicyPal to the node and smoke-test it (needs make cloud-tunnel running)"
 	@$(ECHO) "  $(GREEN)make cloud-smoke$(NC)   Smoke-test PolicyPal on the node only (needs make cloud-tunnel running)"
 	@$(ECHO) "  $(GREEN)make check-state-secrets$(NC) Read-only: show that no secret value is in the persistent Terraform state"
+	@$(ECHO) "  $(GREEN)make cloud-restore-test-before$(NC) Restore test, step 1: sentinels, a backup, the run recorded (needs make cloud-tunnel)"
+	@$(ECHO) "  $(GREEN)make cloud-restore-test-after$(NC)  Restore test, step 2 on a rebuilt node: restore the run, check the sentinels came back"
 	@$(ECHO) "  $(GREEN)make skip-nightly-destroy$(NC) Hold off the 02:17 MYT nightly destroy for 8 hours (GitHub setting; UNTIL=... for longer, 7 days max)"
 	@$(ECHO) ""
 	@$(ECHO) "$(BLUE)Utilities:$(NC)"
@@ -232,10 +234,15 @@ cluster-down:
 	fi
 	@$(ECHO) "$(GREEN)✓ Cluster removed$(NC)"
 
+# Passwords reach kubectl on stdin (printf is a shell builtin), never as arguments, which ps shows to every
+# user. A Secret that exists is left alone: the backup repository keeps the password it was made with.
 secrets-init:
 	@kubectl create namespace devops --dry-run=client -o yaml | kubectl apply -f -
-	@kubectl -n devops get secret backup-credentials >/dev/null 2>&1 || \
-		kubectl -n devops create secret generic backup-credentials --from-literal=password="$$(openssl rand -base64 24)"
+	@if ! kubectl -n devops get secret backup-credentials >/dev/null 2>&1; then \
+		password="$$(openssl rand -hex 24)"; \
+		printf 'password=%s\n' "$$password" | \
+			kubectl -n devops create secret generic backup-credentials --from-env-file=/dev/stdin; \
+	fi
 
 # Build the image, load it into k3d, apply the dev overlay, and roll out the new image.
 deploy: image secrets-init
@@ -252,16 +259,14 @@ deploy: image secrets-init
 monitoring-up:
 	@$(ECHO) "$(BLUE)Deploying monitoring stack...$(NC)"
 	@kubectl create namespace monitoring 2>/dev/null || true
-	@kubectl -n monitoring get secret grafana-admin >/dev/null 2>&1 || \
-		kubectl -n monitoring create secret generic grafana-admin \
-		--from-literal=admin-user=admin --from-literal=admin-password="$$(openssl rand -base64 18)"
-	@helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-	@helm repo update
-	@helm upgrade --install kube-prometheus-stack \
-		prometheus-community/kube-prometheus-stack \
-		--version $(KPS_CHART_VERSION) \
-		-n monitoring \
-		-f "$(MONITORING_DIR)/helm-values.yaml"
+	@# Grafana's login: the password reaches kubectl on stdin, as in secrets-init; an existing one is kept.
+	@if ! kubectl -n monitoring get secret grafana-admin >/dev/null 2>&1; then \
+		password="$$(openssl rand -hex 24)"; \
+		printf 'admin-user=admin\nadmin-password=%s\n' "$$password" | \
+			kubectl -n monitoring create secret generic grafana-admin --from-env-file=/dev/stdin; \
+	fi
+	@# The chart, its version and values: k8s/platform/kube-prometheus-stack (chart.env, values-local.yaml).
+	@bash "$(REPO_ROOT)/scripts/addon.sh" install kube-prometheus-stack local
 	@kubectl apply -f "$(MONITORING_DIR)/servicemonitor.yaml" -f "$(MONITORING_DIR)/rules/alert-rules.yaml"
 	@kubectl apply -k "$(MONITORING_DIR)/dashboards"   # Grafana sidecar picks it up (label grafana_dashboard=1)
 	@$(ECHO) "$(GREEN)✓ Monitoring stack deployed$(NC)"
@@ -338,10 +343,11 @@ cloud-rebuild:
 
 # On the AWS node. No AWS changes: kubectl and helm go through make cloud-tunnel (run it in another
 # terminal), and the UI is checked at the node's public IP, which only your IP can reach. cloud-addons
-# installs External Secrets Operator, which makes PolicyPal's Secrets from SSM Parameter Store, so it runs
-# once per new node, before cloud-deploy.
+# installs External Secrets Operator, which makes PolicyPal's Secrets from SSM Parameter Store, then the
+# monitoring (kube-prometheus-stack), so it runs once per new node, before cloud-deploy.
 cloud-addons:
-	@KUBECONFIG="$(AWS_KUBECONFIG)" bash "$(REPO_ROOT)/scripts/install-eso.sh"
+	@KUBECONFIG="$(AWS_KUBECONFIG)" bash "$(REPO_ROOT)/scripts/addon.sh" install external-secrets aws
+	@KUBECONFIG="$(AWS_KUBECONFIG)" bash "$(REPO_ROOT)/scripts/addon.sh" install kube-prometheus-stack aws
 
 cloud-deploy:
 	@ip="$$(AWS_PROFILE="$(AWS_PROFILE)" bash "$(REPO_ROOT)/scripts/node-ip.sh")"; \
@@ -350,6 +356,14 @@ cloud-deploy:
 cloud-smoke:
 	@ip="$$(AWS_PROFILE="$(AWS_PROFILE)" bash "$(REPO_ROOT)/scripts/node-ip.sh")"; \
 		KUBECONFIG="$(AWS_KUBECONFIG)" bash "$(REPO_ROOT)/scripts/smoke-test.sh" "http://$$ip"
+
+# The restore test across a rebuild (ADR 025): before, on the running node; then make cloud-down, cloud-rebuild,
+# cloud-addons and cloud-deploy; then after, on the new node. Needs make cloud-tunnel. SSM Run Command: no charge.
+cloud-restore-test-before:
+	@KUBECONFIG="$(AWS_KUBECONFIG)" AWS_PROFILE="$(AWS_PROFILE)" bash "$(REPO_ROOT)/scripts/restore-test.sh" before
+
+cloud-restore-test-after:
+	@KUBECONFIG="$(AWS_KUBECONFIG)" AWS_PROFILE="$(AWS_PROFILE)" bash "$(REPO_ROOT)/scripts/restore-test.sh" after
 
 # A GitHub repository variable, not an AWS change: nightly-destroy.yml skips while UNTIL is in the future.
 skip-nightly-destroy:

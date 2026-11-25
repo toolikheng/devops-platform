@@ -1,7 +1,7 @@
 """Project rules for External Secrets Operator (k8s/platform/external-secrets) on the k3s node.
 
-Checked on the chart as it is installed: scripts/render-eso.sh renders the pinned chart (chart.env) with our
-values, the same chart and values scripts/install-eso.sh installs. kubeconform (ci/k8s-checks.sh) proves the
+Checked on the chart as it is installed: `scripts/addon.sh render external-secrets aws` renders the pinned chart
+(chart.env) with our values, the same chart and values `addon.sh install` uses. kubeconform (ci/k8s-checks.sh) proves the
 YAML is valid; these tests pin what matters here: only the controller runs on the host network (it needs
 the node's AWS credentials, and the node's IMDSv2 hop limit of 1 answers host processes only), it takes no
 port the node already uses, every pod is sized, images are the pinned version, and the store reads
@@ -16,11 +16,11 @@ from typing import Any
 import pytest
 import yaml
 
-from conftest import chart_env
+from conftest import chart_env, secret_catalog
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ESO_DIR = REPO_ROOT / "k8s" / "platform" / "external-secrets"
-RENDER_ESO = REPO_ROOT / "scripts" / "render-eso.sh"
+ADDON = REPO_ROOT / "scripts" / "addon.sh"
 
 CONTROLLER = "external-secrets"
 NOT_ON_HOST = ("external-secrets-webhook", "external-secrets-cert-controller")
@@ -33,8 +33,9 @@ NODE_PORTS = {22, 53, 80, 443, 6443, 6444, 9100, 10010, 10248, 10249, 10250, 102
 @pytest.fixture(scope="module")
 def eso() -> list[dict[str, Any]]:
     """The ESO chart rendered with our values. A render that fails is a test failure, not a skip."""
-    result = subprocess.run(["bash", str(RENDER_ESO)], capture_output=True, text=True, timeout=300)
-    assert result.returncode == 0, f"render-eso.sh failed:\n{result.stderr}"
+    result = subprocess.run(["bash", str(ADDON), "render", "external-secrets", "aws"], capture_output=True, text=True,
+                            timeout=300)
+    assert result.returncode == 0, f"addon.sh render external-secrets aws failed:\n{result.stderr}"
     return [doc for doc in yaml.safe_load_all(result.stdout) if doc]
 
 
@@ -53,10 +54,11 @@ def pod_spec(deployment: dict[str, Any]) -> dict[str, Any]:
 # --- the chart ------------------------------------------------------------------------------------------
 
 def test_chart_is_pinned_to_one_exact_version() -> None:
-    pinned = chart_env()
-    assert pinned.get("ESO_CHART") == "external-secrets"
-    assert pinned.get("ESO_CHART_REPO") == "https://charts.external-secrets.io"
-    assert re.fullmatch(r"\d+\.\d+\.\d+", pinned.get("ESO_CHART_VERSION", ""))
+    pinned = chart_env("external-secrets")
+    assert pinned.get("CHART") == "external-secrets"
+    assert pinned.get("CHART_REPO") == "https://charts.external-secrets.io"
+    assert pinned.get("NAMESPACE") == "external-secrets"
+    assert re.fullmatch(r"\d+\.\d+\.\d+", pinned.get("CHART_VERSION", ""))
 
 
 def test_render_has_the_controller_webhook_and_cert_controller(eso: list) -> None:
@@ -112,7 +114,7 @@ def test_every_eso_container_has_requests_and_a_memory_limit(eso: list) -> None:
 
 
 def test_eso_images_are_the_pinned_chart_version(eso: list) -> None:
-    expected = f"ghcr.io/external-secrets/external-secrets:v{chart_env()['ESO_CHART_VERSION']}"
+    expected = f"ghcr.io/external-secrets/external-secrets:v{chart_env('external-secrets')['CHART_VERSION']}"
     images = {c["image"] for d in deployments(eso).values() for c in pod_spec(d)["containers"]}
     assert images == {expected}
 
@@ -135,5 +137,9 @@ def test_store_reads_parameter_store_with_the_nodes_role() -> None:
 
 
 def test_only_the_policypal_namespace_may_use_the_store() -> None:
-    # Any ExternalSecret could otherwise read whatever the node role may read, from any namespace.
-    assert store()["spec"]["conditions"] == [{"namespaces": ["policypal"]}]
+    # Any ExternalSecret could otherwise read whatever the node role may read, from any namespace. The store
+    # allows exactly the namespaces the secret catalog names, and that is policypal alone: secrets without a
+    # namespace are read by the node itself.
+    namespaces = sorted({e["namespace"] for e in secret_catalog().values() if e.get("namespace")})
+    assert namespaces == ["policypal"]
+    assert store()["spec"]["conditions"] == [{"namespaces": namespaces}]
