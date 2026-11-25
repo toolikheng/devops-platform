@@ -659,6 +659,7 @@ A clean result means no *known pattern* was found, not that there are no secrets
 |---------|-------|-----|
 | `curl localhost:8080` returns `404 page not found` | The ingress matches on host name | Add `-H "Host: devops-app.localhost"` |
 | `make check` fails on "Docker daemon reachable" | Docker Desktop is stopped, or WSL integration is off | Start Docker Desktop and enable integration for this distro |
+| CI's `build` job fails at the Trivy gate on a Debian package of the image (e.g. `libzstd1`, fixed version listed) | Debian published a security fix after `python:3.11-slim` was built. The runtime stage's `apt-get upgrade` installs it only because that stage is never taken from a build cache (`no-cache-filters: runtime` in CI, `--no-cache-filter runtime` in `ci/build.sh`); a cached layer kept an old `libzstd1` once | Re-run the job. If it still fails, check that the fix has reached the mirror: `docker run --rm python:3.11-slim sh -c 'apt-get update -qq && apt-cache policy <package>'` must list the fixed version from `trixie-security`. Locally, `make build` builds and scans the same way |
 | `make infra-up` fails on the bind mount | `~/.ssh/id_ed25519.pub` doesn't exist | `make install` generates the key |
 | Ansible reports `Permission denied (publickey)` | The nodes were started with a different key | `make infra-down && make infra-up` to remount the current key |
 | `make cluster-up` fails with "port is already allocated" | Something else uses host port 8080 | Stop whatever holds port 8080 |
