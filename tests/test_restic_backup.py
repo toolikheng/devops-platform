@@ -18,7 +18,9 @@ The script runs here with the fake CLIs of tests/fakecli.py (kubectl, restic), s
 """
 
 import re
+import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -322,9 +324,26 @@ def textfile(fakes: Fakes) -> Path:
     return fakes.dir / "textfile" / "policypal_backup.prom"
 
 
-def test_a_successful_backup_records_its_time_for_prometheus(node: tuple[Fakes, Path]) -> None:
+# The script and this test read the wall clock separately, and it can step back between the two readings (WSL2's
+# did, 1.5 s within 40 s; this test failed 1 run in 30). The recorded time must be within this of the backup's.
+CLOCK_SLACK = 5
+
+
+def clock_behind(fakes: Fakes, seconds: int) -> None:
+    """The script's `date +%s` reads `seconds` behind this test's clock, as after a step back of the wall clock
+    (WSL2's was measured stepping back 1.5 s within 40 s). Any other `date` call is the real one."""
+    real = shutil.which("date")
+    shim = fakes.bin / "date"
+    shim.write_text(f'#!/bin/sh\nif [ "$1" = "+%s" ]; then echo $(( $({real} +%s) - {seconds} )); '
+                    f'else exec {real} "$@"; fi\n')
+    shim.chmod(0o755)
+
+
+@pytest.mark.parametrize("behind", [0, 2])
+def test_a_successful_backup_records_its_time_for_prometheus(node: tuple[Fakes, Path], behind: int) -> None:
     fakes, _ = node
-    import time
+    if behind:
+        clock_behind(fakes, behind)
     before = int(time.time())
     assert backup(fakes).returncode == 0
     after = int(time.time())
@@ -332,7 +351,8 @@ def test_a_successful_backup_records_its_time_for_prometheus(node: tuple[Fakes, 
     assert "# TYPE policypal_backup_last_success_timestamp_seconds gauge" in lines
     [sample] = [line for line in lines if not line.startswith("#")]
     name, value = sample.split()
-    assert name == "policypal_backup_last_success_timestamp_seconds" and before <= int(value) <= after
+    assert name == "policypal_backup_last_success_timestamp_seconds"
+    assert before - CLOCK_SLACK <= int(value) <= after + CLOCK_SLACK
     assert [p.name for p in textfile(fakes).parent.iterdir()] == ["policypal_backup.prom"], "no temporary file left"
 
 
