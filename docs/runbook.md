@@ -388,7 +388,7 @@ Harmless. `kubectl apply` replaces `volumeClaimTemplates` as a whole, and the se
 
 ## Backups on AWS (restic to S3)
 
-`make cloud-config` installs the backup on the node ([ADR 025](decisions/025-restic-backups-from-the-node.md)): restic, `/usr/local/sbin/policypal-backup` and an hourly `policypal-backup.timer`. Each run backs up the Postgres dump, then the uploads, to `s3://toolikheng-devops-platform-backups/restic`, then applies the retention (7 daily, 4 weekly, 12 monthly), prunes and checks. The repository password is read from SSM Parameter Store by restic at run time and is never on disk.
+`make cloud-config` installs the backup on the node ([ADR 025](decisions/025-restic-backups-from-the-node.md)): restic, `/usr/local/sbin/policypal-backup` and an hourly `policypal-backup.timer`, **which stays off on a new node** (below). Each run backs up the Postgres dump, then the uploads, to `s3://toolikheng-devops-platform-backups/restic`, then applies the retention (7 daily, 4 weekly, 12 monthly), prunes and checks. The repository password is read from SSM Parameter Store by restic at run time and is never on disk.
 
 On the node (`aws ssm start-session --target "$(bash scripts/node-id.sh)"`, then `sudo -i`):
 
@@ -396,7 +396,7 @@ On the node (`aws ssm start-session --target "$(bash scripts/node-id.sh)"`, then
 systemctl start policypal-backup                 # a backup now (the timer runs one every hour)
 systemctl status policypal-backup                # "failed" if the last run failed
 journalctl -u policypal-backup -n 50             # what it did
-systemctl list-timers policypal-backup.timer     # when the next one runs
+systemctl list-timers policypal-backup.timer     # when the next one runs (nothing listed: the timer is off)
 # The snapshots (the same repository and password command as the service):
 export RESTIC_REPOSITORY=s3:s3.ap-southeast-1.amazonaws.com/toolikheng-devops-platform-backups/restic
 export RESTIC_PASSWORD_COMMAND="/usr/local/sbin/ssm-parameter /policypal/aws/restic-password" AWS_DEFAULT_REGION=ap-southeast-1
@@ -404,6 +404,17 @@ restic snapshots
 ```
 
 A successful backup also writes `policypal_backup_last_success_timestamp_seconds` to node_exporter's textfile directory (`/var/lib/node_exporter/textfile`); the dashboard's "Since the last backup" turns red after 2 hours. A failed one changes nothing there.
+
+### Turning the hourly backups on
+
+A new node's PolicyPal holds none of the old data until it is restored, and retention keeps only the newest snapshot of each day: a backup of the new node would push the last good one out of the repository. So after `make cloud-deploy` on a new node, as root on the node, do one of these:
+
+```bash
+policypal-backup restore latest   # there is data to bring back: restores it, then turns the hourly backups on
+policypal-backup enable           # a new environment with nothing to restore: turns them on
+```
+
+Don't run `systemctl start policypal-backup` on a new node before restoring: a backup by hand pushes the good run out the same way. `make cloud-config` never turns the timer on or off, so running it again doesn't change this.
 
 ### Restore
 
@@ -414,7 +425,7 @@ policypal-backup show latest                 # "<run> <database snapshot> <uploa
 policypal-backup restore latest              # or a run: policypal-backup restore run-20261125T020000Z
 ```
 
-A restore stops `policypal-api`, recreates the database and loads the run's dump (`pg_restore`, stopping at the first error), makes the uploads directory exactly the run's (files the backup didn't have are deleted), then starts the API, whose start-up ingestion then agrees with both. If a step fails, the API is left at 0 replicas on purpose (starting it on half-restored data could delete rows): fix the cause, run the restore again, or `kubectl -n policypal scale deployment/policypal-api --replicas=1`.
+A restore stops `policypal-api`, recreates the database and loads the run's dump (`pg_restore`, stopping at the first error), makes the uploads directory exactly the run's (files the backup didn't have are deleted), then starts the API, whose start-up ingestion then agrees with both, and turns the hourly backups on. If a step fails, the API is left at 0 replicas and the backups off on purpose (starting it on half-restored data could delete rows): fix the cause, run the restore again, or `kubectl -n policypal scale deployment/policypal-api --replicas=1`.
 
 ### Restore test across a rebuild
 
@@ -428,7 +439,7 @@ make cloud-restore-test-after       # refuses the same node or data that has the
 make cloud-smoke
 ```
 
-`after` passes only if the restore reports the recorded snapshots, the question and the policy are back, and the policy file's sha256 matches the uploaded one. Node commands go through SSM Run Command (no charge).
+`after` passes only if the restore reports the recorded snapshots, the question and the policy are back, and the policy file's sha256 matches the uploaded one. Node commands go through SSM Run Command (no charge). `before` backs up by hand (its node's timer stays off); after a pass, the restore has turned the new node's timer on.
 
 The scripts were run against k3d first, then on AWS on 2026-11-25: the backup, `restic snapshots`, `show`, and the restore test across a rebuild passed ([test log](aws-test-log.md)).
 
