@@ -72,6 +72,7 @@ The local cluster runs an image built on the machine and imported with `k3d imag
 | Secret scanning | `.gitleaks.toml`, `.gitleaksignore`, `ci/gitleaks.sh`, `.pre-commit-config.yaml`, `.github/workflows/secret-scan.yml` | gitleaks (pinned image) with its default rules plus `plain-password-assignment`; the full history in CI on every pull request and weekly, staged changes in a pre-commit hook; values always redacted. Two known findings from `7ca581f` ignored by fingerprint |
 | Monitoring | `k8s/platform/kube-prometheus-stack`, `monitoring/`, `k8s/policypal/overlays/aws` | kube-prometheus-stack as an add-on (chart 92.16.0 pinned in `chart.env`, installed by `scripts/addon.sh`, rendered and kubeconform-checked like ESO). k3d: `values-local.yaml`, and in `monitoring/` the v1 app's ServiceMonitor, alert rules and dashboard. AWS: `values-aws.yaml` (one day of metrics in memory, no Alertmanager or chart rules, Prometheus scrapes the node's node_exporter on 9100, a trimmed Grafana), and PolicyPal's alert (PolicyPalApiUnavailable) and dashboard in its aws overlay. All alert rules are promtool-tested with the chart's own Prometheus image |
 | Backup | `backup/` | Daily CronJob (SQLite online backup, then restic), restore Job, restore test |
+| PolicyPal's backups on AWS | `ansible/roles/restic_backup`, `terraform/persistent/backups_bucket.tf`, `scripts/restore-test.sh` | restic 0.19.1 (sha256-checked) on the node with an hourly systemd timer, off on a new node until `policypal-backup restore` or `enable`. Each run: the Postgres dump (through `kubectl exec`), then the uploads directory found from its volume, to `s3://toolikheng-devops-platform-backups/restic` with the node role (the `restic/` prefix only), then 7/4/12 retention, prune, check, and the success time for node_exporter's textfile collector. The password comes from SSM at run time. A restore turns the timer off, lets a running backup finish, stops the API, reloads the database and the uploads, starts the API and turns the timer back on ([ADR 025](decisions/025-restic-backups-from-the-node.md)) |
 | Terraform persistent stack (AWS) | `terraform/persistent` | S3 state bucket (versioned, SSE-S3, TLS-only, native lockfile), `zero-spend` and `monthly-cap` budgets, and the USD 15 budget action that denies new spend. Also the node's role (11 SSM-agent actions, plus `GetParameter` on `/policypal/aws/*`), its instance profile, the SSM parameter `/devops-platform/owner-cidr`, and PolicyPal's two SecureStrings. Only $0-at-rest resources; applied from the laptop. See ADRs 005–007 and 016 |
 | Terraform ephemeral stack (AWS) | `terraform/envs/aws`, `terraform/modules/{network,compute}` | Everything billed by the hour, created with `make cloud-up` and destroyed with `make cloud-down` every session. `network`: one VPC with a public subnet and internet gateway (no NAT, Elastic IP or endpoints). `compute`: one Ubuntu 24.04 node (allowlisted type, IMDSv2 hop limit 1, encrypted gp3, on-demand or Spot) and its security group, allowing TCP 80 from the owner's /32 only. It finds the instance profile and owner IP by name, not through the persistent state. See ADRs 008–012 |
 | GitHub OIDC roles (AWS) | `terraform/persistent/github_oidc.tf`, `github_permissions.tf` | GitHub's OIDC provider and four roles, each trusting exact token subjects (GitHub's immutable form, `toolikheng@149467084/devops-platform@1406132198`): `gha-tf-plan` (pull requests and master, read-only), `gha-tf-apply` (environment `aws-apply`, my approval), `gha-tf-destroy` (`aws-nightly`), `gha-deploy` (`aws-deploy`). No role can change IAM; the apply role's Deny statements repeat the cost rules for `RunInstances`; deletes need the ephemeral stack's tags ([ADR 020](decisions/020-one-oidc-role-per-ci-job.md)) |
@@ -104,10 +105,11 @@ flowchart LR
     laptop -->|"terraform: write-only values"| secrets[(SSM SecureStrings<br/>/policypal/aws/*)]
     laptop -->|"shell, Ansible (SSH inside the session),<br/>kubectl (port 6443 forwarded to localhost:16443)"| ssm[AWS Systems Manager]
     subgraph vpc["VPC 10.20.0.0/16, public subnet 10.20.1.0/24"]
-        node["EC2 node<br/>Ubuntu 24.04, IMDSv2 hop 1<br/>SSM agent, k3s, node_exporter<br/>ESO controller (host network)<br/>PolicyPal: Traefik → UI → API → Postgres"]
+        node["EC2 node<br/>Ubuntu 24.04, IMDSv2 hop 1<br/>SSM agent, k3s, node_exporter, restic timer<br/>ESO controller (host network)<br/>PolicyPal: Traefik → UI → API → Postgres<br/>Prometheus, Grafana"]
     end
     ssm <-->|"agent connects out (443)"| node
     node -->|"ESO: GetParameter with the node role (443)"| secrets
+    node -->|"restic, hourly: dump + uploads with the node role (443)"| backups[(S3 backups bucket<br/>restic/)]
     browser["Owner browser"] -->|"TCP 80, owner /32 only"| node
     node -->|"443/80 via internet gateway"| internet["AWS APIs, GitHub, GHCR, apt"]
     laptop -->|"make cloud-deploy: kubectl through the tunnel"| ssm
@@ -132,13 +134,14 @@ flowchart LR
 ## Known limitations
 
 - **`make deploy` always restarts the app**, because the dev image tag is always `latest`. The restart drops no requests.
-- **Backups live on one node's disk.** The restic repository is a 5Gi `local-path` PVC with no off-site copy.
+- **The homelab's backups live on one node's disk.** Its restic repository is a 5Gi `local-path` PVC with no off-site copy (the AWS node's go to S3).
 - **One snapshot per day.** Retention keeps the newest snapshot of each day, so a manual backup replaces that day's scheduled one.
 - **SQLite on one replica.** The app is single-writer; scaling out needs a different database.
 - **`make restore-test` wipes and restores the dev database** and leaves its test items behind. Run it only against a dev cluster.
 - **The app runs on one machine only.** It has not been deployed beyond k3d; the `prod` overlay is a template. The AWS node exists only during a session.
 - **The AWS node is a single instance** with no high availability. A Spot interruption or a terminated instance takes it down until it is rebuilt (`make cloud-rebuild`, then `make cloud-deploy`).
-- **PolicyPal's data lasts one session.** Postgres and the uploads volume are folders on the node's disk; there is no backup yet.
+- **PolicyPal's data lives on the node's disk** (Postgres and the uploads volume). Hourly backups to S3 bring it back on a new node, so up to an hour of changes can be lost, and backups on a new node start only after a restore or `policypal-backup enable`, run by hand on the node.
+- **The AWS alert notifies no one.** There is no Alertmanager on the node; the alert shows in Prometheus and Grafana only.
 - **A rotated secret reaches the API only when it restarts**, and the database password also needs `ALTER ROLE` in Postgres (runbook).
 - **The API is down during each PolicyPal deploy** (`Recreate`: one process, one ReadWriteOnce volume), and until the rollback if the new version fails.
 - **`kubectl apply` always reports the Postgres StatefulSet as configured**: it replaces `volumeClaimTemplates` as a whole and the server adds defaults. The generation doesn't change and nothing restarts.

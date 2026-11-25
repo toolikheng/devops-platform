@@ -110,7 +110,7 @@ kubectl -n monitoring get secret kube-prometheus-stack-grafana -o jsonpath='{.da
 kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:9090 # http://localhost:9090/alerts
 ```
 
-The Grafana password is random, made by the chart in the cluster on its first install; a new node has a new one. The dashboard "PolicyPal on AWS" shows the API's available replicas, the alert, container restarts, node memory with the 75% line ([ADR 024](decisions/024-m7i-flex-node-for-monitoring.md)), and memory and CPU per PolicyPal container. Grafana's dashboard sidecar reads ConfigMaps labelled `grafana_dashboard: "1"` in the `policypal` namespace only.
+The Grafana password is random, made by the chart in the cluster on its first install; a new node has a new one. The dashboard "PolicyPal on AWS" shows the API's available replicas, the alert, container restarts, node memory with the 75% line ([ADR 024](decisions/024-m7i-flex-node-for-monitoring.md)), the time since the last backup (red after 2 hours; no value until the node's backups are on), and memory and CPU per PolicyPal container. Grafana's dashboard sidecar reads ConfigMaps labelled `grafana_dashboard: "1"` in the `policypal` namespace only.
 
 | Alert | Fires when |
 |-------|------------|
