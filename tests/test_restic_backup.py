@@ -447,6 +447,15 @@ def test_restore_stops_the_api_restores_the_database_then_the_uploads_then_start
     assert "run-20261125T020000Z" in result.stdout and DB_B in result.stdout and UP_B in result.stdout
 
 
+def test_a_restore_reports_its_run_snapshots_and_where_the_uploads_went(backups: tuple[Fakes, Path]) -> None:
+    # The restore test reads this line instead of finding the uploads directory a second way.
+    fakes, uploads = backups
+    result = run(fakes, "restore", "latest")
+    assert result.returncode == 0, output(result)
+    assert f"policypal-backup: restored run-20261125T020000Z: database {DB_B}, uploads {UP_B} into {uploads}" \
+        in result.stdout.splitlines()
+
+
 @pytest.mark.parametrize("failing", [("kubectl", "exec", "-i"), ("restic", "restore")])
 def test_a_failed_restore_leaves_the_api_stopped_and_says_so(backups: tuple[Fakes, Path],
                                                             failing: tuple[str, ...]) -> None:

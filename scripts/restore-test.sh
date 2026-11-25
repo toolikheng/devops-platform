@@ -35,6 +35,9 @@ case "$(realpath -m -- "$STATE")/" in
 esac
 # The stacks fix their region in code.
 REGION="ap-southeast-1"
+# What the before phase records (KEY=value lines) and the after phase reads back: no secret, only IDs and the
+# sentinels.
+STATE_KEYS=(RUN DB_SNAPSHOT UPLOADS_SNAPSHOT INSTANCE SLUG QUESTION SHA256)
 NAMESPACE="policypal"
 
 fail() {
@@ -110,21 +113,19 @@ if [ "$PHASE" = before ]; then
   INSTANCE="$(bash "$SCRIPTS/node-id.sh")"
 
   mkdir -p "$(dirname "$STATE")"
-  (umask 077 && printf '%s\n' "RUN=$RUN" "DB_SNAPSHOT=$DB_SNAPSHOT" "UPLOADS_SNAPSHOT=$UPLOADS_SNAPSHOT" \
-    "INSTANCE=$INSTANCE" "SLUG=$SLUG" "QUESTION=$QUESTION" "SHA256=$SHA256" >"$STATE")
+  (umask 077 && for key in "${STATE_KEYS[@]}"; do printf '%s=%s\n' "$key" "${!key}"; done >"$STATE")
   echo "restore-test: recorded $RUN in $STATE. Next: make cloud-down, cloud-rebuild, cloud-addons, cloud-deploy,"
   echo "then make cloud-restore-test-after."
   exit 0
 fi
 
 [ -f "$STATE" ] || fail "no $STATE: run the before phase first"
-RUN="$(sed -n 's/^RUN=//p' "$STATE")"
-DB_SNAPSHOT="$(sed -n 's/^DB_SNAPSHOT=//p' "$STATE")"
-UPLOADS_SNAPSHOT="$(sed -n 's/^UPLOADS_SNAPSHOT=//p' "$STATE")"
-INSTANCE="$(sed -n 's/^INSTANCE=//p' "$STATE")"
-SLUG="$(sed -n 's/^SLUG=//p' "$STATE")"
-QUESTION="$(sed -n 's/^QUESTION=//p' "$STATE")"
-SHA256="$(sed -n 's/^SHA256=//p' "$STATE")"
+while IFS='=' read -r key value; do
+  case " ${STATE_KEYS[*]} " in *" $key "*) printf -v "$key" '%s' "$value" ;; esac
+done <"$STATE"
+for key in "${STATE_KEYS[@]}"; do
+  [ -n "${!key:-}" ] || fail "$STATE has no $key: run the before phase again"
+done
 
 echo "== a new node, without the sentinels"
 [ "$(bash "$SCRIPTS/node-id.sh")" != "$INSTANCE" ] ||
@@ -137,13 +138,14 @@ restored="$(on_node "/usr/local/sbin/policypal-backup restore $RUN")"
 echo "$restored" | tail -3
 grep -q "database $DB_SNAPSHOT, uploads $UPLOADS_SNAPSHOT" <<<"$restored" ||
   fail "the restore did not report the recorded snapshots (database $DB_SNAPSHOT, uploads $UPLOADS_SNAPSHOT)"
+# Where the node script restored the uploads ("... into <dir>"): it found the directory from the volume.
+uploads="$(sed -n 's/^.* into \(\/[^ ]*\)$/\1/p' <<<"$restored" | tail -1)"
+[ -n "$uploads" ] || fail "the restore did not say which directory it restored the uploads into"
 
 echo "== the sentinels are back"
 connect
 has_policy || fail "the policy $SLUG did not come back"
 has_question || fail "the question of $SLUG did not come back"
-volume="$(kubectl -n "$NAMESPACE" get pvc policypal-uploads -o jsonpath='{.spec.volumeName}')"
-uploads="$(kubectl get pv "$volume" -o jsonpath='{.spec.hostPath.path}{.spec.local.path}')"
 [ "$(on_node "sha256sum $uploads/$SLUG.md" | cut -c1-64)" = "$SHA256" ] ||
   fail "the restored policy file's sha256 is not the uploaded file's"
 echo "restore-test: PASS: $RUN restored on a new node (snapshots, question, policy and its bytes)"

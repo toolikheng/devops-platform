@@ -190,7 +190,8 @@ restore() {
   restore_database
   restore_uploads "$uploads"
   start_api
-  echo "policypal-backup: restored $run: database $db_id, uploads $up_id"
+  # scripts/restore-test.sh reads this line, the uploads directory included.
+  echo "policypal-backup: restored $run: database $db_id, uploads $up_id into $uploads"
   # Only now: from here on, a backup saves the restored data.
   enable
 }

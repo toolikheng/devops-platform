@@ -142,10 +142,8 @@ def after(api: Fakes, tmp_path: Path) -> tuple[Fakes, Path]:
     api.http_sequence("/documents", [documents(), documents(SLUG)])
     api.http_sequence("/analytics?days=1", [analytics("how many days of leave?"), analytics(QUESTION)])
     api.aws_sequence("ssm.get-command-invocation", [
-        invocation(f"policypal-backup: restored {RUN}: database {DB}, uploads {UP}\n"),
+        invocation(f"policypal-backup: restored {RUN}: database {DB}, uploads {UP} into {UPLOADS}\n"),
         invocation(f"{SHA}  {UPLOADS}/{SLUG}.md\n")])
-    api.pvc_volume("pvc-new")
-    api.pv_path(UPLOADS)
     return api, state
 
 
@@ -155,6 +153,36 @@ def test_after_restores_the_run_on_a_new_node_and_finds_every_sentinel(after: tu
     assert result.returncode == 0, output(result)
     assert node_commands(fakes) == [f"/usr/local/sbin/policypal-backup restore {RUN}", f"sha256sum {UPLOADS}/{SLUG}.md"]
     assert "PASS" in result.stdout
+
+
+def test_after_takes_the_uploads_directory_from_the_restores_own_report(after: tuple[Fakes, Path]) -> None:
+    # The node script found the directory from the volume (uploads_dir); the test doesn't work it out a second time.
+    fakes, state = after
+    other = "/var/lib/rancher/k3s/storage/pvc-other_policypal_policypal-uploads"
+    fakes.aws_sequence("ssm.get-command-invocation", [
+        invocation(f"policypal-backup: restored {RUN}: database {DB}, uploads {UP} into {other}\n"),
+        invocation(f"{SHA}  {other}/{SLUG}.md\n")])
+    result = restore_test(fakes, "after", state)
+    assert result.returncode == 0, output(result)
+    assert node_commands(fakes)[-1] == f"sha256sum {other}/{SLUG}.md"
+    assert not fakes.kubectl("get", "pvc") and not fakes.kubectl("get", "pv")
+
+
+@pytest.mark.parametrize("key", ["RUN", "DB_SNAPSHOT", "UPLOADS_SNAPSHOT", "INSTANCE", "SLUG", "QUESTION", "SHA256"])
+def test_after_refuses_a_record_without_every_key(after: tuple[Fakes, Path], key: str) -> None:
+    fakes, state = after
+    state.write_text("".join(line + "\n" for line in state.read_text().splitlines() if not line.startswith(key + "=")))
+    result = restore_test(fakes, "after", state)
+    assert result.returncode == 1 and key in output(result), output(result)
+    assert not node_commands(fakes)
+
+
+def test_a_record_sets_only_its_own_keys(after: tuple[Fakes, Path]) -> None:
+    # The record is read back key by key from a file in the home directory: a line for anything else is ignored.
+    fakes, state = after
+    state.write_text(state.read_text() + "PATH=/nowhere\nSCRIPTS=/nowhere\n")
+    result = restore_test(fakes, "after", state)
+    assert result.returncode == 0, output(result)
 
 
 def test_after_refuses_the_node_the_backup_was_made_on(after: tuple[Fakes, Path]) -> None:
@@ -174,10 +202,13 @@ def test_after_refuses_when_the_sentinel_is_already_there(after: tuple[Fakes, Pa
 
 
 @pytest.mark.parametrize("restored, sha, docs, questions, reason", [
-    (f"restored {RUN}: database {'f' * 64}, uploads {UP}", SHA, documents(SLUG), analytics(QUESTION), "snapshot"),
-    (f"restored {RUN}: database {DB}, uploads {UP}", "0" * 64, documents(SLUG), analytics(QUESTION), "sha256"),
-    (f"restored {RUN}: database {DB}, uploads {UP}", SHA, documents(), analytics(QUESTION), "policy"),
-    (f"restored {RUN}: database {DB}, uploads {UP}", SHA, documents(SLUG), analytics(), "question"),
+    (f"restored {RUN}: database {'f' * 64}, uploads {UP} into {UPLOADS}", SHA, documents(SLUG), analytics(QUESTION),
+     "snapshot"),
+    (f"restored {RUN}: database {DB}, uploads {UP}", SHA, documents(SLUG), analytics(QUESTION), "directory"),
+    (f"restored {RUN}: database {DB}, uploads {UP} into {UPLOADS}", "0" * 64, documents(SLUG), analytics(QUESTION),
+     "sha256"),
+    (f"restored {RUN}: database {DB}, uploads {UP} into {UPLOADS}", SHA, documents(), analytics(QUESTION), "policy"),
+    (f"restored {RUN}: database {DB}, uploads {UP} into {UPLOADS}", SHA, documents(SLUG), analytics(), "question"),
 ])
 def test_after_fails_when_anything_did_not_come_back(after: tuple[Fakes, Path], restored: str, sha: str, docs: str,
                                                      questions: str, reason: str) -> None:
