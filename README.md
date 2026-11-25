@@ -169,6 +169,7 @@ The plan estimated about USD 3.2 for the whole project on Spot. What kept it low
 - **Pods can't borrow the node's credentials.** IMDSv2 with hop limit 1 answers only host-network processes, and PolicyPal's namespace enforces Pod Security "baseline", which refuses host networking ([ADR 017](docs/decisions/017-imds-hop-limit-and-host-network.md)).
 - **Secrets stay out of Git and Terraform state.** Terraform writes them to SSM SecureStrings through write-only arguments from ephemeral random values; External Secrets Operator copies PolicyPal's into the cluster; the backup reads restic's at run time ([ADR 016](docs/decisions/016-parameter-store-and-external-secrets.md), [ADR 023](docs/decisions/023-one-catalog-of-secrets.md)). gitleaks scans the full history in CI and staged changes before each commit.
 - **Least privilege, written down.** The node role has the SSM agent's actions, `GetParameter` under `/policypal/aws/`, and the `restic/` prefix of the backups bucket. The CI roles are read-only (plan), create-and-delete with tag and instance-type conditions (apply), delete-only (nightly) and one SSM document on the tagged node (deploy).
+- **One accepted finding.** The Postgres image, `pgvector/pgvector:0.8.7-pg17`, fails the image gate's settings with 26 findings (1 CRITICAL, 25 HIGH), all in `gosu`, a small helper built with Go 1.24.6 whose standard library has them. `gosu` isn't executed here: the image's entrypoint runs it only when the container starts as root, Postgres runs as uid 999, and the init container that uses the image replaces the entrypoint (verified on k3d). Not checked: whether any of them is reachable from `gosu`'s code. To revisit when pgvector publishes a rebuilt image ([ADR 014](docs/decisions/014-postgres-in-the-cluster.md)).
 - **Pinned and checked.** Terraform providers, Helm charts, container images and GitHub Actions are pinned; k3s's installer, node_exporter and restic are checked against recorded sha256 sums; the homelab app's image is scanned by Trivy before it is pushed.
 
 ## What's included
@@ -454,6 +455,7 @@ More in [docs/runbook.md](docs/runbook.md).
 ## Next steps
 
 - Notifications for the AWS alert (Alertmanager, or a small webhook to email or chat).
+- A smaller PolicyPal image. It is 655 MB to download and about 2.1 GB unpacked (it includes PyTorch), and on k3d each node pulls it separately: 9 min 18 s and 21 min 16 s on the last run, so a new cluster's first deploy can pass the UI's 15-minute rollout deadline and needs running again once the pull ends. A slimmer image, or loading it into k3d once instead of pulling it on every node, would fix that.
 - The homelab's backups to object storage, as the AWS node's already go.
 - TLS with a domain and cert-manager, if the AWS environment ever needs a public demo.
 - Loki for logs.
