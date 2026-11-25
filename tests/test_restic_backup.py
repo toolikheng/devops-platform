@@ -433,17 +433,17 @@ def test_restore_stops_the_api_restores_the_database_then_the_uploads_then_start
              and c["args"][:1] in (["scale"], ["get"], ["exec"], ["dump"], ["restore"], ["rollout"])
              and c["args"][:2] not in (["get", "pvc"], ["get", "pv"])]
     names = [(tool, args[0]) for tool, args in steps]
-    assert names == [("kubectl", "scale"), ("kubectl", "get"), ("kubectl", "get"), ("kubectl", "exec"),
-                     ("restic", "dump"), ("kubectl", "exec"), ("restic", "restore"), ("kubectl", "scale"),
-                     ("kubectl", "rollout")]
-    assert "--replicas=0" in steps[0][1] and "--replicas=1" in steps[7][1]
-    assert steps[1][1][:2] == ["get", "pods"] and "app.kubernetes.io/name=policypal-api" in steps[1][1], \
+    assert names == [("kubectl", "scale"), ("kubectl", "get"), ("kubectl", "exec"), ("restic", "dump"),
+                     ("kubectl", "exec"), ("restic", "restore"), ("kubectl", "scale"), ("kubectl", "rollout")]
+    stop, gone, recreate, dump, _, restore_uploads, start, _ = (args for _, args in steps)
+    assert "--replicas=0" in stop and "--replicas=1" in start
+    assert gone[:2] == ["get", "pods"] and "app.kubernetes.io/name=policypal-api" in gone, \
         "the database is touched only once the API pod is gone"
-    assert "dropdb" in steps[3][1][-1] and "createdb" in steps[3][1][-1], "a clean database first"
-    assert steps[4][1] == ["dump", DB_B, "/policypal.dump"]
+    assert "dropdb" in recreate[-1] and "createdb" in recreate[-1], "a clean database first"
+    assert dump == ["dump", DB_B, "/policypal.dump"]
     [restore_db] = [c for c in fakes.calls("kubectl") if c["args"][:2] == ["exec", "-i"]]
     assert "pg_restore" in restore_db["args"][-1] and restore_db["stdin"] == "PGDMP the dump"
-    assert steps[6][1] == ["restore", f"{UP_B}:{OLD_UPLOADS}", "--target", str(uploads), "--delete"]
+    assert restore_uploads == ["restore", f"{UP_B}:{OLD_UPLOADS}", "--target", str(uploads), "--delete"]
     assert "run-20261125T020000Z" in result.stdout and DB_B in result.stdout and UP_B in result.stdout
 
 
@@ -518,6 +518,16 @@ def test_backup_and_show_leave_the_timer_alone(backups: tuple[Fakes, Path]) -> N
     assert run(fakes, "show", "latest").returncode == 0
     assert backup(fakes).returncode == 0
     assert not systemctl(fakes)
+
+
+def test_a_restore_whose_api_pod_does_not_stop_gives_up_before_touching_the_data(backups: tuple[Fakes, Path]) -> None:
+    fakes, _ = backups
+    fakes.pods(["pod/policypal-api-0"])
+    result = run(fakes, "restore", "latest")
+    assert result.returncode == 1 and "did not stop" in output(result)
+    assert len(fakes.calls("kubectl", "get", "pods")) == 36, "3 minutes of checks, POLL_SECONDS apart"
+    assert not fakes.calls("kubectl", "exec") and not fakes.calls("restic", "restore")
+    assert TIMER_ON not in systemctl(fakes)
 
 
 def test_restore_checks_the_uploads_directory_before_stopping_anything(backups: tuple[Fakes, Path]) -> None:

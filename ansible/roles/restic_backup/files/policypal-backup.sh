@@ -148,19 +148,34 @@ show() {
   echo "$run $db_id $up_id"
 }
 
-# From here on the API is stopped. Starting it on half-restored data could delete database rows (ingestion removes
-# rows whose upload file is missing), so a failure leaves it stopped for someone to look at.
-stopped() {
-  fail "$1. $API is left at 0 replicas: check, then kubectl -n $NAMESPACE scale deployment/$API --replicas=1"
+# wait_until TRIES CHECK... - run CHECK until it succeeds, POLL_SECONDS apart; fails after TRIES tries.
+wait_until() {
+  local tries="$1"
+  shift
+  for _ in $(seq "$tries"); do
+    "$@" && return 0
+    sleep "$POLL_SECONDS"
+  done
+  return 1
 }
 
 # A running backup is the oneshot service in state "activating". systemctl is-active exits 3 then, as it does for
 # "inactive", so the state word is read, not the exit code. A last run that failed ("failed") isn't running.
-backup_running() {
+no_backup_running() {
   case "$(systemctl is-active "$SERVICE" || true)" in
-    activating | active | deactivating) return 0 ;;
-    *) return 1 ;;
+    activating | active | deactivating) return 1 ;;
+    *) return 0 ;;
   esac
+}
+
+api_gone() {
+  [ -z "$(kubectl -n "$NAMESPACE" get pods -l "app.kubernetes.io/name=$API" -o name)" ]
+}
+
+# Once the API is stopped, starting it on half-restored data could delete database rows (ingestion removes rows
+# whose upload file is missing), so a failure leaves it stopped for someone to look at.
+stopped() {
+  fail "$1. $API is left at 0 replicas: check, then kubectl -n $NAMESPACE scale deployment/$API --replicas=1"
 }
 
 restore() {
@@ -170,45 +185,50 @@ restore() {
   uploads="$(uploads_dir)"
   echo "policypal-backup: restoring $run (database $db_id, uploads $up_id)"
 
-  # No backup may run during a restore: it would save half-restored data as the day's newest snapshot. The timer
-  # goes off (disabled too, so a reboot doesn't bring it back), a backup that already started is let finish, and
-  # the timer comes back on only after a successful restore (enable, at the end).
+  pause_backups
+  stop_api
+  restore_database
+  restore_uploads "$uploads"
+  start_api
+  echo "policypal-backup: restored $run: database $db_id, uploads $up_id"
+  # Only now: from here on, a backup saves the restored data.
+  enable
+}
+
+# No backup may run during a restore: it would save half-restored data as the day's newest snapshot. The timer goes
+# off (disabled too, so a reboot doesn't bring it back), a backup that already started is let finish, and the timer
+# comes back on only after a successful restore.
+pause_backups() {
   systemctl disable --now "$TIMER"
-  local checks=0
-  while backup_running; do
-    checks=$((checks + 1))
-    [ "$checks" -lt 180 ] || fail "a backup is still running after 15 minutes. Nothing was restored and the" \
-      "hourly backups are off: run the restore again later, or policypal-backup enable to turn them back on"
-    sleep "$POLL_SECONDS"
-  done
+  wait_until 180 no_backup_running || fail "a backup is still running after 15 minutes. Nothing was restored" \
+    "and the hourly backups are off: run the restore again later, or policypal-backup enable to turn them back on"
+}
 
+stop_api() {
   kubectl -n "$NAMESPACE" scale "deployment/$API" --replicas=0
-  for _ in $(seq 90); do
-    [ -z "$(kubectl -n "$NAMESPACE" get pods -l "app.kubernetes.io/name=$API" -o name)" ] && break
-    sleep 2
-  done
-  [ -z "$(kubectl -n "$NAMESPACE" get pods -l "app.kubernetes.io/name=$API" -o name)" ] ||
-    stopped "the API pod did not stop within 3 minutes"
+  wait_until 36 api_gone || stopped "the API pod did not stop within 3 minutes"
+}
 
-  # A clean database, then the dump. pg_restore stops at the first error.
-  # shellcheck disable=SC2016 # expanded by sh in the Postgres pod, not here
+# A clean database, then the dump. pg_restore stops at the first error.
+# shellcheck disable=SC2016 # $POSTGRES_USER and $POSTGRES_DB are expanded by sh in the Postgres pod, not here
+restore_database() {
   kubectl -n "$NAMESPACE" exec statefulset/postgres -- sh -c \
     'dropdb -U "$POSTGRES_USER" --if-exists --force "$POSTGRES_DB" && createdb -U "$POSTGRES_USER" "$POSTGRES_DB"' ||
     stopped "could not recreate the database"
-  # shellcheck disable=SC2016 # expanded by sh in the Postgres pod, not here
   restic dump "$db_id" /policypal.dump |
     kubectl -n "$NAMESPACE" exec -i statefulset/postgres -- sh -c \
       'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --exit-on-error --no-owner' ||
     stopped "the database restore failed"
+}
 
-  # The uploads, exactly as backed up: files the backup didn't have are deleted.
-  restic restore "$up_id:$up_path" --target "$uploads" --delete || stopped "the uploads restore failed"
+# restore_uploads DIR - the uploads exactly as backed up: files the backup didn't have are deleted.
+restore_uploads() {
+  restic restore "$up_id:$up_path" --target "$1" --delete || stopped "the uploads restore failed"
+}
 
+start_api() {
   kubectl -n "$NAMESPACE" scale "deployment/$API" --replicas=1
   kubectl -n "$NAMESPACE" rollout status "deployment/$API" --timeout=10m
-  echo "policypal-backup: restored $run: database $db_id, uploads $up_id"
-  # Only now: from here on, a backup saves the restored data.
-  enable
 }
 
 enable() {

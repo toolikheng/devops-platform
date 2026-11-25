@@ -18,7 +18,8 @@ The fake knows just enough of each real tool for the scripts here:
 - docker: a kustomize render prints MANIFEST, a Helm render addon_manifest(release). helm, k3d, ansible-playbook,
   gh, restic, systemctl: log only (restic's environment is logged too: the password command, and whether a password
   is set).
-- kubectl also answers `get pvc` and `get pv` with what the test set (pvc_volume, pv_path); `exec -i` logs its stdin.
+- kubectl also answers `get pvc`, `get pv` and `get pods` with what the test set (pvc_volume, pv_path, pods);
+  `exec -i` logs its stdin.
 - restic answers `snapshots --tag TAG` and `dump` with what the test set (restic_snapshots, restic_dump).
 - systemctl answers `is-active UNIT` like systemd: the state on stdout (none with --quiet), exit 0 only for "active"
   (a running oneshot service is "activating", exit 3); "inactive" unless the test set states (unit_states).
@@ -117,6 +118,9 @@ if tool == "kubectl":
         answer("pvc-volume")
     if a[:2] == ["get", "pv"]:
         answer("pv-path")
+    if a[:2] == ["get", "pods"]:
+        print(next_of("kubectl-get-pods", ""), end="")
+        sys.exit(0)
     if a[:2] == ["get", "secret"]:
         sys.exit(0 if all((d / f"secret-{n}").exists() for n in a[2:] if not n.startswith("-")) else 1)
     if a[:3] == ["create", "secret", "generic"]:
@@ -265,6 +269,10 @@ class Fakes:
         """Successive answers of `systemctl is-active UNIT`, the last one repeating (e.g. a backup that is
         "activating", then "inactive" once it has finished)."""
         self._sequence(f"unit-states-{unit}", states)
+
+    def pods(self, answers: list[str]) -> None:
+        """Successive answers of `kubectl get pods ...` (the last one repeating); none set: no pods."""
+        self._sequence("kubectl-get-pods", answers)
 
     def pvc_volume(self, name: str) -> None:
         """What `kubectl get pvc ... -o jsonpath={.spec.volumeName}` prints: the bound PersistentVolume."""
