@@ -6,7 +6,8 @@
   systemd timer: the Postgres dump first, then the uploads directory, then restic's retention; any failure exits
   non-zero, so systemd marks the run failed, and a success writes the time for node_exporter's textfile collector.
   `show RUN|latest`: a run's two snapshots. `restore RUN|latest`: the database and the uploads of one run, with the
-  API stopped meanwhile, then the hourly timer on. `enable`: the hourly timer on, for a node with nothing to restore.
+  hourly timer off and any running backup finished first, the API stopped meanwhile, and the timer on again only
+  after a success. `enable`: the hourly timer on, for a node with nothing to restore.
 - A new node leaves the timer off: its first backup would push the last good one out of the repository
   (test_backup_retention.py shows it with restic itself).
 - The settings (no secrets) are in /etc/policypal-backup.env, read by the service and by a restore by hand. The
@@ -186,7 +187,7 @@ def run(fakes: Fakes, *args: str) -> subprocess.CompletedProcess[str]:
     textfile.mkdir(exist_ok=True)
     settings = fakes.dir / "policypal-backup.env"
     settings.write_text(rendered_env().replace(defaults()["restic_backup_textfile_dir"], str(textfile)))
-    return fakes.script(str(SCRIPT), *args, env={"POLICYPAL_BACKUP_ENV": str(settings)})
+    return fakes.script(str(SCRIPT), *args, env={"POLICYPAL_BACKUP_ENV": str(settings), "POLL_SECONDS": "0"})
 
 
 def test_the_settings_file_sets_everything_the_script_requires() -> None:
@@ -204,6 +205,8 @@ def systemctl(fakes: Fakes) -> list[list[str]]:
 
 
 TIMER_ON = ["enable", "--now", "policypal-backup.timer"]
+TIMER_OFF = ["disable", "--now", "policypal-backup.timer"]  # stopped, and still off after a reboot
+IS_BACKUP_RUNNING = ["is-active", "policypal-backup.service"]
 
 
 def test_enable_turns_the_hourly_backups_on(fakes: Fakes) -> None:
@@ -436,7 +439,7 @@ def test_a_failed_restore_leaves_the_api_stopped_and_says_so(backups: tuple[Fake
     assert [c for c in fakes.calls(failing[0]) if c["args"][:len(failing) - 1] == list(failing[1:])], "it ran"
     assert not [c for c in fakes.calls("kubectl") if c["args"][:1] == ["scale"] and "--replicas=1" in c["args"]]
     assert "0 replicas" in output(result)
-    assert not systemctl(fakes)
+    assert TIMER_OFF in systemctl(fakes) and TIMER_ON not in systemctl(fakes)
 
 
 def test_a_successful_restore_turns_the_hourly_backups_on_last(backups: tuple[Fakes, Path]) -> None:
@@ -446,7 +449,7 @@ def test_a_successful_restore_turns_the_hourly_backups_on_last(backups: tuple[Fa
     assert result.returncode == 0, output(result)
     steps = [(c["tool"], c["args"][0]) for c in fakes.calls() if c["tool"] in ("kubectl", "restic", "systemctl")]
     assert steps[-2:] == [("kubectl", "rollout"), ("systemctl", "enable")]
-    assert systemctl(fakes) == [TIMER_ON]
+    assert systemctl(fakes) == [TIMER_OFF, IS_BACKUP_RUNNING, TIMER_ON]
 
 
 def test_a_restore_whose_api_does_not_come_back_leaves_the_backups_off(backups: tuple[Fakes, Path]) -> None:
@@ -455,7 +458,39 @@ def test_a_restore_whose_api_does_not_come_back_leaves_the_backups_off(backups: 
     result = run(fakes, "restore", "latest")
     assert result.returncode != 0
     assert fakes.calls("kubectl", "rollout"), "it got that far"
-    assert not systemctl(fakes)
+    assert TIMER_OFF in systemctl(fakes) and TIMER_ON not in systemctl(fakes)
+
+
+def test_restore_turns_the_backups_off_and_lets_a_running_backup_finish_before_touching_anything(
+        backups: tuple[Fakes, Path]) -> None:
+    # A backup during a restore would save half-restored data, as the day's newest snapshot. A running backup is a
+    # oneshot service in state "activating" (is-active exits 3 then, as for "inactive"): the state is what counts.
+    fakes, _ = backups
+    fakes.unit_states("policypal-backup.service", ["activating", "activating", "inactive"])
+    result = run(fakes, "restore", "latest")
+    assert result.returncode == 0, output(result)
+    steps = [c["args"] for c in fakes.calls() if c["tool"] == "systemctl" or c["args"][:1] == ["scale"]]
+    assert steps[:5] == [TIMER_OFF, IS_BACKUP_RUNNING, IS_BACKUP_RUNNING, IS_BACKUP_RUNNING,
+                         ["scale", "deployment/policypal-api", "--replicas=0"]]
+
+
+def test_a_failed_last_backup_does_not_hold_up_a_restore(backups: tuple[Fakes, Path]) -> None:
+    fakes, _ = backups
+    fakes.unit_states("policypal-backup.service", ["failed"])
+    result = run(fakes, "restore", "latest")
+    assert result.returncode == 0, output(result)
+    assert systemctl(fakes).count(IS_BACKUP_RUNNING) == 1
+
+
+def test_restore_gives_up_on_a_backup_that_keeps_running_and_leaves_the_backups_off(
+        backups: tuple[Fakes, Path]) -> None:
+    fakes, _ = backups
+    fakes.unit_states("policypal-backup.service", ["activating"])
+    result = run(fakes, "restore", "latest")
+    assert result.returncode == 1
+    assert "still running" in output(result) and "nothing was restored" in output(result).lower()
+    assert systemctl(fakes)[0] == TIMER_OFF and TIMER_ON not in systemctl(fakes)
+    assert not fakes.calls("kubectl", "scale") and not fakes.calls("kubectl", "exec")
 
 
 def test_backup_and_show_leave_the_timer_alone(backups: tuple[Fakes, Path]) -> None:
@@ -471,6 +506,15 @@ def test_restore_checks_the_uploads_directory_before_stopping_anything(backups: 
     result = run(fakes, "restore", "latest")
     assert result.returncode != 0 and str(uploads) in output(result)
     assert not [c for c in fakes.calls("kubectl") if c["args"][:1] == ["scale"]]
+    assert not systemctl(fakes), "nothing changed, so the timer stays as it was"
+
+
+def test_a_restore_of_a_run_that_is_not_there_leaves_the_timer_as_it_was(backups: tuple[Fakes, Path]) -> None:
+    # A mistyped run must not quietly stop the backups of a node that was backing up.
+    fakes, _ = backups
+    result = run(fakes, "restore", "run-20261125T030000Z")
+    assert result.returncode == 1 and "no database backup for run-20261125T030000Z" in output(result)
+    assert not systemctl(fakes)
 
 
 def test_restore_never_backs_up_or_deletes_snapshots(backups: tuple[Fakes, Path]) -> None:

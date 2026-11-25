@@ -3,8 +3,8 @@
 #
 #   policypal-backup backup                     the Postgres dump first, then the uploads, then retention
 #   policypal-backup show latest|run-<time>     a run's two snapshots: "<run> <database snapshot> <uploads snapshot>"
-#   policypal-backup restore latest|run-<time>  that run's database and uploads, with the API stopped meanwhile,
-#                                               then the hourly backups on
+#   policypal-backup restore latest|run-<time>  that run's database and uploads: hourly backups off and any running
+#                                               one finished first, the API stopped meanwhile, backups on after
 #   policypal-backup enable                     the hourly backups on, for a node with nothing to restore
 #
 # policypal-backup.service runs `backup` every hour once policypal-backup.timer is on. A new node leaves it off:
@@ -48,6 +48,10 @@ fi
 NAMESPACE="policypal"
 UPLOADS_CLAIM="policypal-uploads"
 API="policypal-api"
+TIMER="policypal-backup.timer"
+SERVICE="policypal-backup.service"
+# Seconds between checks while a restore waits (the tests set 0).
+POLL_SECONDS="${POLL_SECONDS:-5}"
 # Retention, for each kind (dump, uploads): the same as the homelab backup.
 KEEP=(--keep-daily 7 --keep-weekly 4 --keep-monthly 12)
 
@@ -150,11 +154,33 @@ stopped() {
   fail "$1. $API is left at 0 replicas: check, then kubectl -n $NAMESPACE scale deployment/$API --replicas=1"
 }
 
+# A running backup is the oneshot service in state "activating". systemctl is-active exits 3 then, as it does for
+# "inactive", so the state word is read, not the exit code. A last run that failed ("failed") isn't running.
+backup_running() {
+  case "$(systemctl is-active "$SERVICE" || true)" in
+    activating | active | deactivating) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 restore() {
   local uploads
+  # Checks that change nothing come first: a mistyped run or a missing directory leaves the timer as it was.
   pick "$1"
   uploads="$(uploads_dir)"
   echo "policypal-backup: restoring $run (database $db_id, uploads $up_id)"
+
+  # No backup may run during a restore: it would save half-restored data as the day's newest snapshot. The timer
+  # goes off (disabled too, so a reboot doesn't bring it back), a backup that already started is let finish, and
+  # the timer comes back on only after a successful restore (enable, at the end).
+  systemctl disable --now "$TIMER"
+  local checks=0
+  while backup_running; do
+    checks=$((checks + 1))
+    [ "$checks" -lt 180 ] || fail "a backup is still running after 15 minutes. Nothing was restored and the" \
+      "hourly backups are off: run the restore again later, or policypal-backup enable to turn them back on"
+    sleep "$POLL_SECONDS"
+  done
 
   kubectl -n "$NAMESPACE" scale "deployment/$API" --replicas=0
   for _ in $(seq 90); do
@@ -186,8 +212,8 @@ restore() {
 }
 
 enable() {
-  systemctl enable --now policypal-backup.timer
-  echo "policypal-backup: hourly backups on (systemctl list-timers policypal-backup.timer)"
+  systemctl enable --now "$TIMER"
+  echo "policypal-backup: hourly backups on (systemctl list-timers $TIMER)"
 }
 
 "$@"

@@ -20,6 +20,8 @@ The fake knows just enough of each real tool for the scripts here:
   is set).
 - kubectl also answers `get pvc` and `get pv` with what the test set (pvc_volume, pv_path); `exec -i` logs its stdin.
 - restic answers `snapshots --tag TAG` and `dump` with what the test set (restic_snapshots, restic_dump).
+- systemctl answers `is-active UNIT` like systemd: the state on stdout (none with --quiet), exit 0 only for "active"
+  (a running oneshot service is "activating", exit 3); "inactive" unless the test set states (unit_states).
 Any call can be made to fail (`fail`), and a real command can be logged on its way through (`spy`).
 """
 
@@ -160,6 +162,14 @@ if tool == "restic" and args[:1] == ["snapshots"]:
     answer("restic-snapshots-" + (args[args.index("--tag") + 1] if "--tag" in args else ""))
 if tool == "restic" and args[:1] == ["dump"]:
     answer("restic-dump")
+if tool == "systemctl" and args[:1] == ["is-active"]:
+    seq = d / f"unit-states-{args[-1]}"
+    states = json.loads(seq.read_text()) if seq.exists() else ["inactive"]
+    if len(states) > 1:
+        seq.write_text(json.dumps(states[1:]))
+    if "--quiet" not in args:
+        print(states[0])
+    sys.exit(0 if states[0] == "active" else 3)
 if tool == "terraform" and args[:2] == ["output", "-raw"]:
     answer(f"tf-output-{args[2]}", 1)
 if tool == "terraform" and args[:2] == ["state", "pull"]:
@@ -247,6 +257,11 @@ class Fakes:
     def restic_dump(self, data: str) -> None:
         """What `restic dump ...` prints."""
         self._write("restic-dump", data)
+
+    def unit_states(self, unit: str, states: list[str]) -> None:
+        """Successive answers of `systemctl is-active UNIT`, the last one repeating (e.g. a backup that is
+        "activating", then "inactive" once it has finished)."""
+        self._write(f"unit-states-{unit}", json.dumps(states))
 
     def pvc_volume(self, name: str) -> None:
         """What `kubectl get pvc ... -o jsonpath={.spec.volumeName}` prints: the bound PersistentVolume."""
