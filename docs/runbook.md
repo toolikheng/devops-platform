@@ -425,7 +425,7 @@ policypal-backup show latest                 # "<run> <database snapshot> <uploa
 policypal-backup restore latest              # or a run: policypal-backup restore run-20261125T020000Z
 ```
 
-A restore stops `policypal-api`, recreates the database and loads the run's dump (`pg_restore`, stopping at the first error), makes the uploads directory exactly the run's (files the backup didn't have are deleted), then starts the API, whose start-up ingestion then agrees with both, and turns the hourly backups on. If a step fails, the API is left at 0 replicas and the backups off on purpose (starting it on half-restored data could delete rows): fix the cause, run the restore again, or `kubectl -n policypal scale deployment/policypal-api --replicas=1`.
+A restore first turns the hourly timer off and lets a backup that is already running finish (it gives up after 15 minutes, having changed nothing but the timer); then it stops `policypal-api`, recreates the database and loads the run's dump (`pg_restore`, stopping at the first error), makes the uploads directory exactly the run's (files the backup didn't have are deleted), then starts the API, whose start-up ingestion then agrees with both, and turns the hourly backups on. If a step fails, the API is left at 0 replicas and the backups off on purpose (starting it on half-restored data could delete rows): fix the cause, run the restore again, or `kubectl -n policypal scale deployment/policypal-api --replicas=1`.
 
 ### Restore test across a rebuild
 
