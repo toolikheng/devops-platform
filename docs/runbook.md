@@ -430,7 +430,7 @@ make cloud-smoke
 
 `after` passes only if the restore reports the recorded snapshots, the question and the policy are back, and the policy file's sha256 matches the uploaded one. Node commands go through SSM Run Command (no charge).
 
-The scripts were run against k3d (docs/aws-test-log.md); these commands on the node are run for the first time in the next AWS session.
+The scripts were run against k3d first, then on AWS on 2026-11-25: the backup, `restic snapshots`, `show`, and the restore test across a rebuild passed ([test log](aws-test-log.md)).
 
 A failed run leaves the unit failed and does not apply retention, so older snapshots stay. The first run creates the repository; later runs refuse to continue if it can't be opened (a wrong password, a lock held by another run). Restic's `Fatal: repository does not exist` on the very first run is expected: the script then creates it.
 
