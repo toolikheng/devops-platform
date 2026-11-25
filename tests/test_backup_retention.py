@@ -25,10 +25,9 @@ from pathlib import Path
 
 import pytest
 
-from conftest import REPO_ROOT, backup_timer_tasks, versions
+from conftest import BACKUP_SCRIPT, backup_timer_tasks, run_backup_script, versions
 from fakecli import Fakes, output
 
-SCRIPT = REPO_ROOT / "ansible" / "roles" / "restic_backup" / "files" / "policypal-backup.sh"
 HISTORY = [f"run-202611{day}T090000Z" for day in range(16, 25)]  # a backup a day for nine days
 GOOD_RUN = "run-20261125T090000Z"  # the last backup before the node was lost
 EMPTY_RUN = "run-20261125T100000Z"  # the new node's first hourly backup, an hour later the same day
@@ -39,7 +38,7 @@ RUNNING = "run-20261125T163000Z"  # a backup already running when the restore be
 
 def forget_args(kind: str) -> list[str]:
     """The script's retention for one kind of snapshot (db, uploads), word for word, with its KEEP filled in."""
-    text = SCRIPT.read_text()
+    text = BACKUP_SCRIPT.read_text()
     keep = re.search(r"^KEEP=\((.*)\)$", text, re.M)
     forget = re.search(rf"^\s*restic (forget --tag policypal-{kind} .*)$", text, re.M)
     assert keep and forget, f"policypal-backup.sh: KEEP=(...) and the {kind} restic forget line"
@@ -199,19 +198,12 @@ def restoring(bucket: Path, fakes: Fakes) -> tuple[Fakes, Repository]:
     return fakes, repository
 
 
-def restore(fakes: Fakes, which: str) -> subprocess.CompletedProcess[str]:
-    settings = fakes.dir / "policypal-backup.env"
-    settings.write_text("RESTIC_REPOSITORY=s3:example/restic\nRESTIC_PASSWORD_COMMAND=false\nRESTIC_HOST=policypal\n"
-                        "KUBECONFIG=/etc/rancher/k3s/k3s.yaml\n")
-    return fakes.script(str(SCRIPT), "restore", which, env={"POLICYPAL_BACKUP_ENV": str(settings), "POLL_SECONDS": "0"})
-
-
 def test_a_run_deleted_by_the_backup_the_restore_waited_for_is_refused_before_anything_is_touched(
         restoring: tuple[Fakes, Repository]) -> None:
     # Found reading the restore before the demo session (2026-11-26): it looked the run up, then waited for the running
     # backup, whose retention deleted that run; the database was already dropped when restic dump failed.
     fakes, repository = restoring
-    result = restore(fakes, ASKED)
+    result = run_backup_script(fakes, "restore", ASKED)
     assert {RUNNING} <= repository.runs() and ASKED not in repository.runs(), \
         "the backup that was running finished during the wait, and its retention deleted the run"
     assert not fakes.calls("kubectl", "scale") and not fakes.calls("kubectl", "exec"), \
@@ -223,7 +215,7 @@ def test_a_run_deleted_by_the_backup_the_restore_waited_for_is_refused_before_an
 def test_restore_latest_takes_the_newest_run_once_the_running_backup_has_finished(
         restoring: tuple[Fakes, Repository]) -> None:
     fakes, _ = restoring
-    result = restore(fakes, "latest")
+    result = run_backup_script(fakes, "restore", "latest")
     assert result.returncode == 0, output(result)
     assert f"policypal-backup: restored {RUNNING}: database " in result.stdout
     [load] = [c for c in fakes.calls("kubectl") if c["args"][:2] == ["exec", "-i"]]

@@ -27,18 +27,16 @@ from typing import Any
 import pytest
 import yaml
 
-from conftest import REPO_ROOT, backup_timer_tasks, secret_catalog, versions
+from conftest import (BACKUP_SCRIPT, BACKUP_SETTINGS, REPO_ROOT, RESTIC_BACKUP, backup_timer_tasks,
+                      restic_backup_defaults, run_backup_script, secret_catalog, versions)
 from fakecli import Fakes, output
 
-ROLE = REPO_ROOT / "ansible" / "roles" / "restic_backup"
-SCRIPT = ROLE / "files" / "policypal-backup.sh"
-SSM_HELPER = ROLE / "files" / "ssm-parameter"
-SERVICE = ROLE / "templates" / "policypal-backup.service.j2"
-ENV_FILE = ROLE / "templates" / "policypal-backup.env.j2"
+SSM_HELPER = RESTIC_BACKUP / "files" / "ssm-parameter"
+SERVICE = RESTIC_BACKUP / "templates" / "policypal-backup.service.j2"
 GROUP_VARS = REPO_ROOT / "ansible" / "inventory" / "group_vars" / "aws.yml"
 NODE_EXPORTER = REPO_ROOT / "ansible" / "roles" / "node_exporter"
 DASHBOARD = REPO_ROOT / "k8s" / "policypal" / "overlays" / "aws" / "policypal-dashboard.json"
-TIMER = ROLE / "templates" / "policypal-backup.timer.j2"
+TIMER = RESTIC_BACKUP / "templates" / "policypal-backup.timer.j2"
 AWS_PLAYBOOK = REPO_ROOT / "ansible" / "playbooks" / "aws-node.yml"
 SITE_PLAYBOOK = REPO_ROOT / "ansible" / "playbooks" / "site.yml"
 NAMES = REPO_ROOT / "terraform" / "modules" / "names" / "outputs.tf"
@@ -48,12 +46,8 @@ PASSWORD_COMMAND = "/usr/local/sbin/ssm-parameter /policypal/aws/restic-password
 VOLUME = "pvc-1234abcd-0000-4000-8000-123456789abc"
 
 
-def defaults() -> dict[str, Any]:
-    return yaml.safe_load((ROLE / "defaults" / "main.yml").read_text())
-
-
 def tasks() -> list[dict[str, Any]]:
-    return yaml.safe_load((ROLE / "tasks" / "main.yml").read_text())
+    return yaml.safe_load((RESTIC_BACKUP / "tasks" / "main.yml").read_text())
 
 
 # --- wiring and pins ---------------------------------------------------------------------------------------
@@ -67,8 +61,8 @@ def test_the_aws_playbook_installs_the_backup_after_k3s_and_the_homelab_does_not
 
 def test_restic_is_the_shared_pinned_version_with_a_recorded_checksum() -> None:
     pinned = versions()["RESTIC_VERSION"]
-    assert defaults()["restic_backup_version"] == pinned
-    assert re.fullmatch(r"[0-9a-f]{64}", defaults()["restic_backup_sha256"])
+    assert restic_backup_defaults()["restic_backup_version"] == pinned
+    assert re.fullmatch(r"[0-9a-f]{64}", restic_backup_defaults()["restic_backup_sha256"])
     # The homelab backup's image runs the same restic, so both read the same repository format.
     image = re.search(r"image: restic/restic:(\S+)", (REPO_ROOT / "backup" / "cronjob.yaml").read_text())
     assert image and image.group(1) == pinned
@@ -86,8 +80,8 @@ def test_restic_is_downloaded_for_that_version_and_checksum_verified() -> None:
 
 def test_the_backup_writes_to_the_bucket_and_password_terraform_made() -> None:
     names = dict(re.findall(r'output "(\w+)" \{.*?value\s*=\s*"([^"]+)"', NAMES.read_text(), re.S))
-    assert defaults()["restic_backup_bucket"] == names["backups_bucket"]
-    name = defaults()["restic_backup_password_parameter"].removeprefix("/policypal/aws/")
+    assert restic_backup_defaults()["restic_backup_bucket"] == names["backups_bucket"]
+    name = restic_backup_defaults()["restic_backup_password_parameter"].removeprefix("/policypal/aws/")
     assert name in secret_catalog() and "namespace" not in secret_catalog()[name], \
         "read by the node itself, so no ExternalSecret and no namespace"
 
@@ -109,11 +103,6 @@ def env_lines(text: str) -> dict[str, str]:
     return {k: v.strip('"') for k, v in re.findall(r"^([A-Z_]+)=(.*)$", text, re.M)}
 
 
-def rendered_env() -> str:
-    """The settings file with the role's defaults filled in (the only template expressions it uses)."""
-    return re.sub(r"\{\{ (\w+) \}\}", lambda m: str(defaults()[m.group(1)]), ENV_FILE.read_text())
-
-
 def test_the_service_runs_a_backup_once_with_the_settings_file() -> None:
     service = unit(SERVICE)
     assert service["Type"] == ["oneshot"]
@@ -123,7 +112,7 @@ def test_the_service_runs_a_backup_once_with_the_settings_file() -> None:
 
 
 def test_the_settings_point_restic_at_the_bucket_and_the_password_command() -> None:
-    env = env_lines(ENV_FILE.read_text())
+    env = env_lines(BACKUP_SETTINGS.read_text())
     assert env["RESTIC_REPOSITORY"] == "s3:s3.{{ restic_backup_region }}.amazonaws.com/{{ restic_backup_bucket }}/restic"
     assert env["RESTIC_PASSWORD_COMMAND"] == "/usr/local/sbin/ssm-parameter {{ restic_backup_password_parameter }}"
     assert env["AWS_DEFAULT_REGION"] == "{{ restic_backup_region }}"
@@ -179,23 +168,13 @@ def node(fakes: Fakes, tmp_path: Path) -> tuple[Fakes, Path]:
 
 
 def backup(fakes: Fakes) -> subprocess.CompletedProcess[str]:
-    return run(fakes, "backup")
-
-
-def run(fakes: Fakes, *args: str) -> subprocess.CompletedProcess[str]:
-    """The script as a root shell runs it: its settings from the settings file (rendered from the template), with
-    the textfile directory moved into this test's folder."""
-    textfile = fakes.dir / "textfile"
-    textfile.mkdir(exist_ok=True)
-    settings = fakes.dir / "policypal-backup.env"
-    settings.write_text(rendered_env().replace(defaults()["restic_backup_textfile_dir"], str(textfile)))
-    return fakes.script(str(SCRIPT), *args, env={"POLICYPAL_BACKUP_ENV": str(settings), "POLL_SECONDS": "0"})
+    return run_backup_script(fakes, "backup")
 
 
 def test_the_settings_file_sets_everything_the_script_requires() -> None:
     # The script refuses to run without these (": ${VAR:?}").
-    required = set(re.findall(r'"\$\{(\w+):\?', SCRIPT.read_text()))
-    assert required and required <= set(env_lines(ENV_FILE.read_text())), required
+    required = set(re.findall(r'"\$\{(\w+):\?', BACKUP_SCRIPT.read_text()))
+    assert required and required <= set(env_lines(BACKUP_SETTINGS.read_text())), required
 
 
 def restic(fakes: Fakes) -> list[list[str]]:
@@ -213,7 +192,7 @@ IS_BACKUP_RUNNING = ["is-active", "policypal-backup.service"]
 
 def test_enable_turns_the_hourly_backups_on(fakes: Fakes) -> None:
     # A new environment, nothing to restore: the owner starts the hourly backups by hand, once.
-    result = run(fakes, "enable")
+    result = run_backup_script(fakes, "enable")
     assert result.returncode == 0, output(result)
     assert systemctl(fakes) == [TIMER_ON]
     assert not fakes.calls("restic") and not fakes.calls("kubectl")
@@ -308,7 +287,7 @@ def test_a_failed_backup_exits_non_zero_and_applies_no_retention(node: tuple[Fak
 def test_node_exporter_reads_the_textfile_directory_on_aws_only() -> None:
     aws = yaml.safe_load(GROUP_VARS.read_text())
     assert aws["node_exporter_textfile_dir"] == "/var/lib/node_exporter/textfile"
-    assert defaults()["restic_backup_textfile_dir"] == aws["node_exporter_textfile_dir"]
+    assert restic_backup_defaults()["restic_backup_textfile_dir"] == aws["node_exporter_textfile_dir"]
     # The homelab nodes keep their flags: the option is off unless a directory is set.
     node_defaults = yaml.safe_load((NODE_EXPORTER / "defaults" / "main.yml").read_text())
     assert node_defaults["node_exporter_textfile_dir"] == ""
@@ -414,7 +393,7 @@ def backups(node: tuple[Fakes, Path]) -> tuple[Fakes, Path]:
 @pytest.mark.parametrize("which", ["latest", "run-20261125T020000Z"])
 def test_show_prints_a_runs_two_snapshots(backups: tuple[Fakes, Path], which: str) -> None:
     fakes, _ = backups
-    result = run(fakes, "show", which)
+    result = run_backup_script(fakes, "show", which)
     assert result.returncode == 0, output(result)
     assert result.stdout.split() == ["run-20261125T020000Z", DB_B, UP_B]
     assert not [c for c in restic(fakes) if c[:1] in (["backup"], ["restore"], ["forget"], ["prune"], ["init"])]
@@ -424,14 +403,14 @@ def test_show_refuses_a_run_without_its_uploads(backups: tuple[Fakes, Path]) -> 
     fakes, _ = backups
     fakes.restic_snapshots("policypal-db,run-20261125T010000Z", [
         snapshot(DB_A, "2026-11-25T01:00:00Z", "policypal-db", "run-20261125T010000Z", "/policypal.dump")])
-    result = run(fakes, "show", "run-20261125T010000Z")
+    result = run_backup_script(fakes, "show", "run-20261125T010000Z")
     assert result.returncode == 1 and "no uploads backup for run-20261125T010000Z" in output(result)
 
 
 def test_restore_stops_the_api_restores_the_database_then_the_uploads_then_starts_it(
         backups: tuple[Fakes, Path]) -> None:
     fakes, uploads = backups
-    result = run(fakes, "restore", "run-20261125T020000Z")
+    result = run_backup_script(fakes, "restore", "run-20261125T020000Z")
     assert result.returncode == 0, output(result)
     steps = [(c["tool"], c["args"]) for c in fakes.calls() if c["tool"] in ("kubectl", "restic")
              and c["args"][:1] in (["scale"], ["get"], ["exec"], ["dump"], ["restore"], ["rollout"])
@@ -454,7 +433,7 @@ def test_restore_stops_the_api_restores_the_database_then_the_uploads_then_start
 def test_a_restore_reports_its_run_snapshots_and_where_the_uploads_went(backups: tuple[Fakes, Path]) -> None:
     # The restore test reads this line instead of finding the uploads directory a second way.
     fakes, uploads = backups
-    result = run(fakes, "restore", "latest")
+    result = run_backup_script(fakes, "restore", "latest")
     assert result.returncode == 0, output(result)
     assert f"policypal-backup: restored run-20261125T020000Z: database {DB_B}, uploads {UP_B} into {uploads}" \
         in result.stdout.splitlines()
@@ -467,7 +446,7 @@ def test_a_failed_restore_leaves_the_api_stopped_and_says_so(backups: tuple[Fake
     # missing), so the API stays at 0 replicas until someone looks. Backups stay off too: they would save that.
     fakes, _ = backups
     fakes.fail(*failing)
-    result = run(fakes, "restore", "run-20261125T020000Z")
+    result = run_backup_script(fakes, "restore", "run-20261125T020000Z")
     assert result.returncode == 1
     assert [c for c in fakes.calls(failing[0]) if c["args"][:len(failing) - 1] == list(failing[1:])], "it ran"
     assert not [c for c in fakes.calls("kubectl") if c["args"][:1] == ["scale"] and "--replicas=1" in c["args"]]
@@ -478,7 +457,7 @@ def test_a_failed_restore_leaves_the_api_stopped_and_says_so(backups: tuple[Fake
 def test_a_successful_restore_turns_the_hourly_backups_on_last(backups: tuple[Fakes, Path]) -> None:
     # Only once the API runs on the restored data: from then on, a backup saves that data.
     fakes, _ = backups
-    result = run(fakes, "restore", "latest")
+    result = run_backup_script(fakes, "restore", "latest")
     assert result.returncode == 0, output(result)
     steps = [(c["tool"], c["args"][0]) for c in fakes.calls() if c["tool"] in ("kubectl", "restic", "systemctl")]
     assert steps[-2:] == [("kubectl", "rollout"), ("systemctl", "enable")]
@@ -488,7 +467,7 @@ def test_a_successful_restore_turns_the_hourly_backups_on_last(backups: tuple[Fa
 def test_a_restore_whose_api_does_not_come_back_leaves_the_backups_off(backups: tuple[Fakes, Path]) -> None:
     fakes, _ = backups
     fakes.fail("kubectl", "rollout")
-    result = run(fakes, "restore", "latest")
+    result = run_backup_script(fakes, "restore", "latest")
     assert result.returncode != 0
     assert fakes.calls("kubectl", "rollout"), "it got that far"
     assert TIMER_OFF in systemctl(fakes) and TIMER_ON not in systemctl(fakes)
@@ -500,7 +479,7 @@ def test_restore_turns_the_backups_off_and_lets_a_running_backup_finish_before_t
     # oneshot service in state "activating" (is-active exits 3 then, as for "inactive"): the state is what counts.
     fakes, _ = backups
     fakes.unit_states("policypal-backup.service", ["activating", "activating", "inactive"])
-    result = run(fakes, "restore", "latest")
+    result = run_backup_script(fakes, "restore", "latest")
     assert result.returncode == 0, output(result)
     steps = [c["args"] for c in fakes.calls() if c["tool"] == "systemctl" or c["args"][:1] == ["scale"]]
     assert steps[:5] == [TIMER_OFF, IS_BACKUP_RUNNING, IS_BACKUP_RUNNING, IS_BACKUP_RUNNING,
@@ -514,7 +493,7 @@ def test_restore_turns_the_backups_off_and_lets_a_running_backup_finish_before_t
 def test_a_failed_last_backup_does_not_hold_up_a_restore(backups: tuple[Fakes, Path]) -> None:
     fakes, _ = backups
     fakes.unit_states("policypal-backup.service", ["failed"])
-    result = run(fakes, "restore", "latest")
+    result = run_backup_script(fakes, "restore", "latest")
     assert result.returncode == 0, output(result)
     assert systemctl(fakes).count(IS_BACKUP_RUNNING) == 1
 
@@ -523,7 +502,7 @@ def test_restore_gives_up_on_a_backup_that_keeps_running_and_leaves_the_backups_
         backups: tuple[Fakes, Path]) -> None:
     fakes, _ = backups
     fakes.unit_states("policypal-backup.service", ["activating"])
-    result = run(fakes, "restore", "latest")
+    result = run_backup_script(fakes, "restore", "latest")
     assert result.returncode == 1
     assert "still running" in output(result) and "nothing was restored" in output(result).lower()
     assert systemctl(fakes)[0] == TIMER_OFF and TIMER_ON not in systemctl(fakes)
@@ -532,7 +511,7 @@ def test_restore_gives_up_on_a_backup_that_keeps_running_and_leaves_the_backups_
 
 def test_backup_and_show_leave_the_timer_alone(backups: tuple[Fakes, Path]) -> None:
     fakes, _ = backups
-    assert run(fakes, "show", "latest").returncode == 0
+    assert run_backup_script(fakes, "show", "latest").returncode == 0
     assert backup(fakes).returncode == 0
     assert not systemctl(fakes)
 
@@ -540,7 +519,7 @@ def test_backup_and_show_leave_the_timer_alone(backups: tuple[Fakes, Path]) -> N
 def test_a_restore_whose_api_pod_does_not_stop_gives_up_before_touching_the_data(backups: tuple[Fakes, Path]) -> None:
     fakes, _ = backups
     fakes.pods(["pod/policypal-api-0"])
-    result = run(fakes, "restore", "latest")
+    result = run_backup_script(fakes, "restore", "latest")
     assert result.returncode == 1 and "did not stop" in output(result)
     assert len(fakes.calls("kubectl", "get", "pods")) == 36, "3 minutes of checks, POLL_SECONDS apart"
     assert not fakes.calls("kubectl", "exec") and not fakes.calls("restic", "restore")
@@ -550,7 +529,7 @@ def test_a_restore_whose_api_pod_does_not_stop_gives_up_before_touching_the_data
 def test_restore_checks_the_uploads_directory_before_stopping_anything(backups: tuple[Fakes, Path]) -> None:
     fakes, uploads = backups
     uploads.rmdir()
-    result = run(fakes, "restore", "latest")
+    result = run_backup_script(fakes, "restore", "latest")
     assert result.returncode != 0 and str(uploads) in output(result)
     assert not [c for c in fakes.calls("kubectl") if c["args"][:1] == ["scale"]]
     assert not systemctl(fakes), "nothing changed, so the timer stays as it was"
@@ -562,7 +541,7 @@ def test_a_restore_of_a_run_that_is_not_there_touches_nothing_and_says_the_backu
     # test_backup_retention.py), so the timer is off by then: a mistyped run changes no data, and the restore says how
     # to turn the backups back on, so they don't quietly stay off.
     fakes, _ = backups
-    result = run(fakes, "restore", "run-20261125T030000Z")
+    result = run_backup_script(fakes, "restore", "run-20261125T030000Z")
     assert result.returncode == 1 and "no database backup for run-20261125T030000Z" in output(result)
     assert not fakes.calls("kubectl", "scale") and not fakes.calls("kubectl", "exec")
     assert systemctl(fakes) == [TIMER_OFF, IS_BACKUP_RUNNING] and "policypal-backup enable" in output(result)
@@ -570,12 +549,12 @@ def test_a_restore_of_a_run_that_is_not_there_touches_nothing_and_says_the_backu
 
 def test_restore_never_backs_up_or_deletes_snapshots(backups: tuple[Fakes, Path]) -> None:
     fakes, _ = backups
-    assert run(fakes, "restore", "latest").returncode == 0
+    assert run_backup_script(fakes, "restore", "latest").returncode == 0
     assert not [c for c in restic(fakes) if c[:1] in (["backup"], ["forget"], ["prune"], ["init"])]
 
 
 @pytest.mark.parametrize("args", [[], ["restore"], ["show"], ["delete", "latest"], ["enable", "now"]])
 def test_usage(fakes: Fakes, args: list[str]) -> None:
-    result = run(fakes, *args)
+    result = run_backup_script(fakes, *args)
     assert result.returncode == 2 and "usage:" in result.stderr
     assert not fakes.calls("restic") and not fakes.calls("kubectl") and not fakes.calls("systemctl")

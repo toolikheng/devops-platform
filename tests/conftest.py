@@ -16,7 +16,10 @@ RENDER = REPO_ROOT / "scripts" / "render-k8s.sh"
 PLATFORM = REPO_ROOT / "k8s" / "platform"
 VERSIONS_ENV = REPO_ROOT / "ci" / "versions.env"
 SECRET_CATALOG = REPO_ROOT / "terraform" / "persistent" / "secret-catalog.yaml"
-RESTIC_BACKUP_TASKS = REPO_ROOT / "ansible" / "roles" / "restic_backup" / "tasks" / "main.yml"
+RESTIC_BACKUP = REPO_ROOT / "ansible" / "roles" / "restic_backup"
+RESTIC_BACKUP_TASKS = RESTIC_BACKUP / "tasks" / "main.yml"
+BACKUP_SCRIPT = RESTIC_BACKUP / "files" / "policypal-backup.sh"
+BACKUP_SETTINGS = RESTIC_BACKUP / "templates" / "policypal-backup.env.j2"
 OVERLAYS = ("local", "aws")
 
 
@@ -71,6 +74,25 @@ def backup_timer_tasks() -> list[dict[str, Any]]:
     install its unit file: any of them would decide whether a node fresh from `make cloud-config` backs up hourly."""
     tasks = yaml.safe_load(RESTIC_BACKUP_TASKS.read_text())
     return [t for t in tasks if "policypal-backup.timer" in yaml.safe_dump(t) and "ansible.builtin.template" not in t]
+
+
+def restic_backup_defaults() -> dict[str, Any]:
+    return yaml.safe_load((RESTIC_BACKUP / "defaults" / "main.yml").read_text())
+
+
+def backup_settings() -> str:
+    """policypal-backup's settings file with the role's defaults filled in (the only template expressions it uses)."""
+    return re.sub(r"\{\{ (\w+) \}\}", lambda m: str(restic_backup_defaults()[m.group(1)]), BACKUP_SETTINGS.read_text())
+
+
+def run_backup_script(fakes: Fakes, *args: str) -> subprocess.CompletedProcess[str]:
+    """policypal-backup as a root shell on the node runs it: its settings from the settings file (rendered from the
+    template), with the textfile directory moved into this test's folder."""
+    textfile = fakes.dir / "textfile"
+    textfile.mkdir(exist_ok=True)
+    settings = fakes.dir / "policypal-backup.env"
+    settings.write_text(backup_settings().replace(restic_backup_defaults()["restic_backup_textfile_dir"], str(textfile)))
+    return fakes.script(str(BACKUP_SCRIPT), *args, env={"POLICYPAL_BACKUP_ENV": str(settings), "POLL_SECONDS": "0"})
 
 
 @pytest.fixture
