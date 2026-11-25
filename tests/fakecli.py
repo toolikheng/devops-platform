@@ -23,7 +23,8 @@ The fake knows just enough of each real tool for the scripts here:
 - restic answers `snapshots --tag TAG` and `dump` with what the test set (restic_snapshots, restic_dump).
 - systemctl answers `is-active UNIT` like systemd: the state on stdout (none with --quiet), exit 0 only for "active"
   (a running oneshot service is "activating", exit 3); "inactive" unless the test set states (unit_states).
-Any call can be made to fail (`fail`), and a real command can be logged on its way through (`spy`).
+Any call can be made to fail (`fail`), and a real command can be logged on its way through (`spy`), or another
+program run in a tool's place (`instead`).
 """
 
 import hashlib
@@ -286,8 +287,12 @@ class Fakes:
         """Log every call of the real `command`, then run it."""
         real = shutil.which(command)
         assert real, f"{command} not installed"
-        self._install(command)
-        self._write(f"spy-{command}", real)
+        self.instead(command, real)
+
+    def instead(self, tool: str, program: str) -> None:
+        """Log every call of `tool`, then run `program` with the same arguments in its place."""
+        self._install(tool)
+        self._write(f"spy-{tool}", program)
 
     def http(self, url: str, body: str | None, rc: int | None = None, when: str | None = None,
              status: int | None = None) -> None:

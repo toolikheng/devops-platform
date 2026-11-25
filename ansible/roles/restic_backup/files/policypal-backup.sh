@@ -4,7 +4,8 @@
 #   policypal-backup backup                     the Postgres dump first, then the uploads, then retention
 #   policypal-backup show latest|run-<time>     a run's two snapshots: "<run> <database snapshot> <uploads snapshot>"
 #   policypal-backup restore latest|run-<time>  that run's database and uploads: hourly backups off and any running
-#                                               one finished first, the API stopped meanwhile, backups on after
+#                                               one finished first (then the run is looked up), the API stopped
+#                                               meanwhile, backups on after
 #   policypal-backup enable                     the hourly backups on, for a node with nothing to restore
 #
 # policypal-backup.service runs `backup` every hour once policypal-backup.timer is on. A new node leaves it off:
@@ -180,12 +181,15 @@ stopped() {
 
 restore() {
   local uploads
-  # Checks that change nothing come first: a mistyped run or a missing directory leaves the timer as it was.
-  pick "$1"
+  # A check that changes nothing comes first: a missing uploads directory leaves the timer as it was.
   uploads="$(uploads_dir)"
-  echo "policypal-backup: restoring $run (database $db_id, uploads $up_id)"
 
   pause_backups
+  # Only now is the run looked up. A backup that was running when the restore began has applied retention since,
+  # which keeps the newest snapshot of each day: it may have deleted the run asked for, or made a newer one "latest".
+  # pick fails unless both of the run's snapshots are there, before the API or the database is touched.
+  pick "$1"
+  echo "policypal-backup: restoring $run (database $db_id, uploads $up_id)"
   stop_api
   restore_database
   restore_uploads "$uploads"
@@ -201,6 +205,7 @@ restore() {
 # comes back on only after a successful restore.
 pause_backups() {
   systemctl disable --now "$TIMER"
+  echo "policypal-backup: hourly backups off until the restore succeeds (policypal-backup enable turns them back on)"
   wait_until 180 no_backup_running || fail "a backup is still running after 15 minutes. Nothing was restored" \
     "and the hourly backups are off: run the restore again later, or policypal-backup enable to turn them back on"
 }

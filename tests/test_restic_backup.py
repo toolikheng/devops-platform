@@ -505,6 +505,10 @@ def test_restore_turns_the_backups_off_and_lets_a_running_backup_finish_before_t
     steps = [c["args"] for c in fakes.calls() if c["tool"] == "systemctl" or c["args"][:1] == ["scale"]]
     assert steps[:5] == [TIMER_OFF, IS_BACKUP_RUNNING, IS_BACKUP_RUNNING, IS_BACKUP_RUNNING,
                          ["scale", "deployment/policypal-api", "--replicas=0"]]
+    # That backup's retention can delete runs, so the run is looked up only after it has finished.
+    calls = fakes.calls()
+    last_look = max(i for i, c in enumerate(calls) if c["tool"] == "systemctl" and c["args"] == IS_BACKUP_RUNNING)
+    assert min(i for i, c in enumerate(calls) if c["tool"] == "restic") > last_look
 
 
 def test_a_failed_last_backup_does_not_hold_up_a_restore(backups: tuple[Fakes, Path]) -> None:
@@ -552,12 +556,16 @@ def test_restore_checks_the_uploads_directory_before_stopping_anything(backups: 
     assert not systemctl(fakes), "nothing changed, so the timer stays as it was"
 
 
-def test_a_restore_of_a_run_that_is_not_there_leaves_the_timer_as_it_was(backups: tuple[Fakes, Path]) -> None:
-    # A mistyped run must not quietly stop the backups of a node that was backing up.
+def test_a_restore_of_a_run_that_is_not_there_touches_nothing_and_says_the_backups_are_off(
+        backups: tuple[Fakes, Path]) -> None:
+    # The run is looked up only once no backup is running (a running backup's retention can delete it,
+    # test_backup_retention.py), so the timer is off by then: a mistyped run changes no data, and the restore says how
+    # to turn the backups back on, so they don't quietly stay off.
     fakes, _ = backups
     result = run(fakes, "restore", "run-20261125T030000Z")
     assert result.returncode == 1 and "no database backup for run-20261125T030000Z" in output(result)
-    assert not systemctl(fakes)
+    assert not fakes.calls("kubectl", "scale") and not fakes.calls("kubectl", "exec")
+    assert systemctl(fakes) == [TIMER_OFF, IS_BACKUP_RUNNING] and "policypal-backup enable" in output(result)
 
 
 def test_restore_never_backs_up_or_deletes_snapshots(backups: tuple[Fakes, Path]) -> None:
